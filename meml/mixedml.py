@@ -3,8 +3,9 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
+from statsmodels.regression.mixed_linear_model import MixedLM
 
-class MixedML:
+class MEML:
     def __init__(self,
                  fixed_effects_model: object = None,
                  max_iter: int = 10,
@@ -50,14 +51,109 @@ class MixedML:
         X = X.reshape(-1, 1) if X.ndim == 1 else X
         Z = Z.reshape(-1, 1) if Z.ndim == 1 else Z
         cluster = cluster.reshape(-1) if cluster.ndim == 2 else cluster
+
         y_pred = self.fe_model.predict(X)
         common_clusters = np.intersect1d(np.unique(self.cluster), np.unique(cluster))
+
         for cluster_i in common_clusters:
             mask_i = (cluster == cluster_i).reshape(-1)
             mask_re = (self.cluster == cluster_i).reshape(-1)
             re_i = (self.resid_re[mask_re][0]).reshape(-1, 1)
             y_pred[mask_i] += (Z[mask_i] @ re_i).reshape(-1)
         return y_pred
+    
+    def fit_lme(self, X: np.ndarray, cluster: np.array, Z: np.ndarray, y: np.array,
+            X_val: np.ndarray = None, cluster_val: np.array = None, Z_val: np.ndarray = None, y_val: np.array = None):
+        """
+        Fit the mixed effect model using Expectation-Maximization algorithm
+        TODO: For now one random effect, one response variable
+            So, reshape(-1) is used to make them 1D arrays.
+
+        Parameters
+        ----------
+        X : Explanatory covariates
+        cluster : Clustering variable
+        Z : Random effect covariates
+        y : Response variable
+        *_val : Respective validation inputs
+
+        Returns
+        -------
+        TYPE MEML model
+        """
+        Z = Z.astype(float)  # float
+        y = y.astype(float)  # float
+        X = X.reshape(-1, 1) if X.ndim == 1 else X
+        Z = Z.reshape(-1, 1) if Z.ndim == 1 else Z
+        y = y.reshape(-1) if y.ndim == 2 else y
+        cluster = cluster.reshape(-1) if cluster.ndim == 2 else cluster
+        y_val = y_val.reshape(-1) if y_val is not None and y_val.ndim == 2 else y_val
+        self.cluster = cluster
+        unique_clusters = np.unique(cluster)
+        self.n_clusters = len(unique_clusters)
+        self.n_obs = X.shape[0]
+        self.n_re = Z.shape[1]
+        self.mask_by_cluster = [(cluster == cluster_i).reshape(-1)  for cluster_i in unique_clusters]
+
+        # Intialize EM algorithm
+        iteration = 0
+        resid_re = np.zeros_like(Z)
+        var_unexp = 1.0  # float not integer
+        var_re = np.ones((self.n_re, self.n_re))
+        self.best_fe_model(X, y) if self.tuning else None
+        stop_flag = False
+        while iteration < self.max_iter and not stop_flag:
+            iteration += 1
+            # E- step: Update fixed effects (tuning, prediction)
+            y_fe = self.update_data_fe(y, Z, resid_re)
+            # self.best_fe_model(X, y_fe) if self.tuning else None
+            y_pred = self.fe_model.fit(X, y_fe).predict(X)
+
+            residuals = y - y_pred
+            # Define model: intercept-only (np.ones for fixed effect)
+            X_dummy = np.ones_like(residuals)  # Fixed effect (just intercept)
+            
+            # Fit mixed-effects model
+            model = MixedLM(residuals, X_dummy, groups=cluster)
+            result = model.fit()
+
+            # Between-cluster residuals as array
+            between_residuals = np.zeros_like(residuals, dtype=float)
+            for group, effect in result.random_effects.items():
+                mask = (cluster == group)
+                between_residuals[mask] = effect.iloc[0]
+            
+            resid_re = between_residuals  # Dict of cluster effects
+            resid_re = resid_re[:, None]
+            resid_unexp = result.resid# + result.fe_params[0]  # Add intercept back  # Array of within-cluster residuals
+            var_re = result.cov_re  # Assuming one random effect
+            var_unexp = result.scale  # Residual variance
+
+            # M-step: update random effects and variance components
+            # resid_re, resid_unexp, var_unexp, var_re = self.update_residual_variance(y, Z, resid_re, var_unexp, var_re, y_pred)
+
+            # update GLL (minimizing negative value, potential use is to minimize gll objective function)
+            gll = self.update_gll(y, resid_re, resid_unexp, var_unexp, var_re)
+
+            # Track evolution of the EM algorithm
+            self.update_variable_history(resid_re, resid_unexp, var_unexp, var_re, gll)
+
+            # Validation using MSE
+            if X_val is not None and isinstance(X_val, np.ndarray):
+                y_val_pred = self.predict(X_val, cluster_val, Z_val)
+                mse_val = mean_squared_error(y_val, y_val_pred)
+                self.valid_history.append(mse_val)
+            else:
+                mse_val = None
+            print("{:-<20}{:-^20}{:->20}\n".format(f"GLL: {gll:.4f}",
+                                                   f"MSE validation: {mse_val:.4f}" if mse_val is not None else "No validation",
+                                                   f"at iteration: {iteration}"))
+            # Stop criterion
+            if self.gll_stop and len(self.gll_history) > 1 and \
+                (err := np.abs((gll - self.gll_history[-2]) / self.gll_history[-2])) < self.gll_stop:
+                print("{:-<50}".format(f"GLL converged: {err:.4f}<{self.gll_stop}"))
+                stop_flag = True
+        return self
 
     def fit(self, X: np.ndarray, cluster: np.array, Z: np.ndarray, y: np.array,
             X_val: np.ndarray = None, cluster_val: np.array = None, Z_val: np.ndarray = None, y_val: np.array = None):
@@ -103,6 +199,7 @@ class MixedML:
             iteration += 1
             # E- step: Update fixed effects (tuning, prediction)
             y_fe = self.update_data_fe(y, Z, resid_re)
+            # self.best_fe_model(X, y_fe) if self.tuning else None
             y_pred = self.fe_model.fit(X, y_fe).predict(X)
 
             # M-step: update random effects and variance components
@@ -213,17 +310,18 @@ class MixedML:
         Tune hyperparameters of the fixed effect regressor
         """
         fe_model_name = type(self.fe_model).__name__
-        param_dist = None
         if fe_model_name == 'RandomForestRegressor':
             from scipy.stats import randint, uniform
             param_dist = {
-                'n_estimators': randint(5, 400),              # Number of trees in the forest (discrete uniform distribution between 5-399)
+                'n_estimators': randint(5, 400),              # Number of trees in the forest
                 'max_depth': randint(2, 15),                  # Maximum depth of the trees
                 'min_samples_split': randint(2, 18),          # Minimum number of samples required to split an internal node
                 'min_samples_leaf': randint(1, 10),           # Minimum number of samples required to be at a leaf node
                 'max_samples': uniform(0.5, 0.4)              # Fraction of samples to draw from X to train each base estimator
             }
         elif fe_model_name == 'MLPRegressor':
+            # param_dist = {
+            #     'hidden_layer_sizes': [(5,), (8,), (12,), (18,), (25,), (50,)]}
             param_dist = {
                 'hidden_layer_sizes': [(5,), (10,), (5, 5), (5, 5, 5), (100, 100), (50, 50, 50)],
                 'activation': ['relu', 'tanh', 'logistic'],  # 'logistic' will be tested again here
@@ -259,17 +357,11 @@ class MixedML:
                 'min_child_samples': (5, 40),
                 'subsample': (0.7, 0.9),
                 'colsample_bytree': (0.6, 0.9)}
-        elif fe_model_name == 'LinearRegression':
-            pass
         else:
             raise ValueError("Unknown regressor for hyperparameter tuning.")
-        if param_dist is not None:
-            opt = RandomizedSearchCV(self.fe_model, param_dist, cv=5,
-                                     scoring='neg_mean_squared_error', n_jobs=-1, n_iter=20).fit(X, y)
-            self.fe_model, self.fe_model_params = opt.best_estimator_, opt.best_params_
-        else:
-            # For LinearRegression, use the model as is without tuning
-            self.fe_model_params = {}
+        opt = RandomizedSearchCV(self.fe_model, param_dist, cv=5,
+                           scoring='neg_mean_squared_error', n_jobs=-1, n_iter=20).fit(X, y)
+        self.fe_model, self.fe_model_params = opt.best_estimator_, opt.best_params_
         return self
 
     def summary(self):
