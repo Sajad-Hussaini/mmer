@@ -87,11 +87,12 @@ class MEML:
         self.n_clusters = len(unique_clusters)
         self.n_obs = x.shape[0]
         self.n_re = z.shape[1]
-        self.mask_by_cluster = [(cluster == cluster_i)  for cluster_i in unique_clusters]
+        self.mask_by_cluster = [np.isin(cluster, cluster_i) for cluster_i in unique_clusters]
 
         # Intialize EM algorithm
         iteration = 0
         resid_re = np.zeros((self.n_obs, self.n_re, 1))
+        resid_unexp = np.zeros_like(y)
         var_re = np.ones((self.n_re, self.n_re))
         var_unexp = 1.0  # float not integer
         self.best_fe_model(x, y) if self.tuning else None
@@ -118,7 +119,7 @@ class MEML:
                 var_unexp = result.scale
             else:
                 # M-step: update random effects and variance components
-                resid_re, resid_unexp, var_unexp, var_re = self.update_residual_variance(y, z, resid_re, var_unexp, var_re, y_pred)
+                resid_re, resid_unexp, var_re, var_unexp = self.update_residual_variance(y, z, resid_re, resid_unexp, var_re, var_unexp, y_pred)
 
             # update GLL (minimizing negative value, potential use is to minimize gll objective function)
             gll = self.update_gll(y, resid_re, resid_unexp, var_unexp, var_re)
@@ -148,62 +149,61 @@ class MEML:
         Update the data for fixed effect regression that is (y-zb)
         """
         y_fe_update = y.copy()
-        for mask_cluster_i in self.mask_by_cluster:
-            z_i = z[mask_cluster_i]
-            re_i = resid_re[mask_cluster_i][0]  # Because re is same in a cluster
-            y_fe_update[mask_cluster_i] -= (z_i @ re_i).ravel()  # In-place subtraction
+        for mask_i in self.mask_by_cluster:
+            z_i = z[mask_i]
+            re_i = resid_re[mask_i][0]  # Because re is the same for a cluster
+            y_fe_update[mask_i] -= (z_i @ re_i).ravel()  # In-place subtraction
         return y_fe_update
 
-    def update_residual_variance(self, y, z, resid_re, var_unexp, var_re, y_pred):
+    def update_residual_variance(self, y, z, resid_re, resid_unexp, var_re, var_unexp, y_pred):
         """
         Update the residual and variance components based on previous values
         """
-        resid_re_update = np.zeros((self.n_obs, self.n_re, 1))
-        resid_unexp_update = np.zeros_like(y)
         var_unexp_sum = np.zeros_like(var_unexp)
         var_re_sum = np.zeros_like(var_re)
-        for mask_cluster_i in self.mask_by_cluster:
-            y_i = y[mask_cluster_i]
-            z_i = z[mask_cluster_i]
-            n_i = mask_cluster_i.sum()
+        for mask_i in self.mask_by_cluster:
+            y_i = y[mask_i]
+            z_i = z[mask_i]
+            n_i = mask_i.sum()
             ident_i = np.eye(n_i)
-            y_pred_i = y_pred[mask_cluster_i]
+            y_pred_i = y_pred[mask_i]
 
             # Use solver technique instead of explicit matrix inversion
             V_i = z_i @ var_re @ z_i.T + var_unexp * ident_i
             x = np.linalg.solve(V_i, y_i - y_pred_i)
 
             # Compute random effect and unexplained residuals
-            re_i = (var_re @ z_i.T @ x)[:, None]
-            resid_re_update[mask_cluster_i] = re_i
-            eps_i = y_i - y_pred_i - (z_i @ re_i).ravel()
-            resid_unexp_update[mask_cluster_i] = eps_i
+            re_i = var_re @ z_i.T @ x
+            eps_i = y_i - y_pred_i - z_i @ re_i
+
+            resid_re[mask_i] = re_i[:, None]  # check if we need [:, None]
+            resid_unexp[mask_i] = eps_i
 
             var_unexp_sum += (eps_i.T @ eps_i + var_unexp *
                               (n_i - var_unexp * np.trace(np.linalg.solve(V_i, ident_i))))
             var_re_sum += (re_i @ re_i.T +
                                 (var_re - var_re @ z_i.T @ np.linalg.solve(V_i, z_i @ var_re)))
 
-        var_unexp_update = var_unexp_sum / self.n_obs
-        var_re_update = var_re_sum / self.n_clusters
-        return resid_re_update, resid_unexp_update, var_unexp_update, var_re_update
+        var_unexp = var_unexp_sum / self.n_obs
+        var_re = var_re_sum / self.n_clusters
+        return resid_re, resid_unexp, var_re, var_unexp
 
     def update_gll(self, y, resid_re, resid_unexp, var_unexp, var_re):
         """
         Update the (negative) gll based on variance and residual components
         """
         gll_sum = 0.0
-        for mask_cluster_i in self.mask_by_cluster:
-            n_i = mask_cluster_i.sum()
-            re_i = resid_re[mask_cluster_i][0]
-            eps_i = resid_unexp[mask_cluster_i]
+        logdet_var_re = np.linalg.slogdet(var_re)[1]  # just add to each iteration instead of re-calculating
+        for mask_i in self.mask_by_cluster:
+            n_i = mask_i.sum()
+            re_i = resid_re[mask_i][0]
+            eps_i = resid_unexp[mask_i]
             # Becasue unexplained variance is always a scaled identity matrix A=xI simpy A^-1 = I/x
             # also log determinant is just n*log(x) for A=xI
-            logdet_var_re = np.linalg.slogdet(var_re)[1]
-            logdet_var_unexp_mat_i = n_i * np.log(var_unexp)
+            logdet_var_unexp = n_i * np.log(var_unexp)
             eps_term = (eps_i.T @ eps_i) / var_unexp  # always scalar operation
-            re_term = (re_i.T @ np.linalg.inv(var_re) @ re_i).item()  # Direct inversion for small var_re
-            gll_sum += eps_term + re_term + logdet_var_re + logdet_var_unexp_mat_i
+            re_term = (re_i.T @ np.linalg.solve(var_re, re_i)).item()  # Direct inversion for small var_re
+            gll_sum += eps_term + re_term + logdet_var_re + logdet_var_unexp
         return gll_sum
 
     def update_variable_history(self, resid_re, resid_unexp, var_unexp, var_re, gll):
