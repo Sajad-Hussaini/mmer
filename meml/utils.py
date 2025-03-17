@@ -313,3 +313,62 @@ def plot_residual(data, y_values: list[str], x_labels: str, y_labels: str, text:
             y_label = y_labels[1] if idx % 2 == 0 else None
         _plot_scatter(fig, gs[idx // 2, idx % 2], data, 'rjb', f'res_within_{y_var}', x_label, y_label, text[idx])
     plt.show()
+
+# def best_fe_model(x, y):
+#         """
+#         Tune hyperparameters of the fixed effect regressor
+#         """
+#         fe_model_name = type(fe_model).__name__
+#         if fe_model_name == 'RandomForestRegressor':
+#             from scipy.stats import randint, uniform
+#             param_dist = {
+#                 'n_estimators': randint(5, 400),              # Number of trees in the forest
+#                 'max_depth': randint(2, 15),                  # Maximum depth of the trees
+#                 'min_samples_split': randint(2, 18),          # Minimum number of samples required to split an internal node
+#                 'min_samples_leaf': randint(1, 10),           # Minimum number of samples required to be at a leaf node
+#                 'max_samples': uniform(0.5, 0.4)              # Fraction of samples to draw from x to train each base estimator
+#             }
+#         elif fe_model_name == 'MLPRegressor':
+#             # param_dist = {
+#             #     'hidden_layer_sizes': [(5,), (8,), (12,), (18,), (25,), (50,)]}
+#             param_dist = {
+#                 'hidden_layer_sizes': [(5,), (10,), (5, 5), (5, 5, 5), (100, 100), (50, 50, 50)],
+#                 'activation': ['relu', 'tanh', 'logistic'],  # 'logistic' will be tested again here
+#                 'solver': ['adam', 'sgd', 'lbfgs'],
+#                 'learning_rate': ['constant', 'adaptive']}
+#         elif fe_model_name == 'CatBoostRegressor':
+#             param_dist = {
+#                 'iterations': (5, 300),
+#                 'learning_rate': (0.01, 0.5),
+#                 'depth': (2, 15),
+#                 'l2_leaf_reg': (1, 7),
+#                 'bagging_temperature': (0.5, 1.5)}
+#         elif fe_model_name == 'GradientBoostingRegressor':
+#             param_dist = {
+#                 'n_estimators': (5, 400),
+#                 'learning_rate': (0.01, 0.5),
+#                 'max_depth': (2, 15),
+#                 'min_samples_split': (2, 10),
+#                 'min_samples_leaf': (1, 8)}
+#         elif fe_model_name == 'xGBRegressor':
+#             param_dist = {
+#                 'n_estimators': (5, 400),
+#                 'max_depth': (2, 15),
+#                 'learning_rate': (0.001, 0.1),
+#                 'min_child_weight': (1, 5),
+#                 'subsample': (0.5, 0.9),
+#                 'colsample_bytree': (0.5, 0.9)}
+#         elif fe_model_name == 'LGBMRegressor':
+#             param_dist = {
+#                 'n_estimators': (5, 400),
+#                 'learning_rate': (0.001, 0.1),
+#                 'max_depth': (2, 15),
+#                 'min_child_samples': (5, 40),
+#                 'subsample': (0.7, 0.9),
+#                 'colsample_bytree': (0.6, 0.9)}
+#         else:
+#             raise ValueError("Unknown regressor for hyperparameter tuning.")
+#         opt = RandomizedSearchCV(fe_model, param_dist, cv=5,
+#                            scoring='neg_mean_squared_error', n_jobs=-1, n_iter=20).fit(x, y)
+#         fe_model, fe_model_params = opt.best_estimator_, opt.best_params_
+#         return 

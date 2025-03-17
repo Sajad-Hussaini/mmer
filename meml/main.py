@@ -14,17 +14,17 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 import joblib
 from sklearn.inspection import permutation_importance
+from sklearn.model_selection import GridSearchCV
+
 
 df = pd.read_csv(r'c:\Users\Sajad\Work Folder\GMM-rot\ESM-NGA-Datasets-GMM\dfx_esm.csv', dtype={'sof': str})
 x_vars = ['mw', 'rrup', 'vs30', 'fd', 'sof']
-cluster_var = 'event_id'
-re_var = 'RE'
+group_var = 'event_id'
 y_var = 'et'
-df[re_var] = 1.0  # Add random effect covariate as unit (random intercept)
 
 # Data preparation and cleaning
 df = utils.clean_outliers(df, [*x_vars[:-1], y_var], method='zscore')
-data = df[[*x_vars, cluster_var, re_var, y_var]]
+data = df[[*x_vars, group_var, y_var]]
 train_data, test_data = train_test_split(data, test_size=0.20, random_state=42)
 
 # Define preprocessing pipelines
@@ -38,32 +38,39 @@ scalery = PowerTransformer()
 # scalery = FunctionTransformer(func=np.asarray, inverse_func=np.asarray)
 x = scalerx.fit_transform(train_data)
 y = scalery.fit_transform(train_data[[y_var]]).ravel()
-cluster = train_data[cluster_var].values
-z = train_data[re_var].values[:, None]
+groups = train_data[group_var].values
 
 x_val = scalerx.transform(test_data)
 y_val = scalery.transform(test_data[[y_var]]).ravel()
-cluster_val = test_data[cluster_var].values
-z_val = test_data[re_var].values[:, None]
+groups_val = test_data[group_var].values
+# %%
+# fe_model = MLPRegressor((5,), "logistic", random_state=None, solver='lbfgs', max_iter=5000)
+# fe_model = LinearRegression()
+base_model = MLPRegressor(random_state=42, max_iter=2000)
+param_grid = {
+    'hidden_layer_sizes': [(5,), (10,), (15,), (5, 5), (10, 5)],
+    'activation': ['relu', 'tanh', 'logistic'],
+    'learning_rate_init': [0.001, 0.01, 0.0001],
+    'solver': ['adam', 'lbfgs']}
+
+print("Starting hyperparameter tuning...")
+start_tune = time.perf_counter()
+grid_search = GridSearchCV(estimator=base_model, param_grid=param_grid, cv=5, n_jobs=-1, scoring='neg_mean_squared_error')
+grid_search.fit(x, y)
+print(f"Tuning time: {time.perf_counter() - start_tune:.2f} s")
+print(f"Best parameters: {grid_search.best_params_}")
+print(f"Best score: {-grid_search.best_score_:.4f}")
+fe_model = grid_search.best_estimator_
 # %%
 start = time.perf_counter()
-# fixed_model = MLPRegressor((5,), "logistic", random_state=None, solver='lbfgs', max_iter=5000)
-fixed_model = MLPRegressor(
-    hidden_layer_sizes=(10,),
-    activation='relu',
-    solver='adam',
-    learning_rate_init=0.001,
-    max_iter=2000,
-    random_state=42)
-# fixed_model = LinearRegression()
-model = MEML(fixed_model, max_iter=3, gll_limit=0.001, tuning=False)
-model.fit(x, cluster, z, y, x_val, cluster_val, z_val, y_val, method='mixedlm')
+model = MEML(fe_model, max_iter=3, gll_limit=0.001)
+model.fit(x, groups, y, x_val, groups_val, y_val, method='mixedlm')
 print(f"Training time: {time.perf_counter() - start:.2f} s")
 model.summary()
 #%%
 if False:
     x_train_summary = shap.kmeans(x, 10)
-    explainer = shap.KernelExplainer(model.fe_model.predict, x_train_summary)
+    explainer = shap.KernelExplainer(model.fe_model.fe_model.predict, x_train_summary)
     shap_values = explainer.shap_values(x_val)
     # shap.summary_plot(shap_values, x_val)
     shap.summary_plot(shap_values, x_val, feature_names=scalerx.transformers_[0][2] + list(scalerx.transformers_[1][1].get_feature_names_out()))
@@ -78,20 +85,23 @@ if False:
     plt.show()
 #%%
 plot_data = train_data.copy()
-plot_data['res_between'] = model.resid_re.reshape(-1,1)
+plot_data['res_between'] = model.resid_re.ravel()
 plot_data['res_within'] = model.resid_unexp
 if True:
     utils.qq_plot(model.resid_unexp)
-    var_cols = x_vars
     res_cols = ['res_between', 'res_within', 'res_within']
     xlabel = [r'$\mathregular{M_w}$', r'$\mathregular{R_{rup}}$ (km)', r'$\mathregular{V_{s30}\,(\frac{m}{s})}$']
     ylabel = [r'$\mathregular{\eta}$', r'$\mathregular{\epsilon}$', r'$\mathregular{\epsilon}$']
     for i in range(3):
-        utils.plot_joint_grid(plot_data, var_cols[i], res_cols[i], xlabel[i], ylabel[i])
-
-    train_pred = model.predict(x, cluster, z)
-    test_pred = model.predict(x_val, cluster_val, z_val)
-    utils.model_performance(y.ravel(), train_pred, y_val.ravel(), test_pred, y_var)
+        utils.plot_joint_grid(plot_data, x_vars[i], res_cols[i], xlabel[i], ylabel[i])
+    # with added RE
+    train_pred = model.fe_model.predict(x, groups)
+    test_pred = model.fe_model.predict(x_val, groups_val)
+    utils.model_performance(y, train_pred, y_val, test_pred, y_var)
+    # only population mean
+    train_pred = model.fe_model.fe_model.predict(x)
+    test_pred = model.fe_model.fe_model.predict(x_val)
+    utils.model_performance(y, train_pred, y_val, test_pred, y_var)
 # %%
 if True:
     x1 = pd.DataFrame(columns=train_data.columns)
@@ -100,12 +110,12 @@ if True:
     x4 = pd.DataFrame(columns=train_data.columns)
     x5 = pd.DataFrame(columns=train_data.columns)
     x6 = pd.DataFrame(columns=train_data.columns)
-    x1['mw'] = np.arange(4.7, 7.7, 0.1); x1['rrup'] = 15.0; x1['vs30'] = 400.0; x1['fd'] = 12.0; x1['sof'] = 'SS'; x1[cluster_var] = 'Unknown'; x1[re_var] = 1.0;
-    x2['mw'] = np.arange(4.7, 7.7, 0.1); x2['rrup'] = 35.0; x2['vs30'] = 400.0; x2['fd'] = 12.0; x2['sof'] = 'SS'; x2[cluster_var] = 'Unknown'; x2[re_var] = 1.0;
-    x3['rrup'] = np.arange(2.0, 100.0, 0.5); x3['mw'] = 7.2 ; x3['vs30'] = 400.0; x3['fd'] = 12.0; x3['sof'] = 'SS'; x3[cluster_var] = 'Unknown'; x3[re_var] = 1.0;
-    x4['rrup'] = np.arange(2.0, 100.0, 0.5); x4['mw'] = 6.0; x4['vs30'] = 400.0; x4['fd'] = 12.0; x4['sof'] = 'SS'; x4[cluster_var] = 'Unknown'; x4[re_var] = 1.0;
-    x5['vs30'] = np.arange(250., 1000., 10); x5['rrup'] = 15.0; x5['mw'] = 6.7; x5['fd'] = 12.0; x5['sof'] = 'SS'; x5[cluster_var] = 'Unknown'; x5[re_var] = 1.0;
-    x6['vs30'] = np.arange(250., 1000., 10); x6['rrup'] = 15.0; x6['mw'] = 6.7; x6['fd'] = 12.0; x6['sof'] = 'SS'; x6[cluster_var] = 'Unknown'; x6[re_var] = 1.0;
+    x1['mw'] = np.arange(4.7, 7.7, 0.1); x1['rrup'] = 15.0; x1['vs30'] = 400.0; x1['fd'] = 12.0; x1['sof'] = 'SS'
+    x2['mw'] = np.arange(4.7, 7.7, 0.1); x2['rrup'] = 35.0; x2['vs30'] = 400.0; x2['fd'] = 12.0; x2['sof'] = 'SS'
+    x3['rrup'] = np.arange(2.0, 100.0, 0.5); x3['mw'] = 7.2 ; x3['vs30'] = 400.0; x3['fd'] = 12.0; x3['sof'] = 'SS'
+    x4['rrup'] = np.arange(2.0, 100.0, 0.5); x4['mw'] = 6.0; x4['vs30'] = 400.0; x4['fd'] = 12.0; x4['sof'] = 'SS'
+    x5['vs30'] = np.arange(250., 1000., 10); x5['rrup'] = 15.0; x5['mw'] = 6.7; x5['fd'] = 12.0; x5['sof'] = 'SS'
+    x6['vs30'] = np.arange(250., 1000., 10); x6['rrup'] = 15.0; x6['mw'] = 6.7; x6['fd'] = 12.0; x6['sof'] = 'SS'
 
     xt1 = scalerx.transform(x1)
     xt2 = scalerx.transform(x2)
@@ -118,24 +128,24 @@ if True:
     fig, axes = plt.subplots(1, 3, figsize=(18*cm, 8*cm), layout='constrained', sharey=True)
     # Plot for mw
     axes[0].scatter(df['mw'], df[y_var], c='tab:blue')
-    axes[0].plot(x1['mw'].values, scalery.inverse_transform(model.predict(xt1, x1[cluster_var].values, x1[re_var].values[:, None]).reshape(-1,1)),
+    axes[0].plot(x1['mw'].values, scalery.inverse_transform(model.fe_model.predict(xt1)[..., None]),
                  c='tab:orange', label=f"rrup={x1['rrup'][0]}, vs30={x1['vs30'][0]}")
-    axes[0].plot(x2['mw'].values, scalery.inverse_transform(model.predict(xt2, x2[cluster_var].values, x2[re_var].values[:, None]).reshape(-1,1)),
+    axes[0].plot(x2['mw'].values, scalery.inverse_transform(model.fe_model.predict(xt2)[..., None]),
                  c='tab:green', label=f"rrup={x2['rrup'][0]}, vs30={x2['vs30'][0]}")
     axes[0].set_xlabel('mw')
     axes[0].set_ylabel(f'{y_var}')
     # Plot for Rjb
     axes[1].scatter(df['rrup'], df[y_var], c='tab:blue')
-    axes[1].plot(x3['rrup'].values, scalery.inverse_transform(model.predict(xt3, x3[cluster_var].values, x3[re_var].values[:, None]).reshape(-1,1)),
+    axes[1].plot(x3['rrup'].values, scalery.inverse_transform(model.fe_model.predict(xt3)[..., None]),
                  c='tab:orange', label=f"mw={x3['mw'][0]}, vs30={x3['vs30'][0]}")
-    axes[1].plot(x4['rrup'].values, scalery.inverse_transform(model.predict(xt4, x4[cluster_var].values, x4[re_var].values[:, None]).reshape(-1,1)),
+    axes[1].plot(x4['rrup'].values, scalery.inverse_transform(model.fe_model.predict(xt4)[..., None]),
                  c='tab:green', label=f"mw={x4['mw'][0]}, vs30={x4['vs30'][0]}")
     axes[1].set_xlabel('rrup (km)')
     # Plot for Vs30
     axes[2].scatter(df['vs30'], df[y_var], c='tab:blue')
-    axes[2].plot(x5['vs30'].values, scalery.inverse_transform(model.predict(xt5, x5[cluster_var].values, x5[re_var].values[:, None]).reshape(-1,1)),
+    axes[2].plot(x5['vs30'].values, scalery.inverse_transform(model.fe_model.predict(xt5)[..., None]),
                  c='tab:orange', label=f"mw={x5['mw'][0]}, rrup={x5['rrup'][0]}")
-    axes[2].plot(x6['vs30'].values, scalery.inverse_transform(model.predict(xt6, x6[cluster_var].values, x6[re_var].values[:, None]).reshape(-1,1)),
+    axes[2].plot(x6['vs30'].values, scalery.inverse_transform(model.fe_model.predict(xt6)[..., None]),
                  c='tab:green', label=f"mw={x6['mw'][0]}, rrup={x6['rrup'][0]}")
     axes[2].set_xlabel('vs30 (m/s)')
     for ax in axes:
@@ -143,9 +153,8 @@ if True:
         ax.set_yscale('log')
     plt.show()
 if False:
-    joblib.dump(scalerx, fr'C:\Users\Future\OneDrive - Universidade do Minho (1)\PhD-Disseminations\ECCOMAS-2024\Codes-files\MEML-MLP-models\scalerx_{y_var}.joblib')
-    joblib.dump({'scalery': scalery, 'model': model}, fr'C:\Users\Future\OneDrive - Universidade do Minho (1)\PhD-Disseminations\ECCOMAS-2024\Codes-files\MEML-MLP-models\meml_mlp_{y_var}.joblib')
+    joblib.dump(scalerx, fr'\scalerx_{y_var}.joblib')
+    joblib.dump({'scalery': scalery, 'model': model}, fr'\meml_mlp_{y_var}.joblib')
 
-    joblib.dump(scalerx, fr'C:\Users\Future\OneDrive - Universidade do Minho (1)\PhD-Disseminations\ECCOMAS-2024\Codes-files\MLP-models\scalerx_{y_var}.joblib')
-    joblib.dump({'scalery': scalery, 'model': model.fe_model, 'var_re': model.var_re, 'var_unexp': model.var_unexp}, fr'C:\Users\Future\OneDrive - Universidade do Minho (1)\PhD-Disseminations\ECCOMAS-2024\Codes-files\MLP-models\mlp_{y_var}.joblib')
-
+    joblib.dump(scalerx, fr'\scalerx_{y_var}.joblib')
+    joblib.dump({'scalery': scalery, 'model': model.fe_model, 'var_re': model.var_re, 'var_unexp': model.var_unexp}, fr'\mlp_{y_var}.joblib')
