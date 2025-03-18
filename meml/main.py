@@ -1,6 +1,6 @@
 # %%
-# %reload_ext autoreload
-# %autoreload 2
+%reload_ext autoreload
+%autoreload 2
 from meml import MEML, utils
 import matplotlib.pyplot as plt
 import time
@@ -13,29 +13,25 @@ from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 import joblib
-from sklearn.inspection import permutation_importance
 from sklearn.model_selection import GridSearchCV
 
-
-df = pd.read_csv(r'c:\Users\Sajad\Work Folder\GMM-rot\ESM-NGA-Datasets-GMM\dfx_esm.csv', dtype={'sof': str})
+df = pd.read_csv(r'c:\Users\Sajad\Work Folder\GMM-rot\ESM-NGA-Datasets-GMM\dfx_nga.csv', dtype={'sof': str})
 x_vars = ['mw', 'rrup', 'vs30', 'fd', 'sof']
 group_var = 'event_id'
 y_var = 'et'
 
 # Data preparation and cleaning
-df = utils.clean_outliers(df, [*x_vars[:-1], y_var], method='zscore')
+# df = utils.clean_outliers(df, [*x_vars[:-1], y_var], method='zscore')
+df = df.dropna(subset=x_vars)
 data = df[[*x_vars, group_var, y_var]]
 train_data, test_data = train_test_split(data, test_size=0.20, random_state=42)
 
 # Define preprocessing pipelines
 scalerx = ColumnTransformer(transformers=[
-    ('num', RobustScaler(), ['mw', 'rrup', 'vs30', 'fd']),
-    ('cat', OneHotEncoder(), ['sof'])], remainder='drop')
+    ('num', RobustScaler(), [*x_vars[:-1]]),
+    ('cat', OneHotEncoder(), [x_vars[-1]])], remainder='drop')
 scalery = PowerTransformer()
-# scalery = RobustScaler()
 # scalery = FunctionTransformer(func=np.log, inverse_func=np.exp)
-# scalery = FunctionTransformer(func=np.exp, inverse_func=np.log)
-# scalery = FunctionTransformer(func=np.asarray, inverse_func=np.asarray)
 x = scalerx.fit_transform(train_data)
 y = scalery.fit_transform(train_data[[y_var]]).ravel()
 groups = train_data[group_var].values
@@ -45,44 +41,29 @@ y_val = scalery.transform(test_data[[y_var]]).ravel()
 groups_val = test_data[group_var].values
 # %%
 # fe_model = MLPRegressor((5,), "logistic", random_state=None, solver='lbfgs', max_iter=5000)
-# fe_model = LinearRegression()
-base_model = MLPRegressor(random_state=42, max_iter=2000)
+base_model = MLPRegressor(random_state=42)
 param_grid = {
-    'hidden_layer_sizes': [(5,), (10,), (15,), (5, 5), (10, 5)],
+    'hidden_layer_sizes': [(5,), (10,), (15,), (5, 5)],
+    'alpha': [0.001, 0.01, 0.1, 1.0],
     'activation': ['relu', 'tanh', 'logistic'],
-    'learning_rate_init': [0.001, 0.01, 0.0001],
+    'learning_rate_init': [0.001, 0.01, 0.1],
     'solver': ['adam', 'lbfgs']}
-
 print("Starting hyperparameter tuning...")
 start_tune = time.perf_counter()
-grid_search = GridSearchCV(estimator=base_model, param_grid=param_grid, cv=5, n_jobs=-1, scoring='neg_mean_squared_error')
+grid_search = GridSearchCV(estimator=base_model, param_grid=param_grid, cv=10, n_jobs=-1, scoring='neg_mean_squared_error')
 grid_search.fit(x, y)
+fe_model = grid_search.best_estimator_
 print(f"Tuning time: {time.perf_counter() - start_tune:.2f} s")
 print(f"Best parameters: {grid_search.best_params_}")
 print(f"Best score: {-grid_search.best_score_:.4f}")
-fe_model = grid_search.best_estimator_
 # %%
+# fe_model = MLPRegressor((5,), "logistic", alpha=1.0, random_state=42, solver='lbfgs', max_iter=1000)
+fe_model = LinearRegression()
 start = time.perf_counter()
-model = MEML(fe_model, max_iter=3, gll_limit=0.001)
+model = MEML(fe_model, max_iter=120, gll_limit=0.000001)
 model.fit(x, groups, y, x_val, groups_val, y_val, method='mixedlm')
 print(f"Training time: {time.perf_counter() - start:.2f} s")
 model.summary()
-#%%
-if False:
-    x_train_summary = shap.kmeans(x, 10)
-    explainer = shap.KernelExplainer(model.fe_model.fe_model.predict, x_train_summary)
-    shap_values = explainer.shap_values(x_val)
-    # shap.summary_plot(shap_values, x_val)
-    shap.summary_plot(shap_values, x_val, feature_names=scalerx.transformers_[0][2] + list(scalerx.transformers_[1][1].get_feature_names_out()))
-
-    result = permutation_importance(model.fe_model, x_val, test_data[y_var].values, n_repeats=10, random_state=42)
-    sorted_idx = result.importances_mean.argsort()
-    # Plot permutation importances
-    fig, ax = plt.subplots(figsize=(10, 8))
-    feature_names = [*scalerx.transformers_[0][2], *scalerx.transformers_[1][1].get_feature_names_out()]
-    ax.boxplot(result.importances[sorted_idx].T, vert=False, labels=feature_names)
-    ax.set_title("Permutation Importances (test set)")
-    plt.show()
 #%%
 plot_data = train_data.copy()
 plot_data['res_between'] = model.resid_re.ravel()
@@ -95,12 +76,12 @@ if True:
     for i in range(3):
         utils.plot_joint_grid(plot_data, x_vars[i], res_cols[i], xlabel[i], ylabel[i])
     # with added RE
-    train_pred = model.fe_model.predict(x, groups)
-    test_pred = model.fe_model.predict(x_val, groups_val)
+    train_pred = model.predict(x, groups)
+    test_pred = model.predict(x_val, groups_val)
     utils.model_performance(y, train_pred, y_val, test_pred, y_var)
     # only population mean
-    train_pred = model.fe_model.fe_model.predict(x)
-    test_pred = model.fe_model.fe_model.predict(x_val)
+    train_pred = model.fe_model.predict(x)
+    test_pred = model.fe_model.predict(x_val)
     utils.model_performance(y, train_pred, y_val, test_pred, y_var)
 # %%
 if True:
@@ -110,12 +91,12 @@ if True:
     x4 = pd.DataFrame(columns=train_data.columns)
     x5 = pd.DataFrame(columns=train_data.columns)
     x6 = pd.DataFrame(columns=train_data.columns)
-    x1['mw'] = np.arange(4.7, 7.7, 0.1); x1['rrup'] = 15.0; x1['vs30'] = 400.0; x1['fd'] = 12.0; x1['sof'] = 'SS'
-    x2['mw'] = np.arange(4.7, 7.7, 0.1); x2['rrup'] = 35.0; x2['vs30'] = 400.0; x2['fd'] = 12.0; x2['sof'] = 'SS'
-    x3['rrup'] = np.arange(2.0, 100.0, 0.5); x3['mw'] = 7.2 ; x3['vs30'] = 400.0; x3['fd'] = 12.0; x3['sof'] = 'SS'
-    x4['rrup'] = np.arange(2.0, 100.0, 0.5); x4['mw'] = 6.0; x4['vs30'] = 400.0; x4['fd'] = 12.0; x4['sof'] = 'SS'
-    x5['vs30'] = np.arange(250., 1000., 10); x5['rrup'] = 15.0; x5['mw'] = 6.7; x5['fd'] = 12.0; x5['sof'] = 'SS'
-    x6['vs30'] = np.arange(250., 1000., 10); x6['rrup'] = 15.0; x6['mw'] = 6.7; x6['fd'] = 12.0; x6['sof'] = 'SS'
+    x1['mw'] = np.arange(4.7, 7.7, 0.1); x1['rrup'] = 15.0; x1['vs30'] = 400.0; x1['fd'] = 12.0; x1['sof'] = 'strike slip'
+    x2['mw'] = np.arange(4.7, 7.7, 0.1); x2['rrup'] = 35.0; x2['vs30'] = 400.0; x2['fd'] = 12.0; x2['sof'] = 'strike slip'
+    x3['rrup'] = np.arange(2.0, 100.0, 0.5); x3['mw'] = 7.2 ; x3['vs30'] = 400.0; x3['fd'] = 12.0; x3['sof'] = 'strike slip'
+    x4['rrup'] = np.arange(2.0, 100.0, 0.5); x4['mw'] = 6.0; x4['vs30'] = 400.0; x4['fd'] = 12.0; x4['sof'] = 'strike slip'
+    x5['vs30'] = np.arange(250., 1000., 10); x5['rrup'] = 15.0; x5['mw'] = 6.7; x5['fd'] = 12.0; x5['sof'] = 'strike slip'
+    x6['vs30'] = np.arange(250., 1000., 10); x6['rrup'] = 15.0; x6['mw'] = 6.7; x6['fd'] = 12.0; x6['sof'] = 'strike slip'
 
     xt1 = scalerx.transform(x1)
     xt2 = scalerx.transform(x2)

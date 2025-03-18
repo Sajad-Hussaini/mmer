@@ -10,7 +10,7 @@ class MEML:
     def __init__(self,
                  fixed_effects_model: RegressorMixin,
                  max_iter: Optional[int] = 10,
-                 gll_limit: Optional[float] = None):
+                 gll_limit: Optional[float] = 0.001):
         self.fe_model = fixed_effects_model
         self.max_iter = max_iter
         self.gll_limit = gll_limit
@@ -60,7 +60,8 @@ class MEML:
                 self.update_residual_variance(y, y_pred)
             gll = self.update_gll()
             self.track_variables(gll)
-            mse_val = self._perform_validation(x_val, groups_val, z_val, y_val) if x_val else None
+            if x_val is not None:
+                mse_val = self._perform_validation(x_val, groups_val, y_val) 
             self._print_iteration_info(mse_val, iteration, gll)
             if self._is_converged(gll):
                 break
@@ -71,8 +72,8 @@ class MEML:
                      y_val: Optional[np.ndarray] = None):
         if x.ndim != 2 or x.dtype != float: raise ValueError("x must be 2D float")
         if groups.ndim != 1: raise ValueError("groups must be 1D")
-        if y and (y.ndim != 1 or y.dtype != float): raise ValueError("y must be 1D float")
-        if x_val:
+        if y is not None and (y.ndim != 1 or y.dtype != float): raise ValueError("y must be 1D float")
+        if x_val is not None:
             if x_val.ndim != 2 or x_val.dtype != float: raise ValueError("x_val must be 2D float")
             if groups_val.ndim != 1: raise ValueError("groups_val must be 1D")
             if y_val.ndim != 1 or y_val.dtype != float: raise ValueError("y_val must be 1D float")
@@ -88,8 +89,8 @@ class MEML:
         self.group_indices = [np.where(groups == g)[0] for g in unique_groups]
         self.resid_re = np.zeros((self.n_obs, self.n_re, 1))
         self.resid_unexp = np.zeros_like(y)
-        self.var_re = np.ones((self.n_re, self.n_re))
-        self.var_unexp = 1.0
+        self.var_re = np.ones((self.n_re, self.n_re)) * 0.1
+        self.var_unexp = 0.2
         self.var_re_history = []
         self.var_unexp_history = []
         self.gll_history = []
@@ -166,7 +167,7 @@ class MEML:
             eps_term = (eps_i.T @ eps_i) / self.var_unexp
             re_term = (re_i.T @ np.linalg.solve(self.var_re, re_i)).item()
             gll_sum += eps_term + re_term
-        return gll_sum + logdet_var_re_total + logdet_var_unexp_total
+        return gll_sum + logdet_var_re_total + logdet_var_unexp_total + np.log(2 * np.pi) * (self.n_obs + self.n_re)  # -2 * log-likelihood
 
     def track_variables(self, gll):
         """
