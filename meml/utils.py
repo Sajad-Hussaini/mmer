@@ -314,6 +314,23 @@ def plot_residual(data, y_values: list[str], x_labels: str, y_labels: str, text:
         _plot_scatter(fig, gs[idx // 2, idx % 2], data, 'rjb', f'res_within_{y_var}', x_label, y_label, text[idx])
     plt.show()
 
+def create_data(train_data, scalerx, vary_param, vary_range, fixed_params):
+    """
+    Create evaluation dataframe with one varying parameter and others fixed.
+    
+    Parameters:
+    - vary_param: str, parameter to vary
+    - vary_range: array-like, range of values for the varying parameter
+    - fixed_params: dict, fixed parameter values
+    """
+    df_eval = pd.DataFrame(columns=train_data.columns)
+    df_eval[vary_param] = vary_range
+    
+    for param, value in fixed_params.items():
+        df_eval[param] = value
+    
+    return df_eval, scalerx.transform(df_eval)
+
 # def best_fe_model(x, y):
 #         """
 #         Tune hyperparameters of the fixed effect regressor

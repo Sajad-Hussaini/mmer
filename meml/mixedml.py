@@ -5,6 +5,7 @@ from sklearn.base import RegressorMixin
 from matplotlib.ticker import MaxNLocator
 from sklearn.metrics import mean_squared_error
 from statsmodels.regression.mixed_linear_model import MixedLM
+from tqdm import tqdm
 
 class MEML:
     def __init__(self,
@@ -15,29 +16,18 @@ class MEML:
         self.max_iter = max_iter
         self.gll_limit = gll_limit
 
-    def predict(self, x: np.ndarray, groups: np.ndarray) -> np.ndarray:
+    def predict(self, x: np.ndarray) -> np.ndarray:
         """
         Predict using trained mixed effect model.
-        if groups are known, the random effect are added to the predictions.
-            x : Explanatory covariates
-            groups : groupsing variable
-            z : Random effect covariates
-        """
-        self._check_inputs(x, groups)
-        y_pred = self.fe_model.predict(x)
 
-        z = np.ones((len(groups), 1))
-        common_groups = np.intersect1d(np.unique(self.groups), np.unique(groups), assume_unique=True)
-        for g in common_groups:
-            group_mask = (groups == g)
-            mask_re = (self.groups == g)
-            re_i = self.resid_re[mask_re][0]
-            y_pred[group_mask] += (z[group_mask] @ re_i).ravel()
-        return y_pred
+        Random effects are valuable for understanding group differences (e.g., how much variation is due to clusters vs. fixed effects).
+        They are often reported for interpretation (e.g., variance components) but not used in prediction.
+        """
+        self._check_inputs(x)
+        return self.fe_model.predict(x)
 
     def fit(self, x: np.ndarray, groups: np.ndarray, y: np.ndarray,
-            x_val: Optional[np.ndarray] = None, groups_val: Optional[np.ndarray] = None,
-            y_val: Optional[np.ndarray] = None, method: Optional[str] = None):
+            x_val: Optional[np.ndarray] = None, y_val: Optional[np.ndarray] = None, method: Optional[str] = None):
         """
         Fit the mixed effect model using Expectation-Maximization algorithm
         TODO: For now it considers one random effect and one response variable
@@ -47,9 +37,10 @@ class MEML:
             y : Response variable
             *_val : Respective validation inputs
         """
-        self._check_inputs(x, groups, y, x_val, groups_val, y_val)
+        self._check_inputs(x, groups, y, x_val, y_val)
         self._initialize_em_algorithm(groups, y)
-        for iteration in range(1, self.max_iter + 1):
+        pbar = tqdm(range(1, self.max_iter + 1), desc="MEML Training", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
+        for _ in pbar:
             # Expectation step: updating fixed effects and estimating observations
             y_fe = self.update_y_fe(y)
             y_pred = self.fe_model.fit(x, y_fe).predict(x)
@@ -60,23 +51,30 @@ class MEML:
                 self.update_residual_variance(y, y_pred)
             gll = self.update_gll()
             self.track_variables(gll)
+
+            pbar_desc = f"MEML Training GLL: {gll:.4f}"
             if x_val is not None:
-                mse_val = self._perform_validation(x_val, groups_val, y_val) 
-            self._print_iteration_info(mse_val, iteration, gll)
+                mse_val = self._perform_validation(x_val, y_val)
+                pbar_desc += f" MSE: {mse_val:.4f}"
+            pbar.set_description(pbar_desc)
             if self._is_converged(gll):
+                pbar_desc = f"MEML Converged GLL: {gll:.4f}"
+                pbar.set_description(pbar_desc)
                 break
         return self
     
-    def _check_inputs(self, x: np.ndarray, groups: np.ndarray, y: Optional[np.ndarray] = None,
-                     x_val: Optional[np.ndarray] = None, groups_val: Optional[np.ndarray] = None,
-                     y_val: Optional[np.ndarray] = None):
-        if x.ndim != 2 or x.dtype != float: raise ValueError("x must be 2D float")
-        if groups.ndim != 1: raise ValueError("groups must be 1D")
-        if y is not None and (y.ndim != 1 or y.dtype != float): raise ValueError("y must be 1D float")
-        if x_val is not None:
-            if x_val.ndim != 2 or x_val.dtype != float: raise ValueError("x_val must be 2D float")
-            if groups_val.ndim != 1: raise ValueError("groups_val must be 1D")
-            if y_val.ndim != 1 or y_val.dtype != float: raise ValueError("y_val must be 1D float")
+    def _check_inputs(self, x: Optional[np.ndarray] = None, groups: Optional[np.ndarray] = None, y: Optional[np.ndarray] = None,
+                      x_val: Optional[np.ndarray] = None, y_val: Optional[np.ndarray] = None):
+        if x is not None and (x.ndim != 2 or not np.issubdtype(x.dtype, np.floating)):
+           raise ValueError("x must be 2D float")
+        if groups is not None and groups.ndim != 1:
+            raise ValueError("groups must be 1D")
+        if y is not None and (y.ndim != 1 or not np.issubdtype(y.dtype, np.floating)):
+            raise ValueError("y must be 1D float")
+        if x_val is not None and (x_val.ndim != 2 or not np.issubdtype(x_val.dtype, np.floating)):
+            raise ValueError("x_val must be 2D float")
+        if y_val is not None and (y_val.ndim != 1 or not np.issubdtype(y_val.dtype, np.floating)):
+            raise ValueError("y_val must be 1D float")
     
     def _initialize_em_algorithm(self, groups, y):
         """Initialize variables for the EM algorithm."""
@@ -89,8 +87,8 @@ class MEML:
         self.group_indices = [np.where(groups == g)[0] for g in unique_groups]
         self.resid_re = np.zeros((self.n_obs, self.n_re, 1))
         self.resid_unexp = np.zeros_like(y)
-        self.var_re = np.ones((self.n_re, self.n_re)) * 0.1
-        self.var_unexp = 0.2
+        self.var_re = np.ones((self.n_re, self.n_re))
+        self.var_unexp = 1.0
         self.var_re_history = []
         self.var_unexp_history = []
         self.gll_history = []
@@ -178,22 +176,16 @@ class MEML:
         self.gll_history.append(gll)
         return self
     
-    def _perform_validation(self, x_val, groups_val, y_val):
-        y_val_pred = self.predict(x_val, groups_val)
+    def _perform_validation(self, x_val, y_val):
+        y_val_pred = self.predict(x_val)
         mse_val = mean_squared_error(y_val, y_val_pred)
         self.valid_history.append(mse_val)
         return mse_val
 
-    def _print_iteration_info(self, mse_val, iteration, gll):
-        print("{:-<20}{:-^20}{:->20}\n".format(f"GLL: {gll:.4f}",
-                                               f"MSE: {mse_val:.4f}" if mse_val else "None",
-                                               f"Iteration: {iteration}"))
-
     def _is_converged(self, gll) -> bool:
         if self.gll_limit and len(self.gll_history) > 1:
             err = np.abs((gll - self.gll_history[-2]) / self.gll_history[-2])
-            if err < self.gll_limit:
-                print("{:-<50}".format(f"GLL converged: {err:.4f}<{self.gll_limit}"))
+            if err <= self.gll_limit:
                 return True
         return False
 
