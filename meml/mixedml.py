@@ -8,10 +8,8 @@ from statsmodels.regression.mixed_linear_model import MixedLM
 from tqdm import tqdm
 
 class MEML:
-    def __init__(self,
-                 fixed_effects_model: RegressorMixin,
-                 max_iter: Optional[int] = 10,
-                 gll_limit: Optional[float] = 0.001):
+    " Mixed effect regression model using any arbitrary fixed effect model "
+    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: Optional[int] = 10, gll_limit: Optional[float] = 0.001):
         self.fe_model = fixed_effects_model
         self.max_iter = max_iter
         self.gll_limit = gll_limit
@@ -168,9 +166,6 @@ class MEML:
         return gll_sum + logdet_var_re_total + logdet_var_unexp_total + np.log(2 * np.pi) * (self.n_obs + self.n_re)  # -2 * log-likelihood
 
     def track_variables(self, gll):
-        """
-        Track changes in MEML variables
-        """
         self.var_re_history.append(self.var_re.copy())
         self.var_unexp_history.append(self.var_unexp)
         self.gll_history.append(gll)
