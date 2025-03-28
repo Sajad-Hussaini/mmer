@@ -7,56 +7,41 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import shap
 import statsmodels.api as sm
-import matplotlib.gridspec as gridspec
-from sklearn.preprocessing import FunctionTransformer, PowerTransformer, RobustScaler, MinMaxScaler, OneHotEncoder
 
-def encode_categorical(df_train: pd.DataFrame, df_test: pd.DataFrame, cat_var: list[str], reference=list[str]):
-    """
-    Encode categorical variables using one-hot encoding.
-    """
-    encoder = OneHotEncoder(drop=reference, sparse_output=False, dtype=int)
-    encoded_train = encoder.fit_transform(df_train[cat_var])
-    encoded_test = encoder.transform(df_test[cat_var])
-    feature_names = encoder.get_feature_names_out([*cat_var])
-
-    df_train_encoded = pd.DataFrame(encoded_train, columns=feature_names, index=df_train.index)
-    df_test_encoded = pd.DataFrame(encoded_test, columns=feature_names, index=df_test.index)
-
-    df_train = df_train.drop(cat_var, axis=1).join(df_train_encoded)
-    df_test = df_test.drop(cat_var, axis=1).join(df_test_encoded)
-    return df_train, df_test, encoder, encoder.get_feature_names_out().tolist()
-
-def explore_numeric_vars(df, y_var: str, numeric_vars: list[str]):
+def plot_data(df, y_var: str, numeric_vars: list[str]):
     """
     Explore the distribution of numeric variables and the response variable.
     """
     print(df[[y_var] + numeric_vars].describe())
     mosaic_str = "t..;m..;crg"  # top, left, center, right, bottom
     for var in [y_var] + numeric_vars:
-        mosaic = plt.figure(layout="constrained").subplot_mosaic(mosaic_str, height_ratios=[1, 1, 5], width_ratios=[5, 1, 1])
-        mosaic['c'].scatter(df[var], df[y_var])
-        mosaic['c'].set_xlabel(var)
-        mosaic['c'].set_ylabel(y_var)
+        with plt.rc_context(rc=rcp):
+            mosaic = plt.figure(figsize=(10/2.54, 10/2.54)).subplot_mosaic(mosaic_str, height_ratios=[1, 1, 5], width_ratios=[5, 1, 1])
+            mosaic['c'].scatter(df[var], df[y_var], fc='none', ec='tab:blue')
+            mosaic['c'].set_xlabel(var)
+            mosaic['c'].set_ylabel(y_var)
 
-        mosaic['m'].hist(df[var], bins='auto')
-        mosaic['t'].boxplot(df[var], orientation='horizontal', widths=0.7)
-        mosaic['r'].hist(df[y_var], bins='auto', orientation='horizontal')
-        mosaic['g'].boxplot(df[y_var], widths=0.7)
+            mosaic['m'].hist(df[var], bins='auto')
+            mosaic['t'].boxplot(df[var], orientation='horizontal', widths=0.7)
+            mosaic['r'].hist(df[y_var], bins='auto', orientation='horizontal')
+            mosaic['g'].boxplot(df[y_var], widths=0.7)
 
-        skew_value = df[var].skew().round(2)
-        pos = {True: (0.05, 'left'), False: (0.95, 'right')}
-        x_pos, ha = pos[skew_value < 0]
-        mosaic['c'].text(x_pos, 0.95, f'Skew: {skew_value}', transform=mosaic['c'].transAxes, ha=ha, va='top')
-        
-        for key in mosaic:
-            if key != 'c':
-                for spine in mosaic[key].spines.values():
-                    spine.set_visible(False)
-                mosaic[key].tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
-        plt.show()
+            skew_value = df[var].skew().round(2)
+            pos = {True: (0.05, 'left'), False: (0.95, 'right')}
+            x_pos, ha = pos[skew_value < 0]
+            mosaic['c'].text(x_pos, 0.95, f'Skew: {skew_value}', transform=mosaic['c'].transAxes, ha=ha, va='top')
+            
+            for key in mosaic:
+                if key != 'c':
+                    for spine in mosaic[key].spines.values():
+                        spine.set_visible(False)
+                    mosaic[key].tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+            plt.show()
     corr_matrix = df[numeric_vars].corr()
-    sns.heatmap(corr_matrix, annot=True, cmap='coolwarm')
-    plt.show()
+    with plt.rc_context(rc=rcp):
+        plt.figure(figsize=(5/2.54, 5/2.54))
+        sns.heatmap(corr_matrix, annot=True, cmap='coolwarm')
+        plt.show()
 
 def group_info(df: pd.DataFrame, group_var: str, min_size: int = None):
     """
@@ -65,11 +50,10 @@ def group_info(df: pd.DataFrame, group_var: str, min_size: int = None):
     group_counts = df[group_var].value_counts()
     print(f"Unique {group_var}: {len(group_counts)}")
     print(f"Group sizes:\n{group_counts.describe()}")
-    if min_size:
-        valid_groups = group_counts[group_counts >= min_size].index
-        df = df[df[group_var].isin(valid_groups)]
+    if min_size is not None:
+        df = df.groupby(group_var).filter(lambda x: len(x) >= min_size)
         print(f"Remaining groups: {df[group_var].nunique()}")
-        return df
+    return df
 
 def clean_outliers(df: pd.DataFrame, vars_to_clean: list[str], method: str = 'zscore',
                    zscore_threshold: float = 3, iqr_factor: float = 1.5,
@@ -89,81 +73,80 @@ def clean_outliers(df: pd.DataFrame, vars_to_clean: list[str], method: str = 'zs
     Returns:
         DataFrame with outliers removed
     """
-    df_clean = df.copy().dropna(subset=vars_to_clean)  # Work on a copy, drop NaNs
-    
     if method == 'zscore':
-        z_scores = np.abs(zscore(df_clean[vars_to_clean]))
+        z_scores = np.abs(zscore(df[vars_to_clean]))
         mask = (z_scores < zscore_threshold).all(axis=1)
     
     elif method == 'iqr':
-        Q1 = df_clean[vars_to_clean].quantile(0.25)
-        Q3 = df_clean[vars_to_clean].quantile(0.75)
+        Q1 = df[vars_to_clean].quantile(0.25)
+        Q3 = df[vars_to_clean].quantile(0.75)
         IQR = Q3 - Q1
         lower_bound = Q1 - iqr_factor * IQR
         upper_bound = Q3 + iqr_factor * IQR
-        mask = ((df_clean[vars_to_clean] >= lower_bound) & 
-                (df_clean[vars_to_clean] <= upper_bound)).all(axis=1)
+        mask = ((df[vars_to_clean] >= lower_bound) & 
+                (df[vars_to_clean] <= upper_bound)).all(axis=1)
     
     elif method == 'lof':
         lof = LocalOutlierFactor(n_neighbors=lof_n_neighbors, contamination=lof_contamination)
-        outlier_labels = lof.fit_predict(df_clean[vars_to_clean])
+        outlier_labels = lof.fit_predict(df[vars_to_clean])
         mask = outlier_labels == 1  # 1 = inlier, -1 = outlier
     
     else:
         raise ValueError("Method must be 'zscore', 'iqr', or 'lof'")
     
-    # Filter and reset index
-    df_clean = df_clean[mask].reset_index(drop=True)
-    print(f"Rows after outlier removal: {len(df_clean)} (Removed: {len(df) - len(df_clean)})")
-    return df_clean
+    df = df[mask].reset_index(drop=True)
+    print(f"Rows after outlier removal: {len(df)}")
+    return df
 
-def plot_residuals(df, var, y_var, x_label, y_label):
+def plot_residuals(x, y, x_label, y_label):
     mosaic_str = "t.;cr"
-    mosaic = plt.figure(layout="constrained").subplot_mosaic(mosaic_str, height_ratios=[1, 5], width_ratios=[5, 1])
-    mosaic['c'].scatter(df[var], df[y_var])
+    with plt.rc_context(rc=rcp):
+        mosaic = plt.figure(figsize=(8/2.54, 8/2.54)).subplot_mosaic(mosaic_str, height_ratios=[1, 5], width_ratios=[5, 1])
+        mosaic['c'].scatter(x, y, fc='none', ec='tab:blue')
 
-    mosaic['t'].boxplot(df[var], orientation='horizontal', widths=0.7)
-    mosaic['r'].boxplot(df[y_var], widths=0.7)
+        mosaic['t'].boxplot(x, orientation='horizontal', widths=0.7)
+        mosaic['r'].boxplot(y, widths=0.7)
 
-    sns.regplot(data=df, x=var, y=y_var, ci=95, line_kws={'color': 'red'}, ax=mosaic['c'])
-    p_value = linregress(df[var], df[y_var])[3]
-    mosaic['c'].text(0.95, 0.95, f'p-value: {p_value:.3f}', transform=mosaic['c'].transAxes, ha='right', va='top')
+        sns.regplot(x=x, y=y, ci=95, line_kws={'color': 'red'}, ax=mosaic['c'])
+        p_value = linregress(x, y)[3]
+        mosaic['c'].text(0.95, 0.95, f'p-value: {p_value:.3f}', transform=mosaic['c'].transAxes, ha='right', va='top')
 
-    mosaic['c'].set_xlabel(x_label)
-    mosaic['c'].set_ylabel(y_label, rotation=0)
-    for key in mosaic:
-        if key != 'c':
-            for spine in mosaic[key].spines.values():
-                spine.set_visible(False)
-            mosaic[key].tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
-    plt.show()
+        mosaic['c'].set_xlabel(x_label)
+        mosaic['c'].set_ylabel(y_label, rotation=0)
+        for key in mosaic:
+            if key != 'c':
+                for spine in mosaic[key].spines.values():
+                    spine.set_visible(False)
+                mosaic[key].tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+        plt.show()
 
-def shap_plots(model, X: np.ndarray, var: str):
+def shap_plots(model, x: np.ndarray, var: str):
     """
     explain the model's predictions using SHAP
     summarize the effects of all the features
     """
     explainer = shap.TreeExplainer(model)
-    shap_values = explainer.shap_values(X)
-    shap.summary_plot(shap_values, X)
-    shap.summary_plot(shap_values, X, plot_type="bar")
-    shap.dependence_plot(var, shap_values, X)
+    shap_values = explainer.shap_values(x)
+    shap.summary_plot(shap_values, x)
+    shap.summary_plot(shap_values, x, plot_type="bar")
+    shap.dependence_plot(var, shap_values, x)
 
 def qq_plot(resid):
     """
     Normality of Residuals
     """
-    fig, ax = plt.subplots(figsize=(5/2.54, 5/2.54), layout='constrained')
-    sm.qqplot(resid, line='s', ax=ax)
-    ax.set_title('Q-Q Plot of Residuals')
-    plt.show()
+    with plt.rc_context(rc=rcp):
+        plt.figure(figsize=(5/2.54, 5/2.54), layout='constrained')
+        sm.qqplot(resid, line='s')
+        plt.title('Q-Q Plot of Residuals')
+        plt.show()
 
 def evaluate_metrics(y_obs, y_pred):
     metrics = {
         'MAE': mean_absolute_error(y_obs, y_pred),
         'MAPE': mean_absolute_percentage_error(y_obs, y_pred),
         'MSE': mean_squared_error(y_obs, y_pred),
-        'R²': r2_score(y_obs, y_pred),
+        'r2': r2_score(y_obs, y_pred),
         'r': pearsonr(y_obs, y_pred)[0]}
     metrics["RMSE"] = np.sqrt(metrics["MSE"])
     return metrics
@@ -179,20 +162,21 @@ def model_performance(y_tr_obs, y_tr_pred, y_te_obs, y_te_pred, var):
     metric_te = evaluate_metrics(y_te_obs, y_te_pred)
     print_metrics(metric_tr, metric_te)
 
-    plt.figure(figsize=(8/2.54, 8/2.54), layout='constrained')
-    plt.scatter(y_tr_obs, y_tr_pred, color='tab:blue',
-                label=f"Train (R² = {metric_tr['R²']:.3f}, r = {metric_tr['r']:.3f})")
-    plt.scatter(y_te_obs, y_te_pred, color='tab:orange',
-                label=f"Test (R² = {metric_te['R²']:.3f}, r = {metric_te['r']:.3f})")
-    plt.plot([0, 1], [0, 1], color='tab:red', linestyle='--',
-             label='Perfect Fit', transform=plt.gca().transAxes, zorder=3)
-    plt.xlabel(f"Observed {var}")
-    plt.ylabel(f"Predicted {var}")
-    plt.legend(loc='upper left', frameon=False)
-    plt.legend(loc='lower left', frameon=False, bbox_to_anchor=(0.0, 0.95), ncol=1)
-    plt.show()
+    with plt.rc_context(rc=rcp):
+        plt.figure(figsize=(8/2.54, 8/2.54))
+        plt.scatter(y_tr_obs, y_tr_pred, fc='none', ec='tab:blue',
+                    label=fr"Train ($R^2$ = {metric_tr['r2']:.3f}, r = {metric_tr['r']:.3f})")
+        plt.scatter(y_te_obs, y_te_pred, fc='none', ec='tab:orange',
+                    label=f"Test ($R^2$ = {metric_te['r2']:.3f}, r = {metric_te['r']:.3f})")
+        plt.plot([0, 1], [0, 1], color='tab:red', linestyle='--',
+                label='Perfect Fit', transform=plt.gca().transAxes, zorder=3)
+        plt.xlabel(f"Observed {var}")
+        plt.ylabel(f"Predicted {var}")
+        plt.legend(loc='upper left')
+        plt.legend(loc='lower left', bbox_to_anchor=(0.0, 0.95), ncol=1)
+        plt.show()
 
-def create_data(train_data, scalerx, encoderx, vary_param, vary_range, fixed_params):
+def create_data(train_data, transformer_x, vary_param, vary_range, fixed_params):
     """
     Create evaluation dataframe with one varying parameter and others fixed.
     
@@ -207,7 +191,7 @@ def create_data(train_data, scalerx, encoderx, vary_param, vary_range, fixed_par
     for param, value in fixed_params.items():
         df_eval[param] = value
     
-    return df_eval, scalerx.transform(df_eval)
+    return df_eval, transformer_x.transform(df_eval)
 
 # def best_fe_model(x, y):
 #         """
@@ -267,3 +251,39 @@ def create_data(train_data, scalerx, encoderx, vary_param, vary_range, fixed_par
 #                            scoring='neg_mean_squared_error', n_jobs=-1, n_iter=20).fit(x, y)
 #         fe_model, fe_model_params = opt.best_estimator_, opt.best_params_
 #         return 
+
+rcp = {
+    'font.family': 'Times New Roman',
+    'mathtext.fontset': 'custom',
+    'mathtext.rm': 'Times New Roman',
+    'mathtext.it': 'Times New Roman:italic',
+    'mathtext.bf': 'Times New Roman:bold',
+    'mathtext.default': 'regular',  # can be 'regular' 'it' etc
+    'font.size': 9,
+
+    'lines.linewidth': 0.5,
+    'lines.markersize': 3,
+
+    'boxplot.boxprops.linewidth': 0.5,
+    'boxplot.whiskerprops.linewidth': 0.5,
+    'boxplot.capprops.linewidth': 0.5,
+    'boxplot.flierprops.markersize': 3,
+    'boxplot.flierprops.markeredgewidth': 0.5,
+
+    'axes.titlesize': 'medium',
+    'axes.linewidth': 0.2,
+
+    'xtick.major.width': 0.2,
+    'ytick.major.width': 0.2,
+    'xtick.minor.width': 0.15,
+    'ytick.minor.width': 0.15,
+
+    'legend.framealpha': 1.0,
+    'legend.frameon': False,
+
+    'figure.dpi': 900,
+    'figure.figsize': (10/2.54, 8/2.54),
+    'figure.constrained_layout.use': True,
+
+    'patch.linewidth': 0.5,
+    }
