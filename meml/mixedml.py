@@ -25,17 +25,16 @@ class MEML:
         return self.fe_model.predict(x)
 
     def fit(self, x: np.ndarray, groups: np.ndarray, y: np.ndarray,
-            x_val: Optional[np.ndarray] = None, y_val: Optional[np.ndarray] = None, method: Optional[str] = None):
+            x_test: Optional[np.ndarray] = None, y_test: Optional[np.ndarray] = None, method: Optional[str] = None):
         """
         Fit the mixed effect model using Expectation-Maximization algorithm
         TODO: For now it considers one random effect and one response variable
             x : Explanatory covariates
             groups : grouping variable
-            z : Random effect covariates (e.g. unit array (n_obs, 1) for random intercept)
             y : Response variable
-            *_val : Respective validation inputs
+            *_val : Respective test inputs
         """
-        self._check_inputs(x, groups, y, x_val, y_val)
+        self._check_inputs(x, groups, y, x_test, y_test)
         self._initialize_em_algorithm(groups, y)
         pbar = tqdm(range(1, self.max_iter + 1), desc="MEML Training", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
         for _ in pbar:
@@ -51,8 +50,8 @@ class MEML:
             self.track_variables(gll)
 
             pbar_desc = f"MEML Training GLL: {gll:.4f}"
-            if x_val is not None:
-                mse_val = self._perform_validation(x_val, y_val)
+            if x_test is not None:
+                mse_val = self._perform_validation(x_test, y_test)
                 pbar_desc += f" MSE: {mse_val:.4f}"
             pbar.set_description(pbar_desc)
             if self._is_converged(gll):
@@ -62,17 +61,17 @@ class MEML:
         return self
     
     def _check_inputs(self, x: Optional[np.ndarray] = None, groups: Optional[np.ndarray] = None, y: Optional[np.ndarray] = None,
-                      x_val: Optional[np.ndarray] = None, y_val: Optional[np.ndarray] = None):
+                      x_test: Optional[np.ndarray] = None, y_test: Optional[np.ndarray] = None):
         if x is not None and (x.ndim != 2 or not np.issubdtype(x.dtype, np.floating)):
            raise ValueError("x must be 2D float")
         if groups is not None and groups.ndim != 1:
             raise ValueError("groups must be 1D")
         if y is not None and (y.ndim != 1 or not np.issubdtype(y.dtype, np.floating)):
             raise ValueError("y must be 1D float")
-        if x_val is not None and (x_val.ndim != 2 or not np.issubdtype(x_val.dtype, np.floating)):
-            raise ValueError("x_val must be 2D float")
-        if y_val is not None and (y_val.ndim != 1 or not np.issubdtype(y_val.dtype, np.floating)):
-            raise ValueError("y_val must be 1D float")
+        if x_test is not None and (x_test.ndim != 2 or not np.issubdtype(x_test.dtype, np.floating)):
+            raise ValueError("x_test must be 2D float")
+        if y_test is not None and (y_test.ndim != 1 or not np.issubdtype(y_test.dtype, np.floating)):
+            raise ValueError("y_test must be 1D float")
     
     def _initialize_em_algorithm(self, groups, y):
         """Initialize variables for the EM algorithm."""
@@ -171,9 +170,9 @@ class MEML:
         self.gll_history.append(gll)
         return self
     
-    def _perform_validation(self, x_val, y_val):
-        y_val_pred = self.predict(x_val)
-        mse_val = mean_squared_error(y_val, y_val_pred)
+    def _perform_validation(self, x_test, y_test):
+        y_val_pred = self.predict(x_test)
+        mse_val = mean_squared_error(y_test, y_val_pred)
         self.valid_history.append(mse_val)
         return mse_val
 

@@ -7,6 +7,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import shap
 import statsmodels.api as sm
+from sklearn.model_selection import RandomizedSearchCV, GridSearchCV
 
 def plot_data(df, y_var: str, numeric_vars: list[str]):
     """
@@ -176,7 +177,7 @@ def model_performance(y_tr_obs, y_tr_pred, y_te_obs, y_te_pred, var):
         plt.legend(loc='lower left', bbox_to_anchor=(0.0, 0.95), ncol=1)
         plt.show()
 
-def create_data(train_data, transformer_x, vary_param, vary_range, fixed_params):
+def create_data(columns, transformer_x, vary_param, vary_range, fixed_params):
     """
     Create evaluation dataframe with one varying parameter and others fixed.
     
@@ -185,72 +186,69 @@ def create_data(train_data, transformer_x, vary_param, vary_range, fixed_params)
     - vary_range: array-like, range of values for the varying parameter
     - fixed_params: dict, fixed parameter values
     """
-    df_eval = pd.DataFrame(columns=train_data.columns)
+    df_eval = pd.DataFrame(columns=columns)
     df_eval[vary_param] = vary_range
     
     for param, value in fixed_params.items():
         df_eval[param] = value
     
-    return df_eval, transformer_x.transform(df_eval)
+    return df_eval, transformer_x.transform(df_eval.to_numpy())
 
-# def best_fe_model(x, y):
-#         """
-#         Tune hyperparameters of the fixed effect regressor
-#         """
-#         fe_model_name = type(fe_model).__name__
-#         if fe_model_name == 'RandomForestRegressor':
-#             from scipy.stats import randint, uniform
-#             param_dist = {
-#                 'n_estimators': randint(5, 400),              # Number of trees in the forest
-#                 'max_depth': randint(2, 15),                  # Maximum depth of the trees
-#                 'min_samples_split': randint(2, 18),          # Minimum number of samples required to split an internal node
-#                 'min_samples_leaf': randint(1, 10),           # Minimum number of samples required to be at a leaf node
-#                 'max_samples': uniform(0.5, 0.4)              # Fraction of samples to draw from x to train each base estimator
-#             }
-#         elif fe_model_name == 'MLPRegressor':
-#             # param_dist = {
-#             #     'hidden_layer_sizes': [(5,), (8,), (12,), (18,), (25,), (50,)]}
-#             param_dist = {
-#                 'hidden_layer_sizes': [(5,), (10,), (5, 5), (5, 5, 5), (100, 100), (50, 50, 50)],
-#                 'activation': ['relu', 'tanh', 'logistic'],  # 'logistic' will be tested again here
-#                 'solver': ['adam', 'sgd', 'lbfgs'],
-#                 'learning_rate': ['constant', 'adaptive']}
-#         elif fe_model_name == 'CatBoostRegressor':
-#             param_dist = {
-#                 'iterations': (5, 300),
-#                 'learning_rate': (0.01, 0.5),
-#                 'depth': (2, 15),
-#                 'l2_leaf_reg': (1, 7),
-#                 'bagging_temperature': (0.5, 1.5)}
-#         elif fe_model_name == 'GradientBoostingRegressor':
-#             param_dist = {
-#                 'n_estimators': (5, 400),
-#                 'learning_rate': (0.01, 0.5),
-#                 'max_depth': (2, 15),
-#                 'min_samples_split': (2, 10),
-#                 'min_samples_leaf': (1, 8)}
-#         elif fe_model_name == 'xGBRegressor':
-#             param_dist = {
-#                 'n_estimators': (5, 400),
-#                 'max_depth': (2, 15),
-#                 'learning_rate': (0.001, 0.1),
-#                 'min_child_weight': (1, 5),
-#                 'subsample': (0.5, 0.9),
-#                 'colsample_bytree': (0.5, 0.9)}
-#         elif fe_model_name == 'LGBMRegressor':
-#             param_dist = {
-#                 'n_estimators': (5, 400),
-#                 'learning_rate': (0.001, 0.1),
-#                 'max_depth': (2, 15),
-#                 'min_child_samples': (5, 40),
-#                 'subsample': (0.7, 0.9),
-#                 'colsample_bytree': (0.6, 0.9)}
-#         else:
-#             raise ValueError("Unknown regressor for hyperparameter tuning.")
-#         opt = RandomizedSearchCV(fe_model, param_dist, cv=5,
-#                            scoring='neg_mean_squared_error', n_jobs=-1, n_iter=20).fit(x, y)
-#         fe_model, fe_model_params = opt.best_estimator_, opt.best_params_
-#         return 
+def best_fe_model(fe_model, x, y):
+        """
+        Tune hyperparameters of the fixed effect regressor
+        """
+        fe_model_name = type(fe_model).__name__
+        if fe_model_name == 'RandomForestRegressor':
+            from scipy.stats import randint, uniform
+            param_dist = {
+                'n_estimators': randint(5, 400),              # Number of trees in the forest
+                'max_depth': randint(2, 15),                  # Maximum depth of the trees
+                'min_samples_split': randint(2, 18),          # Minimum number of samples required to split an internal node
+                'min_samples_leaf': randint(1, 10),           # Minimum number of samples required to be at a leaf node
+                'max_samples': uniform(0.5, 0.4)              # Fraction of samples to draw from x to train each base estimator
+            }
+        elif fe_model_name == 'MLPRegressor':
+            param_dist = {
+                'hidden_layer_sizes': [(5,), (8,), (12,), (18,), (25,), (50,), (5, 5), (5, 5, 5), (100, 100), (50, 50, 50)],
+                'activation': ['relu', 'tanh', 'logistic'],
+                'solver': ['adam', 'sgd', 'lbfgs'],
+                'learning_rate': ['constant', 'adaptive']}
+        elif fe_model_name == 'CatBoostRegressor':
+            param_dist = {
+                'iterations': (5, 300),
+                'learning_rate': (0.01, 0.5),
+                'depth': (2, 15),
+                'l2_leaf_reg': (1, 7),
+                'bagging_temperature': (0.5, 1.5)}
+        elif fe_model_name == 'GradientBoostingRegressor':
+            param_dist = {
+                'n_estimators': (5, 400),
+                'learning_rate': (0.01, 0.5),
+                'max_depth': (2, 15),
+                'min_samples_split': (2, 10),
+                'min_samples_leaf': (1, 8)}
+        elif fe_model_name == 'xGBRegressor':
+            param_dist = {
+                'n_estimators': (5, 400),
+                'max_depth': (2, 15),
+                'learning_rate': (0.001, 0.1),
+                'min_child_weight': (1, 5),
+                'subsample': (0.5, 0.9),
+                'colsample_bytree': (0.5, 0.9)}
+        elif fe_model_name == 'LGBMRegressor':
+            param_dist = {
+                'n_estimators': (5, 400),
+                'learning_rate': (0.001, 0.1),
+                'max_depth': (2, 15),
+                'min_child_samples': (5, 40),
+                'subsample': (0.7, 0.9),
+                'colsample_bytree': (0.6, 0.9)}
+        else:
+            raise ValueError("Unknown regressor for hyperparameter tuning.")
+        opt = RandomizedSearchCV(fe_model, param_dist, cv=5, n_iter=100,
+                           scoring='neg_mean_squared_error', n_jobs=-1).fit(x, y)
+        return opt.best_estimator_, opt.best_params_
 
 rcp = {
     'font.family': 'Times New Roman',
