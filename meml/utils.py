@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from scipy.sparse import csr_matrix, hstack, vstack
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error, mean_absolute_percentage_error
 from scipy.stats import pearsonr, linregress, zscore
 from sklearn.neighbors import LocalOutlierFactor
@@ -285,3 +286,50 @@ rcp = {
 
     'patch.linewidth': 0.5,
     }
+
+def build_Z_k(df, group_col, covariates=None):
+    """
+    Build Z_k for grouping factor k efficiently.
+    Parameters:
+    - df: DataFrame with grouping column and optional covariates.
+    - group_col: Column name for grouping (e.g., 'group_1').
+    - covariates: List of column names for random effects covariates (None for intercept only).
+    Returns:
+    - Z_k: Sparse n x (o_k * q_k) matrix.
+    """
+    n = len(df)
+    levels = df[group_col].unique()
+    o_k = len(levels)
+    q_k = 1 if covariates is None else 1 + len(covariates)
+    
+    # Map levels to 0-based indices
+    level_map = {level: idx for idx, level in enumerate(levels)}
+    group_indices = df[group_col].map(level_map).values
+    
+    # Preallocate arrays for sparse matrix construction
+    nnz = n * q_k  # Number of non-zero elements (each row has q_k entries)
+    rows = np.zeros(nnz, dtype=int)
+    cols = np.zeros(nnz, dtype=int)
+    data = np.zeros(nnz, dtype=float)
+    
+    # Fill arrays
+    for i in range(n):
+        j = group_indices[i]  # Level index
+        base_idx = i * q_k    # Starting index in arrays for this observation
+        base_col = j * q_k    # Starting column in Z_k for this level
+        
+        # Intercept
+        rows[base_idx] = i
+        cols[base_idx] = base_col
+        data[base_idx] = 1.0
+        
+        # Slopes
+        if covariates:
+            for q, cov in enumerate(covariates, 1):
+                idx = base_idx + q
+                rows[idx] = i
+                cols[idx] = base_col + q
+                data[idx] = df[cov].iloc[i]
+    
+    # Construct sparse matrix
+    return csr_matrix((data, (rows, cols)), shape=(n, o_k * q_k))
