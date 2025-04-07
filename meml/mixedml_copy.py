@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import List, Optional, Dict
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.base import RegressorMixin
@@ -6,52 +6,70 @@ from matplotlib.ticker import MaxNLocator
 from sklearn.metrics import mean_squared_error
 from statsmodels.regression.mixed_linear_model import MixedLM
 from tqdm import tqdm
+from meml import utils
+from scipy import sparse
+from scipy.sparse import csr_matrix
+from scipy.sparse.linalg import spsolve, cg
 
-class MEML:
+class MEMLS:
     " Mixed effect regression model using any arbitrary fixed effect model "
     def __init__(self, fixed_effects_model: RegressorMixin, max_iter: Optional[int] = 10, gll_limit: Optional[float] = 0.001):
         self.fe_model = fixed_effects_model
         self.max_iter = max_iter
         self.gll_limit = gll_limit
 
-    def predict(self, x: np.ndarray) -> np.ndarray:
+        self.z: Dict[int, csr_matrix] = {}
+        self.b: Dict[int, np.ndarray] = {}
+        self.D: Dict[int, np.ndarray] = {}
+        self.o_k: Dict[int, int] = {}
+        self.sigma2: float = None
+        self.epsilon: np.ndarray = None
+        self.n_obs: int = None
+        self.D_history = []
+        self.sigma2_history = []
+        self.gll_history = []
+        self.valid_history = []
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
         """
         Predict using trained mixed effect model.
 
         Random effects are valuable for understanding group differences (e.g., how much variation is due to clusters vs. fixed effects).
         They are often reported for interpretation (e.g., variance components) but not used in prediction.
         """
-        self._check_inputs(x)
-        return self.fe_model.predict(x)
+        self._check_inputs(X)
+        return self.fe_model.predict(X)
 
-    def fit(self, x: np.ndarray, groups: np.ndarray, y: np.ndarray,
-            x_test: Optional[np.ndarray] = None, y_test: Optional[np.ndarray] = None, method: Optional[str] = None):
+    def fit(self, X: np.ndarray, groups: List[np.ndarray], y: np.ndarray, covariates: Optional[np.ndarray] = None,
+            X_test: Optional[np.ndarray] = None, y_test: Optional[np.ndarray] = None):
         """
         Fit the mixed effect model using Expectation-Maximization algorithm
         TODO: For now it considers one random effect and one response variable
-            x : Explanatory covariates
-            groups : grouping variable
-            y : Response variable
-            *_val : Respective test inputs
+        Parameters:
+        - X: 2D array (n, p) of fixed effect covariates.
+        - groups: List of 1D arrays (n,) for grouping factors.
+        - y: 1D array (n,) of response variable.
+        - covariates: 2D array (n, q) for random effect covariates (optional).
+        - X_test, y_test: Optional test data for validation.
+        
+        Returns:
+        - Self (fitted model).
         """
-        self._check_inputs(x, groups, y, x_test, y_test)
-        self._initialize_em_algorithm(groups, y)
+        self._check_inputs(X, groups, y, covariates, X_test, y_test)
+        self._initialize_em_algorithm(groups, y, covariates)
         pbar = tqdm(range(1, self.max_iter + 1), desc="MEML Training", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
         for _ in pbar:
             # Expectation step: updating fixed effects and estimating observations
-            y_fe = self.update_y_fe(y)
-            y_pred = self.fe_model.fit(x, y_fe).predict(x)
+            y_adj = self.adjust_y(y)
+            y_pred = self.fe_model.fit(X, y_adj).predict(X)
             # Maximization step: updating residual and variance components
-            if method == 'mixedlm':
-                self.update_residual_variance_mixedlm(y, groups, y_pred)
-            else:
-                self.update_residual_variance(y, y_pred)
-            gll = self.update_gll()
+            self.update_parameters(y, y_pred)
+            gll = self.update_gll(y, y_pred)
             self.track_variables(gll)
 
             pbar_desc = f"MEML Training GLL: {gll:.4f}"
-            if x_test is not None:
-                mse_val = self._perform_validation(x_test, y_test)
+            if X_test is not None:
+                mse_val = self._perform_validation(X_test, y_test)
                 pbar_desc += f" MSE: {mse_val:.4f}"
             pbar.set_description(pbar_desc)
             if self._is_converged(gll):
@@ -60,48 +78,42 @@ class MEML:
                 break
         return self
     
-    def _check_inputs(self, x: Optional[np.ndarray] = None, groups: Optional[np.ndarray] = None, y: Optional[np.ndarray] = None,
-                      x_test: Optional[np.ndarray] = None, y_test: Optional[np.ndarray] = None):
+    def _check_inputs(self, x: Optional[np.ndarray] = None, groups: Optional[List[np.ndarray]] = None, y: Optional[np.ndarray] = None,
+                      covariates: Optional[np.ndarray] = None, X_test: Optional[np.ndarray] = None, y_test: Optional[np.ndarray] = None):
         if x is not None and (x.ndim != 2 or not np.issubdtype(x.dtype, np.floating)):
-           raise ValueError("x must be 2D float")
-        if groups is not None and groups.ndim != 1:
-            raise ValueError("groups must be 1D")
+           raise ValueError("X must be 2D float")
+        if groups is not None and not isinstance(groups, (list, tuple)) and any(group.ndim != 1 for group in groups):
+            raise ValueError("groups must be a list or tuple of 1D arrays")
         if y is not None and (y.ndim != 1 or not np.issubdtype(y.dtype, np.floating)):
             raise ValueError("y must be 1D float")
-        if x_test is not None and (x_test.ndim != 2 or not np.issubdtype(x_test.dtype, np.floating)):
-            raise ValueError("x_test must be 2D float")
+        if covariates is not None and (covariates.ndim != 2 or not np.issubdtype(y.dtype, np.floating)):
+            raise ValueError("covariates must be 2D float")
+        if X_test is not None and (X_test.ndim != 2 or not np.issubdtype(X_test.dtype, np.floating)):
+            raise ValueError("X_test must be 2D float")
         if y_test is not None and (y_test.ndim != 1 or not np.issubdtype(y_test.dtype, np.floating)):
             raise ValueError("y_test must be 1D float")
     
-    def _initialize_em_algorithm(self, groups, y):
+    def _initialize_em_algorithm(self, groups, y, covariates):
         """Initialize variables for the EM algorithm."""
-        self.groups = groups
-        unique_groups = np.unique(groups)
-        self.n_groups = len(unique_groups)
         self.n_obs = len(y)
-        self.n_re = 1  #TODO Default: one random effect random intercept only
-        self.z = np.ones((self.n_obs, self.n_re))
-        self.group_indices = [np.where(groups == g)[0] for g in unique_groups]
-        self.resid_re = np.zeros((self.n_obs, self.n_re, 1))
-        self.resid_unexp = np.zeros_like(y)
-        self.var_re = np.ones((self.n_re, self.n_re))
-        self.var_unexp = 1.0
-        self.var_re_history = []
-        self.var_unexp_history = []
-        self.gll_history = []
-        self.valid_history = []
+        # Build z_k matrices
+        for k, group in enumerate(groups, 1):
+            self.z[k] = utils.build_z(group, covariates)
+            self.o_k[k] = len(np.unique(group))
+            self.b[k] = np.zeros(self.z[k].shape[1])
+            self.D[k] = 0.1 * sparse.eye(self.z[k].shape[1])
+        self.epsilon = np.zeros_like(y)
+        self.sigma2 = 0.1
         return self
 
-    def update_y_fe(self, y):
+    def adjust_y(self, y):
         """
-        Update the fixed effect residuals (observations - random effects)
+        Adjusted response (observations - all random effects)
         """
-        y_fe = y.copy()
-        for group in self.group_indices:
-            z_i = self.z[group]
-            re_i = self.resid_re[group[0]]  # RE is unique for each group
-            y_fe[group] -= (z_i @ re_i).ravel()
-        return y_fe
+        zb_sum = np.zeros(self.n_obs)
+        for k in self.z:
+            zb_sum += self.z[k] @ self.b[k]
+        return y - zb_sum
     
     def update_residual_variance_mixedlm(self, y, groups, y_pred):
         """
@@ -118,69 +130,65 @@ class MEML:
         self.var_unexp = result.scale
         return self
 
-    def update_residual_variance(self, y, y_pred):
+    def update_parameters(self, y, y_pred):
         """
         Update the residual and variance components using the EM algorithm
         """
-        var_re_sum = np.zeros_like(self.var_re)
-        var_unexp_sum = 0.0
-        for group in self.group_indices:
-            y_i = y[group]
-            z_i = self.z[group]
-            n_i = len(group)
-            ident_i = np.eye(n_i)
-            y_pred_i = y_pred[group]
-            # Use solver technique instead of explicit matrix inversion
-            V_i = z_i @ self.var_re @ z_i.T + self.var_unexp * ident_i
-            x = np.linalg.solve(V_i, y_i - y_pred_i)
-            # Compute random effect and unexplained residuals
-            re_i = self.var_re @ z_i.T @ x
-            eps_i = y_i - y_pred_i - z_i @ re_i
+        I_n = sparse.eye(self.n_obs, format='csc')
+        V = self.sigma2 * I_n
+        for k in self.z:
+            V += self.z[k] @ self.D[k] @ self.z[k].T
+        
+        V_inv_y_fx = spsolve(V, y - y_pred)
+        for k in self.z:
+            self.b[k] = self.D[k] @ self.z[k].T @ V_inv_y_fx
 
-            self.resid_re[group] = re_i
-            self.resid_unexp[group] = eps_i
+        zb_sum = np.zeros(self.n_obs)
+        for k in self.z:
+            zb_sum += self.z[k] @ self.b[k]
 
-            var_unexp_sum += (eps_i.T @ eps_i + self.var_unexp *
-                              (n_i - self.var_unexp * np.trace(np.linalg.solve(V_i, ident_i))))
-            var_re_sum += (re_i @ re_i.T +
-                                (self.var_re - self.var_re @ z_i.T @ np.linalg.solve(V_i, z_i @ self.var_re)))
+        self.epsilon = y - y_pred - zb_sum
 
-        self.var_re[...] = var_re_sum / self.n_groups
-        self.var_unexp = var_unexp_sum / self.n_obs
+        V_inv_trace = spsolve(V, I_n).diagonal().sum()
+        self.sigma2 = (1/self.n_obs) * (self.epsilon.T @ self.epsilon + self.sigma2 * (self.n_obs - self.sigma2 * V_inv_trace))
+
+        for k in self.z:
+            D_term = self.D[k] - self.D[k] @ self.z[k].T @ spsolve(V, self.z[k] @ self.D[k])
+            self.D[k] = (1/self.o_k[k]) * (np.outer(self.b[k], self.b[k]) + D_term)
         return self
 
-    def update_gll(self):
+    def update_gll(self, y, y_pred):
         """
-        Updat the (negative) gll based on variance and residual components
+        Updat the log likelihood
         """
-        gll_sum = 0.0
-        logdet_var_re_total = np.linalg.slogdet(self.var_re)[1] * self.n_groups  # using total to avoid re-calculating in the loop
-        logdet_var_unexp_total = np.log(self.var_unexp) * self.n_obs  # scaled identity matrix: easy inversion and determinant
-        for group in self.group_indices:
-            re_i = self.resid_re[group[0]]
-            eps_i = self.resid_unexp[group]
-            eps_term = (eps_i.T @ eps_i) / self.var_unexp
-            re_term = (re_i.T @ np.linalg.solve(self.var_re, re_i)).item()
-            gll_sum += eps_term + re_term
-        return gll_sum + logdet_var_re_total + logdet_var_unexp_total + np.log(2 * np.pi) * (self.n_obs + self.n_re)  # -2 * log-likelihood
+        residuals = y - y_pred
+        V = self.sigma2 * sparse.eye(self.n_obs, format='csc')
+        for k in self.z:
+            V += self.z[k] @ self.D[k] @ self.z[k].T
+        # Using LU decomposition (more efficient for sparse matrices)
+        lu = sparse.linalg.splu(V)
+        # Get log determinant from the diagonal elements of U
+        log_det_V = np.sum(np.log(np.abs(lu.U.diagonal())))
+        
+        # Solve the linear system V^-1 * residuals efficiently
+        V_inv_residuals = spsolve(V, residuals)
+        return -0.5 * (self.n_obs * np.log(2 * np.pi) + log_det_V + residuals.T @ V_inv_residuals)  # should we use this or complete-data log-likelihood?
 
     def track_variables(self, gll):
-        self.var_re_history.append(self.var_re.copy())
-        self.var_unexp_history.append(self.var_unexp)
+        self.D_history.append(self.D.copy())
+        self.sigma2_history.append(self.sigma2)
         self.gll_history.append(gll)
         return self
     
-    def _perform_validation(self, x_test, y_test):
-        y_val_pred = self.predict(x_test)
+    def _perform_validation(self, X_test, y_test):
+        y_val_pred = self.predict(X_test)
         mse_val = mean_squared_error(y_test, y_val_pred)
         self.valid_history.append(mse_val)
         return mse_val
 
     def _is_converged(self, gll) -> bool:
         if self.gll_limit and len(self.gll_history) > 1:
-            err = np.abs((gll - self.gll_history[-2]) / self.gll_history[-2])
-            if err <= self.gll_limit:
-                return True
+            return np.abs((gll - self.gll_history[-2]) / self.gll_history[-2]) <= self.gll_limit
         return False
 
     def summary(self):
@@ -227,27 +235,27 @@ class MEML:
             axes[1].set_xlabel("Iteration")
 
             # Fixed effect metrics
-            axes[2].plot(self.var_unexp_history, label="Unexplained variance", marker='o')
+            axes[2].plot(self.sigma2_history, label="Unexplained variance", marker='o')
             axes[2].set_ylabel("Unexplained variance")
             axes[2].set_xlabel("Iteration")
-            axes[2].text(0.95, 0.95, fr'$\mathregular{{\sigma}}$ = {self.var_unexp_history[-1]:.2f}', transform=axes[2].transAxes, va='top', ha='right')
+            axes[2].text(0.95, 0.95, fr'$\mathregular{{\sigma}}$ = {self.sigma2_history[-1]:.2f}', transform=axes[2].transAxes, va='top', ha='right')
 
             # Random effect metrics
-            det_re_history = [np.linalg.det(x) for x in self.var_re_history]
-            trace_re_history = [np.trace(x) for x in self.var_re_history]
+            det_re_history = [np.linalg.det(x[0]) for x in self.D_history]
+            trace_re_history = [np.trace(x[0]) for x in self.D_history]
             axes[3].plot(det_re_history, label="|Random effect|", marker='o', zorder=2)
             axes[3].plot(trace_re_history, label="trace(Random effect)", marker='o', zorder=1)
             axes[3].set_ylabel("Random effect variance")
             axes[3].set_xlabel("Iteration")
-            axes[3].text(0.95, 0.95, fr'$\mathregular{{\tau}}$ = {self.var_re_history[-1].item():.2f}', transform=axes[3].transAxes, va='top', ha='right')
+            axes[3].text(0.95, 0.95, fr'$\mathregular{{\tau}}$ = {self.D_history[-1].item():.2f}', transform=axes[3].transAxes, va='top', ha='right')
 
             # Unexplained residuals distribution
-            axes[4].hist(self.resid_unexp)
+            axes[4].hist(self.epsilon)
             axes[4].set_ylabel('Frequency')
             axes[4].set_xlabel("Unexplained residual")
 
             # Random effect residuals distribution
-            axes[5].hist(self.resid_re.ravel())
+            axes[5].hist(self.b[0].ravel())  # only first group for now
             axes[5].set_ylabel('Frequency')
             axes[5].set_xlabel("Random effect residual")
             for ax in axes:

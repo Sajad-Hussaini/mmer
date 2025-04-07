@@ -287,36 +287,35 @@ rcp = {
     'patch.linewidth': 0.5,
     }
 
-def build_Z_k(df, group_col, covariates=None):
+def build_z(group: np.ndarray, covariates: np.ndarray = None):
     """
-    Build Z_k for grouping factor k efficiently.
+    Build random effect design matrix Z_k for a grouping factor.
+    
     Parameters:
-    - df: DataFrame with grouping column and optional covariates.
-    - group_col: Column name for grouping (e.g., 'group_1').
-    - covariates: List of column names for random effects covariates (None for intercept only).
+    - group: 1D array of shape (n,) with grouping factor levels (e.g., Earthquake IDs).
+    - covariates: 2D array of shape (n, q) for random effect covariates (None for intercept only).
+    
     Returns:
-    - Z_k: Sparse n x (o_k * q_k) matrix.
+    - Z_k: Sparse matrix of shape (n, o_k * q_k), where o_k is number of levels, q_k is number of effects.
     """
-    n = len(df)
-    levels = df[group_col].unique()
+    n = len(group)
+    levels = np.unique(group)
     o_k = len(levels)
-    q_k = 1 if covariates is None else 1 + len(covariates)
+    q_k = 1 if covariates is None else 1 + covariates.shape[1]
     
     # Map levels to 0-based indices
     level_map = {level: idx for idx, level in enumerate(levels)}
-    group_indices = df[group_col].map(level_map).values
+    level_indices = np.array([level_map[level] for level in group])
     
-    # Preallocate arrays for sparse matrix construction
-    nnz = n * q_k  # Number of non-zero elements (each row has q_k entries)
+    # Preallocate sparse matrix arrays
+    nnz = n * q_k  # Number of non-zero elements
     rows = np.zeros(nnz, dtype=int)
     cols = np.zeros(nnz, dtype=int)
     data = np.zeros(nnz, dtype=float)
-    
-    # Fill arrays
     for i in range(n):
-        j = group_indices[i]  # Level index
-        base_idx = i * q_k    # Starting index in arrays for this observation
-        base_col = j * q_k    # Starting column in Z_k for this level
+        j = level_indices[i]  # Level index
+        base_idx = i * q_k    # Starting index in sparse arrays
+        base_col = j * q_k    # Starting column in Z_k
         
         # Intercept
         rows[base_idx] = i
@@ -324,12 +323,10 @@ def build_Z_k(df, group_col, covariates=None):
         data[base_idx] = 1.0
         
         # Slopes
-        if covariates:
-            for q, cov in enumerate(covariates, 1):
-                idx = base_idx + q
+        if covariates is not None:
+            for q in range(covariates.shape[1]):
+                idx = base_idx + (q + 1)
                 rows[idx] = i
-                cols[idx] = base_col + q
-                data[idx] = df[cov].iloc[i]
-    
-    # Construct sparse matrix
+                cols[idx] = base_col + (q + 1)
+                data[idx] = covariates[i, q]
     return csr_matrix((data, (rows, cols)), shape=(n, o_k * q_k))
