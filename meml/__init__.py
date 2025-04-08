@@ -1,3 +1,3 @@
 from .mixedml import MEML
-from .mixedml_copy import MEMLS
+from .mixedmodel import MEMLS
 from . import utils

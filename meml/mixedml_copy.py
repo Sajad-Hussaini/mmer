@@ -9,10 +9,10 @@ from tqdm import tqdm
 from meml import utils
 from scipy import sparse
 from scipy.sparse import csr_matrix
-from scipy.sparse.linalg import spsolve, cg
+from scipy.sparse.linalg import spsolve, splu
 
 class MEMLS:
-    " Mixed effect regression model using any arbitrary fixed effect model "
+    " Mixed effect regression model using any arbitrary fixed effect model with multiple random effects and multiple grouping factors "
     def __init__(self, fixed_effects_model: RegressorMixin, max_iter: Optional[int] = 10, gll_limit: Optional[float] = 0.001):
         self.fe_model = fixed_effects_model
         self.max_iter = max_iter
@@ -21,11 +21,13 @@ class MEMLS:
         self.z: Dict[int, csr_matrix] = {}
         self.b: Dict[int, np.ndarray] = {}
         self.D: Dict[int, np.ndarray] = {}
+        self.Sigma: Dict[int, np.ndarray] = {}
         self.o_k: Dict[int, int] = {}
         self.sigma2: float = None
         self.epsilon: np.ndarray = None
         self.n_obs: int = None
         self.D_history = []
+        self.Sigma_history = []
         self.sigma2_history = []
         self.gll_history = []
         self.valid_history = []
@@ -101,9 +103,14 @@ class MEMLS:
             self.z[k] = utils.build_z(group, covariates)
             self.o_k[k] = len(np.unique(group))
             self.b[k] = np.zeros(self.z[k].shape[1])
-            self.D[k] = 0.1 * sparse.eye(self.z[k].shape[1])
+            q_k = self.z[k].shape[1] // self.o_k[k]  # Random effects per level
+            self.Sigma[k] = 0.1 * np.eye(q_k)  # (q_k, q_k) covariance per level
+            # self.D[k] = 0.1 * np.eye(self.z[k].shape[1])
         self.epsilon = np.zeros_like(y)
         self.sigma2 = 0.1
+        # f_hat = self.fe_model.fit(X, y).predict(X)
+        # self.epsilon = y - f_hat
+        # self.sigma2 = np.var(self.epsilon) / (len(groups) + 1)
         return self
 
     def adjust_y(self, y):
@@ -137,11 +144,15 @@ class MEMLS:
         I_n = sparse.eye(self.n_obs, format='csc')
         V = self.sigma2 * I_n
         for k in self.z:
-            V += self.z[k] @ self.D[k] @ self.z[k].T
-        
+            # V += self.z[k] @ self.D[k] @ self.z[k].T
+            D_k = sparse.kron(sparse.eye(self.o_k[k], format='csc'), self.Sigma[k])
+            V += self.z[k] @ D_k @ self.z[k].T
+        V = sparse.csc_matrix(V)  # Ensure V is in CSC format for efficient solving
         V_inv_y_fx = spsolve(V, y - y_pred)
         for k in self.z:
-            self.b[k] = self.D[k] @ self.z[k].T @ V_inv_y_fx
+            # self.b[k] = self.D[k] @ self.z[k].T @ V_inv_y_fx
+            D_k = sparse.kron(sparse.eye(self.o_k[k], format='csc'), self.Sigma[k])
+            self.b[k] = D_k @ self.z[k].T @ V_inv_y_fx
 
         zb_sum = np.zeros(self.n_obs)
         for k in self.z:
@@ -153,8 +164,30 @@ class MEMLS:
         self.sigma2 = (1/self.n_obs) * (self.epsilon.T @ self.epsilon + self.sigma2 * (self.n_obs - self.sigma2 * V_inv_trace))
 
         for k in self.z:
-            D_term = self.D[k] - self.D[k] @ self.z[k].T @ spsolve(V, self.z[k] @ self.D[k])
-            self.D[k] = (1/self.o_k[k]) * (np.outer(self.b[k], self.b[k]) + D_term)
+            # D_term = self.D[k] - self.D[k] @ self.z[k].T @ spsolve(V, self.z[k] @ self.D[k])
+            # self.D[k] = (1/self.o_k[k]) * (np.outer(self.b[k], self.b[k]) + D_term)
+
+            # Update Sigma_k (q_k x q_k)
+            q_k = self.z[k].shape[1] // self.o_k[k]
+            bk_reshaped = self.b[k].reshape(self.o_k[k], q_k)  # (o_k, q_k)
+            # Compute sum of b_ki b_ki^T
+            Sigma_bb = np.zeros((q_k, q_k))
+            for i in range(self.o_k[k]):
+                Sigma_bb += np.outer(bk_reshaped[i], bk_reshaped[i])
+            
+            # Compute Z_k^T V^{-1} Z_k
+            Zk_Vinv_Zk = self.z[k].T @ spsolve(V, self.z[k])  # Shape: (o_k*q_k, o_k*q_k)
+            
+            # Compute correction term by averaging over levels
+            D_term_sum = np.zeros((q_k, q_k))
+            for i in range(self.o_k[k]):
+                start = i * q_k
+                end = (i + 1) * q_k
+                block = Zk_Vinv_Zk[start:end, start:end]  # Extract diagonal block
+                D_term_sum += self.Sigma[k] - self.Sigma[k] @ block @ self.Sigma[k]
+            
+            # Update Sigma_k
+            self.Sigma[k] = (1 / self.o_k[k]) * (Sigma_bb + D_term_sum)
         return self
 
     def update_gll(self, y, y_pred):
@@ -164,7 +197,10 @@ class MEMLS:
         residuals = y - y_pred
         V = self.sigma2 * sparse.eye(self.n_obs, format='csc')
         for k in self.z:
-            V += self.z[k] @ self.D[k] @ self.z[k].T
+            # V += self.z[k] @ self.D[k] @ self.z[k].T
+            D_k = sparse.kron(sparse.eye(self.o_k[k], format='csc'), self.Sigma[k])
+            V += self.z[k] @ D_k @ self.z[k].T
+        V = sparse.csc_matrix(V)  # Ensure V is in CSC format for efficient solving
         # Using LU decomposition (more efficient for sparse matrices)
         lu = sparse.linalg.splu(V)
         # Get log determinant from the diagonal elements of U
@@ -175,7 +211,8 @@ class MEMLS:
         return -0.5 * (self.n_obs * np.log(2 * np.pi) + log_det_V + residuals.T @ V_inv_residuals)  # should we use this or complete-data log-likelihood?
 
     def track_variables(self, gll):
-        self.D_history.append(self.D.copy())
+        # self.D_history.append(self.D.copy())
+        self.Sigma_history.append(self.Sigma.copy())
         self.sigma2_history.append(self.sigma2)
         self.gll_history.append(gll)
         return self
@@ -241,13 +278,13 @@ class MEMLS:
             axes[2].text(0.95, 0.95, fr'$\mathregular{{\sigma}}$ = {self.sigma2_history[-1]:.2f}', transform=axes[2].transAxes, va='top', ha='right')
 
             # Random effect metrics
-            det_re_history = [np.linalg.det(x[0]) for x in self.D_history]
-            trace_re_history = [np.trace(x[0]) for x in self.D_history]
+            det_re_history = [np.linalg.det(x[1]) for x in self.Sigma_history]
+            trace_re_history = [np.trace(x[1]) for x in self.Sigma_history]
             axes[3].plot(det_re_history, label="|Random effect|", marker='o', zorder=2)
             axes[3].plot(trace_re_history, label="trace(Random effect)", marker='o', zorder=1)
             axes[3].set_ylabel("Random effect variance")
             axes[3].set_xlabel("Iteration")
-            axes[3].text(0.95, 0.95, fr'$\mathregular{{\tau}}$ = {self.D_history[-1].item():.2f}', transform=axes[3].transAxes, va='top', ha='right')
+            axes[3].text(0.95, 0.95, fr'$\mathregular{{\tau}}$ = {self.Sigma_history[-1][1].item():.2f}', transform=axes[3].transAxes, va='top', ha='right')
 
             # Unexplained residuals distribution
             axes[4].hist(self.epsilon)
@@ -255,7 +292,7 @@ class MEMLS:
             axes[4].set_xlabel("Unexplained residual")
 
             # Random effect residuals distribution
-            axes[5].hist(self.b[0].ravel())  # only first group for now
+            axes[5].hist(self.b[1].ravel())  # only first group for now
             axes[5].set_ylabel('Frequency')
             axes[5].set_xlabel("Random effect residual")
             for ax in axes:

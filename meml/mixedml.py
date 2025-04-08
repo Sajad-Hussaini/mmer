@@ -55,7 +55,7 @@ class MEML:
                 pbar_desc += f" MSE: {mse_val:.4f}"
             pbar.set_description(pbar_desc)
             if self._is_converged(gll):
-                pbar_desc = f"MEML Converged GLL: {gll:.4f}"
+                pbar_desc = f"MEML Converged GLL: {gll:.4f}, Elapsed: {pbar.format_dict['elapsed']:.1f}s"
                 pbar.set_description(pbar_desc)
                 break
         return self
