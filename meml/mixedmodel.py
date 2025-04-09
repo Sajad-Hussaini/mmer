@@ -1,13 +1,13 @@
-from typing import List, Optional, Dict
+from typing import Optional, Dict
 import numpy as np
+from scipy import sparse
 import matplotlib.pyplot as plt
 from sklearn.base import RegressorMixin
 from matplotlib.ticker import MaxNLocator
 from sklearn.metrics import mean_squared_error
 from tqdm import tqdm
-from scipy import sparse
 
-class MEMLS:
+class MEML:
     """
     Mixed Effect Regression Model
     This class implements a Mixed Effect Regression Model using the Expectation-Maximization (EM) algorithm. 
@@ -128,7 +128,7 @@ class MEMLS:
         self.zb_sum.fill(0.0)
         for k in self.Z:
             re_contribution = (self.Z[k].T @ res_map).reshape(self.o[k], self.q[k])
-            self.b[k] = (re_contribution @ self.tau[k]).ravel()  #TODO effcient but check for multiple random effects intercept and slope
+            self.b[k] = (re_contribution @ self.tau[k]).ravel()
             self.zb_sum += self.Z[k] @ self.b[k]
 
         np.subtract(y, fX, out=self.eps)
@@ -139,22 +139,11 @@ class MEMLS:
 
         for k in self.Z:
             fisher_term_re = self.Z[k].T @ lu.solve(self.Z[k].toarray())
-            
-            fisher_term_rex = fisher_term_re.reshape(self.o[k], self.q[k], self.o[k], self.q[k])
-            diag_blocks_sum = np.einsum('ijil->jl', fisher_term_rex)
-            tau_correctionx = self.o[k] * self.tau[k] - self.tau[k] @ diag_blocks_sum @ self.tau[k]
-
+            fisher_term_re = fisher_term_re.reshape(self.o[k], self.q[k], self.o[k], self.q[k])
+            diag_blocks_sum = np.einsum('ijil->jl', fisher_term_re)
+            tau_correction = self.o[k] * self.tau[k] - self.tau[k] @ diag_blocks_sum @ self.tau[k]
             bk_reshaped = self.b[k].reshape(self.o[k], self.q[k])
-            tau_bb = bk_reshaped.T @ bk_reshaped  # Sum of outer products
-
-            # Compute correction term by averaging over levels
-            tau_correction = np.zeros((self.q[k], self.q[k]))
-            for i in range(self.o[k]):
-                start = i * self.q[k]
-                end = (i + 1) * self.q[k]
-                block = fisher_term_re[start:end, start:end]  # Extract diagonal block
-                tau_correction += self.tau[k] - self.tau[k] @ block @ self.tau[k]
-
+            tau_bb = bk_reshaped.T @ bk_reshaped
             self.tau[k] = (tau_bb + tau_correction) / self.o[k]
         return self
 
@@ -167,12 +156,10 @@ class MEMLS:
         for k in self.Z:
             D_k = sparse.kron(sparse.eye(self.o[k]), self.tau[k], format='csr')
             V += self.Z[k] @ D_k @ self.Z[k].T
-        # Using LU decomposition (more efficient for sparse matrices)
         lu = sparse.linalg.splu(V)
         # Get log determinant from the diagonal elements of U
         log_det_V = np.sum(np.log(np.abs(lu.U.diagonal())))
         res_map = lu.solve(residuals)
-        # marginal log likelihood (close to zero is perfect fit) TODO: should we use this or complete-data log-likelihood?
         return -(self.n * np.log(2 * np.pi) + log_det_V + residuals.T @ res_map) / 2
 
     def track_variables(self, gll):
@@ -211,7 +198,6 @@ class MEMLS:
         level_map = {level: idx for idx, level in enumerate(levels)}
         level_indices = np.array([level_map[level] for level in group])
         
-        # Preallocate sparse matrix arrays
         nnz = self.n * q  # Number of non-zero elements
         rows = np.zeros(nnz, dtype=int)
         cols = np.zeros(nnz, dtype=int)

@@ -1,3 +1,2 @@
-from .mixedml import MEML
-from .mixedmodel import MEMLS
+from .mixedmodel import MEML
 from . import utils
