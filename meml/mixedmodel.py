@@ -220,6 +220,11 @@ class MEML:
                     cols[idx] = base_col + (rsc_idx + 1)
                     data[idx] = random_slope_covariates[i, rsc_idx]
         return sparse.csr_matrix((data, (rows, cols)), shape=(self.n, o * q)), o, q
+    
+    def get_individual_random_effects(self, k=0):
+        b_reshaped = self.b[k].reshape(self.o[k], self.q[k])
+        level_indices = (self.Z[k][:, ::self.q[k]].toarray() == 1).argmax(axis=1)
+        return b_reshaped[level_indices]
 
     def summary(self):
         """
