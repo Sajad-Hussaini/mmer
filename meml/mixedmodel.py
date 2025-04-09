@@ -32,7 +32,6 @@ class MEMLS:
         self.eps: np.ndarray = None
         self.n: int = None
 
-        self.V: sparse.csc_matrix = None
         self.I_n: sparse.csc_matrix = None
         self.zb_sum: np.ndarray = None
 
@@ -42,14 +41,14 @@ class MEMLS:
         self.valid_history = []
 
     def predict(self, X: np.ndarray) -> np.ndarray:
-        " Predict using trained mixed effect model."
+        " Predict using trained fixed effect term of the mixed effect model."
         self._check_inputs(X)
         return self.fe_model.predict(X)
 
-    def fit(self, X: np.ndarray, y: np.ndarray, groups: List[np.ndarray], random_slope_covariates: Optional[np.ndarray] = None,
+    def fit(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, random_slope_covariates: Optional[np.ndarray] = None,
             X_test: Optional[np.ndarray] = None, y_test: Optional[np.ndarray] = None):
         """
-        Fit the mixed effect model using Expectation-Maximization algorithm
+        Fit the mixed effect model using Expectation-Maximization algorithm.
         Parameters:
         - X: 2D array (n, p) of fixed effect covariates.
         - y: 1D array (n,) of response variable.
@@ -61,7 +60,7 @@ class MEMLS:
         - Self (fitted model).
         """
         self._check_inputs(X, y, groups, random_slope_covariates, X_test, y_test)
-        self._initialize_EM(y, groups, random_slope_covariates)
+        self._initialize_EM(groups, random_slope_covariates)
         pbar = tqdm(range(1, self.max_iter + 1), desc="MEML Training", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
         for _ in pbar:
             y_adj = self.adjust_y(y)
@@ -81,13 +80,13 @@ class MEMLS:
                 break
         return self
     
-    def _check_inputs(self, X: Optional[np.ndarray] = None, y: Optional[np.ndarray] = None, groups: Optional[List[np.ndarray]] = None,
+    def _check_inputs(self, X: Optional[np.ndarray] = None, y: Optional[np.ndarray] = None, groups: Optional[np.ndarray] = None,
                       random_slope_covariates: Optional[np.ndarray] = None, X_test: Optional[np.ndarray] = None, y_test: Optional[np.ndarray] = None):
         " Validate input dimensions and types. "
         if X is not None and (X.ndim != 2 or not np.issubdtype(X.dtype, np.floating)):
            raise ValueError("X must be 2D float")
-        if groups is not None and not isinstance(groups, (list, tuple)) and any(group.ndim != 1 for group in groups):
-            raise ValueError("groups must be a list or tuple of 1D arrays")
+        if groups is not None and groups.ndim != 2:
+            raise ValueError("groups must be a 2D objects")
         if y is not None and (y.ndim != 1 or not np.issubdtype(y.dtype, np.floating)):
             raise ValueError("y must be 1D float")
         if random_slope_covariates is not None and (random_slope_covariates.ndim != 2 or not np.issubdtype(y.dtype, np.floating)):
@@ -97,19 +96,17 @@ class MEMLS:
         if y_test is not None and (y_test.ndim != 1 or not np.issubdtype(y_test.dtype, np.floating)):
             raise ValueError("y_test must be 1D float")
     
-    def _initialize_EM(self, y, groups, random_slope_covariates):
+    def _initialize_EM(self, groups, random_slope_covariates):
         """Initialize variables for the EM algorithm."""
-        self.n = len(y)
-        for k, group in enumerate(groups):
-            self.Z[k], self.o[k], self.q[k] = self.design_Z(group, random_slope_covariates)
+        self.n = groups.shape[0]
+        for k in range(groups.shape[1]):
+            self.Z[k], self.o[k], self.q[k] = self.design_Z(groups[:, k], random_slope_covariates)
             self.b[k] = np.zeros(self.o[k] * self.q[k])
             self.tau[k] = 0.1 * np.eye(self.q[k])
         self.eps = np.zeros(self.n)
         self.sigma = 0.1
-
         self.zb_sum = np.zeros(self.n)
         self.I_n = sparse.eye(self.n, format='csc')
-        self.V = self.sigma * self.I_n
         return self
 
     def adjust_y(self, y):
@@ -123,31 +120,35 @@ class MEMLS:
         " Update the residual and variance components using the EM algorithm. "
         V = self.sigma * self.I_n
         for k in self.Z:
-            D_k = sparse.kron(sparse.eye(self.o[k], format='csc'), self.tau[k])
+            D_k = sparse.kron(sparse.eye(self.o[k]), self.tau[k], format='csr')
             V += self.Z[k] @ D_k @ self.Z[k].T
-        V = sparse.csc_matrix(V)
         lu = sparse.linalg.splu(V)
         res_map = lu.solve(y - fX)
-        # res_map = spsolve(V, y - fX)
-
+        # TODO should we fit fe_model again?
         self.zb_sum.fill(0.0)
         for k in self.Z:
             re_contribution = (self.Z[k].T @ res_map).reshape(self.o[k], self.q[k])
-            self.b[k] = np.concatenate([self.tau[k] @ re_contribution[i] for i in range(self.o[k])])
+            self.b[k] = (re_contribution @ self.tau[k]).ravel()  #TODO effcient but check for multiple random effects intercept and slope
             self.zb_sum += self.Z[k] @ self.b[k]
 
         np.subtract(y, fX, out=self.eps)
         np.subtract(self.eps, self.zb_sum, out=self.eps)
 
-        V_inv_trace = sparse.linalg.spsolve(V, self.I_n).diagonal().sum()
+        V_inv_trace = lu.solve(self.I_n.toarray()).diagonal().sum()
         self.sigma = (self.eps.T @ self.eps + self.sigma * (self.n - self.sigma * V_inv_trace)) / self.n
 
         for k in self.Z:
-            fisher_term_re = self.Z[k].T @ sparse.linalg.spsolve(V, self.Z[k].tocsc())
+            fisher_term_re = self.Z[k].T @ lu.solve(self.Z[k].toarray())
+            
+            fisher_term_rex = fisher_term_re.reshape(self.o[k], self.q[k], self.o[k], self.q[k])
+            diag_blocks_sum = np.einsum('ijil->jl', fisher_term_rex)
+            tau_correctionx = self.o[k] * self.tau[k] - self.tau[k] @ diag_blocks_sum @ self.tau[k]
+
             bk_reshaped = self.b[k].reshape(self.o[k], self.q[k])
             tau_bb = bk_reshaped.T @ bk_reshaped  # Sum of outer products
-            tau_correction = np.zeros((self.q[k], self.q[k]))
+
             # Compute correction term by averaging over levels
+            tau_correction = np.zeros((self.q[k], self.q[k]))
             for i in range(self.o[k]):
                 start = i * self.q[k]
                 end = (i + 1) * self.q[k]
@@ -164,9 +165,8 @@ class MEMLS:
         residuals = y - fX
         V = self.sigma * self.I_n
         for k in self.Z:
-            D_k = sparse.kron(sparse.eye(self.o[k], format='csc'), self.tau[k])
+            D_k = sparse.kron(sparse.eye(self.o[k]), self.tau[k], format='csr')
             V += self.Z[k] @ D_k @ self.Z[k].T
-        V = sparse.csc_matrix(V)
         # Using LU decomposition (more efficient for sparse matrices)
         lu = sparse.linalg.splu(V)
         # Get log determinant from the diagonal elements of U
