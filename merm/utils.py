@@ -10,6 +10,34 @@ import shap
 import statsmodels.api as sm
 from sklearn.model_selection import RandomizedSearchCV, GridSearchCV
 
+rcp = {
+    'font.family': 'Times New Roman',
+    'mathtext.fontset': 'custom',
+    'mathtext.rm': 'Times New Roman',
+    'mathtext.it': 'Times New Roman:italic',
+    'mathtext.bf': 'Times New Roman:bold',
+    'font.size': 9,
+
+    'lines.linewidth': 0.5,
+
+    'axes.titlesize': 'medium',
+    'axes.linewidth': 0.2,
+
+    'xtick.major.width': 0.2,
+    'ytick.major.width': 0.2,
+    'xtick.minor.width': 0.15,
+    'ytick.minor.width': 0.15,
+
+    'legend.framealpha': 1.0,
+    'legend.frameon': False,
+
+    'figure.dpi': 900,
+    'figure.figsize': (10/2.54, 8/2.54),
+    'figure.constrained_layout.use': True,
+
+    'patch.linewidth': 0.5,
+    }
+
 def plot_data(df, y_var: str, numeric_vars: list[str]):
     """
     Explore the distribution of numeric variables and the response variable.
