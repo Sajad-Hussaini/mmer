@@ -1,153 +1,110 @@
 import numpy as np
 import pandas as pd
-from scipy.sparse import csr_matrix, hstack, vstack
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error, mean_absolute_percentage_error
-from scipy.stats import pearsonr, linregress, zscore
-from sklearn.neighbors import LocalOutlierFactor
+from scipy import stats
 import seaborn as sns
 import matplotlib.pyplot as plt
 import shap
 import statsmodels.api as sm
 from sklearn.model_selection import RandomizedSearchCV, GridSearchCV
+from .style import style
 
-rcp = {
-    'font.family': 'Times New Roman',
-    'mathtext.fontset': 'custom',
-    'mathtext.rm': 'Times New Roman',
-    'mathtext.it': 'Times New Roman:italic',
-    'mathtext.bf': 'Times New Roman:bold',
-    'font.size': 9,
+def plot_pair(df: pd.DataFrame, xcol: str, ycol: str, x_label: str = None, y_label: str = None):
+    " Plot scatter, distribution and boxplot of x and y "
+    mosaic_layout = [['boxx', '.', '.'], ['distx', '.', '.'], ['scatter', 'disty', 'boxy']]
+    x_label = xcol if x_label is None else x_label
+    y_label = ycol if y_label is None else y_label
+    with style():
+        fig, axes = plt.subplot_mosaic(mosaic_layout, height_ratios=[1, 2, 8], width_ratios=[8, 2, 1])
+        axes['scatter'].scatter(df[xcol], df[ycol], fc='none', ec='tab:blue')
+        axes['scatter'].set_xlabel(x_label)
+        axes['scatter'].set_ylabel(y_label)
 
-    'lines.linewidth': 0.5,
+        axes['distx'].hist(df[xcol], bins='auto')
+        axes['boxx'].boxplot(df[xcol], orientation='horizontal', widths=0.7)
 
-    'axes.titlesize': 'medium',
-    'axes.linewidth': 0.2,
+        axes['disty'].hist(df[ycol], bins='auto', orientation='horizontal')
+        axes['boxy'].boxplot(df[ycol], widths=0.7)
 
-    'xtick.major.width': 0.2,
-    'ytick.major.width': 0.2,
-    'xtick.minor.width': 0.15,
-    'ytick.minor.width': 0.15,
+        skewness = df[ycol].skew().round(2)
+        pos = {True: (0.05, 'left'), False: (0.95, 'right')}
+        x_pos, ha = pos[skewness < 0]
+        axes['scatter'].text(x_pos, 0.95, f'Skewnes={skewness}', transform=axes['scatter'].transAxes, ha=ha, va='top')
+        for key, ax in axes.items():
+            if key != 'scatter':
+                ax.set_frame_on(False)  # Hides all spines
+                ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+        plt.show()
 
-    'legend.framealpha': 1.0,
-    'legend.frameon': False,
-
-    'figure.dpi': 900,
-    'figure.figsize': (10/2.54, 8/2.54),
-    'figure.constrained_layout.use': True,
-
-    'patch.linewidth': 0.5,
-    }
-
-def plot_data(df, y_var: str, numeric_vars: list[str]):
-    """
-    Explore the distribution of numeric variables and the response variable.
-    """
-    print(df[[y_var] + numeric_vars].describe())
-    mosaic_str = "t..;m..;crg"  # top, left, center, right, bottom
-    for var in [y_var] + numeric_vars:
-        with plt.rc_context(rc=rcp):
-            mosaic = plt.figure(figsize=(10/2.54, 10/2.54)).subplot_mosaic(mosaic_str, height_ratios=[1, 1, 5], width_ratios=[5, 1, 1])
-            mosaic['c'].scatter(df[var], df[y_var], fc='none', ec='tab:blue')
-            mosaic['c'].set_xlabel(var)
-            mosaic['c'].set_ylabel(y_var)
-
-            mosaic['m'].hist(df[var], bins='auto')
-            mosaic['t'].boxplot(df[var], orientation='horizontal', widths=0.7)
-            mosaic['r'].hist(df[y_var], bins='auto', orientation='horizontal')
-            mosaic['g'].boxplot(df[y_var], widths=0.7)
-
-            skew_value = df[var].skew().round(2)
-            pos = {True: (0.05, 'left'), False: (0.95, 'right')}
-            x_pos, ha = pos[skew_value < 0]
-            mosaic['c'].text(x_pos, 0.95, f'Skew: {skew_value}', transform=mosaic['c'].transAxes, ha=ha, va='top')
-            
-            for key in mosaic:
-                if key != 'c':
-                    for spine in mosaic[key].spines.values():
-                        spine.set_visible(False)
-                    mosaic[key].tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
-            plt.show()
+def plot_corr(df: pd.DataFrame, numeric_vars: list[str]):
+    " Plot correlation matrix of numeric variables. "
     corr_matrix = df[numeric_vars].corr()
-    with plt.rc_context(rc=rcp):
-        plt.figure(figsize=(5/2.54, 5/2.54))
+    with style():
+        plt.figure(figsize=(7/2.54, 7/2.54))
         sns.heatmap(corr_matrix, annot=True, cmap='coolwarm')
         plt.show()
 
-def group_info(df: pd.DataFrame, group_var: str, min_size: int = None):
-    """
-    Display information about the groups in the DataFrame.
-    """
-    group_counts = df[group_var].value_counts()
-    print(f"Unique {group_var}: {len(group_counts)}")
-    print(f"Group sizes:\n{group_counts.describe()}")
+def filter_group(df: pd.DataFrame, group: str, min_size: int = None):
+    " Filter groups based on a minimum member size. "
+    group_counts = df[group].value_counts()
+    print(group_counts.describe())
     if min_size is not None:
-        df = df.groupby(group_var).filter(lambda x: len(x) >= min_size)
-        print(f"Remaining groups: {df[group_var].nunique()}")
+        df = df.groupby(group).filter(lambda x: len(x) >= min_size)
+        print(f"Remaining groups: {df[group].nunique()}")
     return df
 
-def clean_outliers(df: pd.DataFrame, vars_to_clean: list[str], method: str = 'zscore',
-                   zscore_threshold: float = 3, iqr_factor: float = 1.5,
-                   lof_n_neighbors: int = 20, lof_contamination: float = 0.1) -> pd.DataFrame:
+def clean_outliers(df: pd.DataFrame, vars_to_clean: list[str], method: str= "iqr",
+                   zscore_threshold: float = 3, iqr_factor: float = 1.5) -> pd.DataFrame:
     """
     Remove outliers from specified variables in a DataFrame using the chosen method.
-
-    Args:
+    Parameters:
         df: Input DataFrame
         vars_to_clean: List of column names to clean outliers from
-        method: Outlier detection method ('zscore', 'iqr', or 'lof')
+        method: Outlier detection method
+            'zscore': Z-score method, assumes normal distribution, sensitive to outliers
+            'iqr': Interquartile Range, good for skewed distributions, robust to non-normal data
         zscore_threshold: Threshold for z-score method (default: 3)
         iqr_factor: Multiplier for IQR method (default: 1.5)
-        lof_n_neighbors: Number of neighbors for LOF method (default: 20)
-        lof_contamination: Expected proportion of outliers for LOF (default: 0.1)
-
     Returns:
         DataFrame with outliers removed
     """
     if method == 'zscore':
-        z_scores = np.abs(zscore(df[vars_to_clean]))
+        z_scores = np.abs((df[vars_to_clean] - df[vars_to_clean].mean()) / df[vars_to_clean].std())
         mask = (z_scores < zscore_threshold).all(axis=1)
-    
+
     elif method == 'iqr':
         Q1 = df[vars_to_clean].quantile(0.25)
         Q3 = df[vars_to_clean].quantile(0.75)
         IQR = Q3 - Q1
         lower_bound = Q1 - iqr_factor * IQR
         upper_bound = Q3 + iqr_factor * IQR
-        mask = ((df[vars_to_clean] >= lower_bound) & 
-                (df[vars_to_clean] <= upper_bound)).all(axis=1)
-    
-    elif method == 'lof':
-        lof = LocalOutlierFactor(n_neighbors=lof_n_neighbors, contamination=lof_contamination)
-        outlier_labels = lof.fit_predict(df[vars_to_clean])
-        mask = outlier_labels == 1  # 1 = inlier, -1 = outlier
-    
+        mask = ((df[vars_to_clean] >= lower_bound) & (df[vars_to_clean] <= upper_bound)).all(axis=1)
     else:
-        raise ValueError("Method must be 'zscore', 'iqr', or 'lof'")
+        raise ValueError("Method must be 'zscore', 'iqr'")
     
-    df = df[mask].reset_index(drop=True)
-    print(f"Rows after outlier removal: {len(df)}")
-    return df
+    df_cleaned = df[mask].reset_index(drop=True)
+    print(f"Rows after outlier removal: {df_cleaned.shape[0]}")
+    return df_cleaned
 
-def plot_residuals(x, y, x_label, y_label):
-    mosaic_str = "t.;cr"
-    with plt.rc_context(rc=rcp):
-        mosaic = plt.figure(figsize=(8/2.54, 8/2.54)).subplot_mosaic(mosaic_str, height_ratios=[1, 5], width_ratios=[5, 1])
-        mosaic['c'].scatter(x, y, fc='none', ec='tab:blue')
+def plot_residuals(df: pd.DataFrame, xcol: str, ycol: str, x_label: str = None, y_label: str = None):
+    mosaic_layout = "t.;cr"
+    x_label = xcol if x_label is None else x_label
+    y_label = ycol if y_label is None else y_label
+    with style():
+        fig, axes = plt.subplot_mosaic(mosaic_layout, height_ratios=[1, 8], width_ratios=[8, 1])
+        axes['c'].scatter(df[xcol], df[ycol], fc='none', ec='tab:blue')
+        axes['t'].boxplot(df[xcol], orientation='horizontal', widths=0.7)
+        axes['r'].boxplot(df[ycol], widths=0.7)
 
-        mosaic['t'].boxplot(x, orientation='horizontal', widths=0.7)
-        mosaic['r'].boxplot(y, widths=0.7)
-
-        sns.regplot(x=x, y=y, ci=95, line_kws={'color': 'red'}, ax=mosaic['c'])
-        p_value = linregress(x, y)[3]
-        mosaic['c'].text(0.95, 0.95, f'p-value: {p_value:.3f}', transform=mosaic['c'].transAxes, ha='right', va='top')
-
-        mosaic['c'].set_xlabel(x_label)
-        mosaic['c'].set_ylabel(y_label, rotation=0)
-        for key in mosaic:
+        sns.regplot(data=df, x=xcol, y=ycol, ci=95, line_kws={'color': 'red'}, ax=axes['c'])
+        p_value = stats.linregress(df[xcol], df[ycol])[3]
+        axes['c'].text(0.95, 0.95, f'p-value={p_value:.3f}', transform=axes['c'].transAxes, ha='right', va='top')
+        axes['c'].set_xlabel(x_label)
+        axes['c'].set_ylabel(y_label, rotation=0)
+        for key, ax in axes.items():
             if key != 'c':
-                for spine in mosaic[key].spines.values():
-                    spine.set_visible(False)
-                mosaic[key].tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+                ax.set_frame_on(False)  # Hides all spines
+                ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
         plt.show()
 
 def shap_plots(model, x: np.ndarray, var: str):
@@ -165,7 +122,7 @@ def qq_plot(resid):
     """
     Normality of Residuals
     """
-    with plt.rc_context(rc=rcp):
+    with style():
         plt.figure(figsize=(5/2.54, 5/2.54), layout='constrained')
         sm.qqplot(resid, line='s')
         plt.title('Q-Q Plot of Residuals')
@@ -177,7 +134,7 @@ def evaluate_metrics(y_obs, y_pred):
         'MAPE': mean_absolute_percentage_error(y_obs, y_pred),
         'MSE': mean_squared_error(y_obs, y_pred),
         'r2': r2_score(y_obs, y_pred),
-        'r': pearsonr(y_obs, y_pred)[0]}
+        'r': stats.pearsonr(y_obs, y_pred)[0]}
     metrics["RMSE"] = np.sqrt(metrics["MSE"])
     return metrics
 
@@ -187,22 +144,22 @@ def print_metrics(metrics_tr, metrics_te):
         te_value = metrics_te.get(metric, None)
         print(f"{metric:^10}{tr_value:^10.3f}{te_value:^10.3f}")
 
-def model_performance(y_tr_obs, y_tr_pred, y_te_obs, y_te_pred, var):
+def model_performance(y_tr_obs, y_tr_pred, y_te_obs, y_te_pred, label):
     metric_tr = evaluate_metrics(y_tr_obs, y_tr_pred)
     metric_te = evaluate_metrics(y_te_obs, y_te_pred)
     print_metrics(metric_tr, metric_te)
 
-    with plt.rc_context(rc=rcp):
+    with style():
         plt.figure(figsize=(8/2.54, 8/2.54))
         plt.scatter(y_tr_obs, y_tr_pred, fc='none', ec='tab:blue',
                     label=fr"Train ($R^2$ = {metric_tr['r2']:.3f}, r = {metric_tr['r']:.3f})")
         plt.scatter(y_te_obs, y_te_pred, fc='none', ec='tab:orange',
                     label=f"Test ($R^2$ = {metric_te['r2']:.3f}, r = {metric_te['r']:.3f})")
-        plt.plot([0, 1], [0, 1], color='tab:red', linestyle='--',
-                label='Perfect Fit', transform=plt.gca().transAxes, zorder=3)
-        plt.xlabel(f"Observed {var}")
-        plt.ylabel(f"Predicted {var}")
-        plt.legend(loc='upper left')
+
+        lims = plt.gca().get_xlim()
+        plt.plot(lims, lims, 'r--', label='Perfect Fit')
+        plt.xlabel(f"Observed {label}")
+        plt.ylabel(f"Predicted {label}")
         plt.legend(loc='lower left', bbox_to_anchor=(0.0, 0.95), ncol=1)
         plt.show()
 
@@ -278,39 +235,3 @@ def best_fe_model(fe_model, x, y):
         opt = RandomizedSearchCV(fe_model, param_dist, cv=5, n_iter=100,
                            scoring='neg_mean_squared_error', n_jobs=-1).fit(x, y)
         return opt.best_estimator_, opt.best_params_
-
-rcp = {
-    'font.family': 'Times New Roman',
-    'mathtext.fontset': 'custom',
-    'mathtext.rm': 'Times New Roman',
-    'mathtext.it': 'Times New Roman:italic',
-    'mathtext.bf': 'Times New Roman:bold',
-    'mathtext.default': 'regular',  # can be 'regular' 'it' etc
-    'font.size': 9,
-
-    'lines.linewidth': 0.5,
-    'lines.markersize': 3,
-
-    'boxplot.boxprops.linewidth': 0.5,
-    'boxplot.whiskerprops.linewidth': 0.5,
-    'boxplot.capprops.linewidth': 0.5,
-    'boxplot.flierprops.markersize': 3,
-    'boxplot.flierprops.markeredgewidth': 0.5,
-
-    'axes.titlesize': 'medium',
-    'axes.linewidth': 0.2,
-
-    'xtick.major.width': 0.2,
-    'ytick.major.width': 0.2,
-    'xtick.minor.width': 0.15,
-    'ytick.minor.width': 0.15,
-
-    'legend.framealpha': 1.0,
-    'legend.frameon': False,
-
-    'figure.dpi': 900,
-    'figure.figsize': (10/2.54, 8/2.54),
-    'figure.constrained_layout.use': True,
-
-    'patch.linewidth': 0.5,
-    }
