@@ -43,6 +43,7 @@ class MERM:
         self.o: Dict[int, int] = {}
         # q: Number of random effects (intercept + slopes) for each grouping factor.
         self.q: Dict[int, int] = {}
+        self.D: Dict[int, int] = {}
         # sigma: Variance of unexplained residuals (errors).
         self.sigma: float = None
         # eps: Residuals after accounting for fixed and random effects.
@@ -136,8 +137,9 @@ class MERM:
     
     def _update_V_per_group(self, V, k):
         " Update covariance matrix (V) of the observed data per group. "
-        D_k = sparse.kron(sparse.eye(self.o[k]), self.tau[k], format='csr')
-        V += self.Z[k] @ D_k @ self.Z[k].T
+        # D_k = sparse.kron(sparse.eye(self.o[k]), self.tau[k], format='csr')
+        self.D[k] = sparse.kron(sparse.eye(self.o[k]), self.tau[k], format='csr')
+        V += self.Z[k] @ self.D[k] @ self.Z[k].T
         return V
     
     def _update_bk_eps(self, lu, y, fX):
@@ -157,10 +159,22 @@ class MERM:
         self.zb_sum += self.Z[k] @ self.b[k]
         return self
     
-    def _update_sigma(self, lu):
+    def _update_cond_cov_per_group(self, lu, k):
+        " Update the conditional covariance matrix of the random effects. "
+        cond_k = self.D[k] - self.D[k] @ self.Z[k].T @ lu.solve(self.Z[k] @ self.D[k])
+        return cond_k
+    
+    # def _update_sigma(self, lu):
+    #     " Update the unexplained residuals (errors) variance. "
+    #     V_inv_trace = lu.solve(self.I_n.toarray()).diagonal().sum()
+    #     self.sigma = (self.eps.T @ self.eps + self.sigma * (self.n - self.sigma * V_inv_trace)) / self.n
+    #     return self
+    def _update_sigma(self, lu, cond_cov):
         " Update the unexplained residuals (errors) variance. "
-        V_inv_trace = lu.solve(self.I_n.toarray()).diagonal().sum()
-        self.sigma = (self.eps.T @ self.eps + self.sigma * (self.n - self.sigma * V_inv_trace)) / self.n
+        self.sigma = self.eps.T @ self.eps
+        for k in self.Z:
+            self.sigma += np.trace(cond_cov[k] @ (self.Z[k].T @ self.Z[k]).toarray())
+        self.sigma /= self.n
         return self
     
     def _update_tau(self, lu):

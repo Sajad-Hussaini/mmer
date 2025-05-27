@@ -40,7 +40,7 @@ def plot_corr(df: pd.DataFrame, numeric_vars: list[str]):
     " Plot correlation matrix of numeric variables. "
     corr_matrix = df[numeric_vars].corr()
     with style():
-        plt.figure(figsize=(7/2.54, 7/2.54))
+        plt.figure(figsize=(18/2.54, 12/2.54))
         sns.heatmap(corr_matrix, annot=True, cmap='coolwarm')
         plt.show()
 
