@@ -30,7 +30,7 @@ class MERM:
         self.o = {}      # Number of levels per group
         self.q = {}      # Number of effect types per group
         self.ZTZ = {}    # Precomputed Z_k.T @ Z_k
-        self.IM_Zk = {}
+        self.IM_Z = {}
         self.fem_list = []  # List of fitted fixed effects models
         self.mll_evol = []  # Track marginal log-likelihood
 
@@ -67,7 +67,7 @@ class MERM:
             self.o[k] = o_k
             self.q[k] = q_k
             self.ZTZ[k] = Z_k.T @ Z_k  # Precompute for efficiency
-            self.IM_Zk[k] = sparse.kron(sparse.eye(M, format='csr'), Z_k)
+            self.IM_Z[k] = sparse.kron(sparse.eye(M, format='csr'), Z_k)
 
         # Initialize parameters
         self.phi = np.eye(M)
@@ -82,8 +82,8 @@ class MERM:
             # Compute random effects contribution
             zb_sum = np.zeros((n, M))
             for k in range(K):
-                zb_k = self.IM_Zk[k] @ self.mu[k]
-                zb_sum += zb_k.reshape((M, n)).T
+                zb_k = self.IM_Z[k] @ self.mu[k]
+                zb_sum += zb_k.reshape((n, M), order='F')
 
             # Adjust y and fit fixed effects
             y_adj = y - zb_sum
@@ -100,7 +100,7 @@ class MERM:
             V = R.copy()
             for k in range(K):
                 D_k = sparse.kron(self.rho[k], sparse.kron(sparse.eye(self.o[k], format='csr'), self.tau[k]))
-                V += self.IM_Zk[k] @ D_k @ self.IM_Zk[k].T
+                V += self.IM_Z[k] @ D_k @ self.IM_Z[k].T
 
             # Solve linear systems
             splu = sparse.linalg.splu(V.tocsc())
@@ -108,16 +108,22 @@ class MERM:
 
             # E-step: Update mu_k and Sigma_k
             for k in range(K):
-                D_k = sparse.kron(self.rho[k], sparse.kron(np.eye(self.o[k]), self.tau[k]))
-                self.mu[k] = D_k @ self.IM_Zk[k].T @ V_inv_eps
-                IM_Zk_D_k = self.IM_Zk[k] @ D_k
+                D_k = sparse.kron(self.rho[k], sparse.kron(sparse.eye(self.o[k], format='csr'), self.tau[k]))
+                self.mu[k] = D_k @ self.IM_Z[k].T @ V_inv_eps
+                IM_Zk_D_k = self.IM_Z[k] @ D_k
                 V_inv_IM_Zk_D_k = splu.solve(IM_Zk_D_k.toarray())
-                self.sigma[k] = D_k - D_k @ self.IM_Zk[k].T @ V_inv_IM_Zk_D_k
+                self.sigma[k] = D_k - D_k @ self.IM_Z[k].T @ V_inv_IM_Zk_D_k
             
             # M-step: Update parameters
+            # reCompute random effects contribution due to updated mu_k
+            zb_sum = np.zeros((n, M))
+            for k in range(K):
+                zb_k = self.IM_Z[k] @ self.mu[k]
+                zb_sum += zb_k.reshape((n, M), order='F')
+
             zb_sum_stacked = zb_sum.ravel(order='F')
             y_stacked = y.ravel(order='F')
-            fX_stacked = fX.ravel(order='F')
+            fX_stacked = fX.ravel(order='F')  # I wonder if reTraining the fixed effects is necessary here or should we use the previous fX since mu_k used it!!
             eps_stacked = y_stacked - fX_stacked - zb_sum_stacked
             eps = eps_stacked.reshape((n, M), order='F')
             S = eps.T @ eps
@@ -164,11 +170,22 @@ class MERM:
                         sum_tau += np.outer(mu_k_mi, mu_k_mi) + Sigma_k_mi
                 self.tau[k] = sum_tau / (M * o_k) + 1e-10 * np.eye(q_k)
 
-            # Convergence check
+            # Convergence check using updated parameters
+            R = sparse.kron(self.phi, sparse.eye(n, format='csr'))
+            V = R.copy()
+            for k in range(K):
+                D_k = sparse.kron(self.rho[k], sparse.kron(sparse.eye(self.o[k], format='csr'), self.tau[k]))
+                V += self.IM_Z[k] @ D_k @ self.IM_Z[k].T
+
+            # Solve linear systems
+            splu = sparse.linalg.splu(V.tocsc())
+            eps_stacked = y_stacked - fX_stacked
+            V_inv_eps = splu.solve(eps_stacked)
+
             log_det_V = np.sum(np.log(np.abs(splu.U.diagonal())))
             mll = -(M * n * np.log(2 * np.pi) + log_det_V + eps_stacked.T @ V_inv_eps) / 2
             self.mll_evol.append(mll)
-            if iter_ > 1 and abs(self.mll_evol[-1] - self.mll_evol[-2]) < self.mll_tol:
+            if iter_ > 1 and abs((self.mll_evol[-1] - self.mll_evol[-2]) / self.mll_evol[-2]) < self.mll_tol:
                 pbar.set_description("MERM Converged")
                 break
         return self
