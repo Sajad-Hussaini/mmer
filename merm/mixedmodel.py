@@ -1,10 +1,10 @@
 import numpy as np
 import scipy.sparse as sparse
-import scipy.linalg
 from sklearn.base import RegressorMixin, clone
-from tqdm import tqdm
 import matplotlib.pyplot as plt
+import seaborn as sns
 from matplotlib.ticker import MaxNLocator
+from tqdm import tqdm
 from .style import style
 
 class MERM:
@@ -14,27 +14,141 @@ class MERM:
     Parameters:
         fixed_effects_model: A scikit-learn regressor or list of regressors for fixed effects.
         max_iter: Maximum number of EM iterations (default: 10).
-        mll_tol: Tolerance for convergence based on marginal log-likelihood (default: 0.001).
+        mll_tol: Marginal log-likelihood convergence tolerance  (default: 0.0001).
     """
-    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 10, mll_tol: float = 0.001):
+    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 10, mll_tol: float = 0.0001):
         self.fem = fixed_effects_model
         self.max_iter = max_iter
         self.mll_tol = mll_tol
 
-        self.phi = None  # Residual covariance matrix (M x M)
-        self.rho = {}    # Response covariance per group (M x M)
-        self.tau = {}    # Effect type covariance per group (q_k x q_k)
-        self.mu = {}     # Conditional random effects mean
-        self.sigma = {}  # Conditional random effects covariance
-        self.Z = {}      # Random effects design matrices
-        self.o = {}      # Number of levels per group
-        self.q = {}      # Number of effect types per group
-        self.ZTZ = {}    # Precomputed Z_k.T @ Z_k
-        self.IM_Z = {}
+        self.phi = None     # Residual covariance matrix (M x M)
+        self.tau = {}       # Random effect covariance matrix across Responses and Effect types per group (M.q_k x M.q_k)
+        self.mu = {}        # Conditional random effects mean
+        self.sigma = {}     # Conditional random effects covariance
+        self.Z = {}         # Random effects design matrices
+        self.o = {}         # Number of levels per group
+        self.q = {}         # Number of effect types per group
         self.fem_list = []  # List of fitted fixed effects models
         self.mll_evol = []  # Track marginal log-likelihood
+    
+    def _initialization(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, random_slope_column: list[np.ndarray] = None):
+        """
+        Initialize the model parameters and design matrices based on input data.
+        """
+        self.n, self.M = y.shape
+        self.K = groups.shape[1]
+        self.rscol = random_slope_column
 
-    def fit(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, random_slope_covariates: list = None):
+        # Initialize fixed effects models
+        self.fem_list = [clone(self.fem) for _ in range(self.M)] if not isinstance(self.fem, list) else self.fem
+        if len(self.fem_list) != self.M:
+            raise ValueError(f"Expected {self.M} fixed effects models, got {len(self.fem_list)}")
+        
+        # Compute design matrices and initialize parameters
+        ZTZ = {}       # Precomputed Z_k.T @ Z_k
+        IM_Z = {}      # Precomputed Kronecker product of identity and Z_k
+        self.phi = np.eye(self.M)
+        for k in range(self.K):
+            rsc_k = X[:, self.rscol[k]] if self.rscol is not None else None
+            self.Z[k], self.q[k], self.o[k] = self.design_Z(groups[:, k], rsc_k)
+            ZTZ[k] = self.Z[k].T @ self.Z[k]
+            IM_Z[k] = sparse.kron(sparse.eye(self.M, format='csr'), self.Z[k])
+            self.tau[k] = np.eye(self.M * self.q[k])
+            self.mu[k] = np.zeros(self.M * self.q[k] * self.o[k])
+            self.sigma[k] = np.eye(self.M * self.q[k] * self.o[k])
+        return ZTZ, IM_Z
+
+    def get_zb_sum(self, IM_Z):
+        """
+        Compute the sum of random effects contributions for all groups.
+        """
+        zb_sum = np.zeros((self.n, self.M))
+        for k in range(self.K):
+            zb_sum += (IM_Z[k] @ self.mu[k]).reshape((self.n, self.M), order='F')
+        return zb_sum
+    
+    def fit_fixed_effects(self, X: np.ndarray, y: np.ndarray, zb_sum: np.ndarray):
+        """
+        Fit the fixed effects models to the adjusted response variables.
+        """
+        y_adj = y - zb_sum
+        fX = np.zeros((self.n, self.M))
+        for m in range(self.M):
+            fX[:, m] = self.fem_list[m].fit(X, y_adj[:, m]).predict(X)
+        return fX
+    
+    def get_splu_D(self, IM_Z):
+        """
+        Compute the sparse LU decomposition of the covariance matrix V and the random effects covariance matrices D_k.
+        """
+        D = {}
+        V = sparse.kron(self.phi, sparse.eye(self.n, format='csr'))
+        for k in range(self.K):
+            D[k] = sparse.kron(self.tau[k], sparse.eye(self.o[k], format='csr'))
+            V += IM_Z[k] @ D[k] @ IM_Z[k].T
+        return sparse.linalg.splu(V.tocsc()), D
+    
+    def E_step(self, splu, D, eps_marginal_stacked, IM_Z):
+        """
+        Perform the E-step of the EM algorithm to compute the conditional expectation and covariance of the random effects.
+        """
+        V_inv_eps = splu.solve(eps_marginal_stacked)
+        for k in range(self.K):
+            self.mu[k] = D[k] @ IM_Z[k].T @ V_inv_eps
+            IM_Zk_Dk = IM_Z[k] @ D[k]
+            V_inv_IM_Zk_Dk = splu.solve(IM_Zk_Dk.toarray())
+            self.sigma[k] = D[k] - D[k] @ IM_Z[k].T @ V_inv_IM_Zk_Dk
+    
+    def update_phi(self, eps, ZTZ):
+        """
+        Update the residual covariance matrix phi based on the residuals.
+        """
+        S = eps.T @ eps
+        T = np.zeros((self.M, self.M))
+        for m1 in range(self.M):
+            for m2 in range(self.M):
+                trace_sum = 0.0
+                for k in range(self.K):
+                    o_k, q_k = self.o[k], self.q[k]
+                    idx1 = slice(m1 * q_k * o_k, (m1 + 1) * q_k * o_k)
+                    idx2 = slice(m2 * q_k * o_k, (m2 + 1) * q_k * o_k)
+                    Sigma_k_block = self.sigma[k][idx1, idx2]
+                    trace_sum += np.trace(ZTZ[k] @ Sigma_k_block)
+                T[m1, m2] = trace_sum
+        self.phi = (S + T) / self.n + 1e-10 * np.eye(self.M)
+    
+    def update_tau(self):
+        """
+        Update the random effects covariance tau_k based on the mu_k and sigma_k.
+        """
+        for k in range(self.K):
+            o_k, q_k = self.o[k], self.q[k]
+            mu_k = self.mu[k]
+            Sigma_k = self.sigma[k]
+            sum_tau = np.zeros((self.M * q_k, self.M * q_k))
+            for j in range(o_k):
+                indices = []  # Indices for level j across all responses and effect types
+                for m in range(self.M):
+                    for q in range(q_k):
+                        idx = m * q_k * o_k + q * o_k + j
+                        indices.append(idx)
+                mu_k_ij = mu_k[indices]
+                Sigma_k_ij = Sigma_k[np.ix_(indices, indices)]
+                sum_tau += np.outer(mu_k_ij, mu_k_ij) + Sigma_k_ij
+            self.tau[k] = sum_tau / o_k + 1e-10 * np.eye(self.M * q_k)
+    
+    def get_mll(self, eps_marginal_stacked, IM_Z):
+        """
+        Compute the marginal log-likelihood of the model given the current parameters.
+        """
+        splu, D = self.get_splu_D(IM_Z)
+        V_inv_eps = splu.solve(eps_marginal_stacked)
+        log_det_V = np.sum(np.log(np.abs(splu.U.diagonal())))
+        mll = -(self.M * self.n * np.log(2 * np.pi) + log_det_V + eps_marginal_stacked.T @ V_inv_eps) / 2
+        return mll
+            
+
+    def fit(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, random_slope_column: list[np.ndarray] = None):
         """
         Fit the multivariate mixed effects model using EM algorithm.
 
@@ -42,149 +156,27 @@ class MERM:
             X: (n_samples, n_features) array of fixed effect covariates.
             y: (n_samples, M) array of M response variables.
             groups: (n_samples, K) array of K grouping factors.
-            random_slope_covariates: List of (n_samples, q_k) arrays for random slopes per group (optional).
+            random_slope_column: List of (n_samples, q_k) arrays for random slopes per group (optional).
 
         Returns:
             Self (fitted model).
         """
-        n, M = y.shape
-        K = groups.shape[1]
-
-        # Initialize fixed effects models
-        if isinstance(self.fem, list):
-            if len(self.fem) != M:
-                raise ValueError(f"Expected {M} fixed effects models, got {len(self.fem)}")
-            self.fem_list = self.fem
-        else:
-            self.fem_list = [clone(self.fem) for _ in range(M)]
-
-        # Compute design matrices Z_k
-        for k in range(K):
-            group_k = groups[:, k]
-            rsc_k = None if random_slope_covariates is None else random_slope_covariates[k]
-            Z_k, o_k, q_k = self.design_Z(group_k, rsc_k)
-            self.Z[k] = Z_k
-            self.o[k] = o_k
-            self.q[k] = q_k
-            self.ZTZ[k] = Z_k.T @ Z_k  # Precompute for efficiency
-            self.IM_Z[k] = sparse.kron(sparse.eye(M, format='csr'), Z_k)
-
-        # Initialize parameters
-        self.phi = np.eye(M)
-        for k in range(K):
-            self.rho[k] = np.eye(M)
-            self.tau[k] = np.eye(self.q[k])
-            self.mu[k] = np.zeros(M * self.o[k] * self.q[k])
-            self.sigma[k] = np.eye(M * self.o[k] * self.q[k])
-
+        ZTZ, IM_Z = self._initialization(X, y, groups, random_slope_column)
         pbar = tqdm(range(1, self.max_iter + 1), desc="MERM Training", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
         for iter_ in pbar:
-            # Compute random effects contribution
-            zb_sum = np.zeros((n, M))
-            for k in range(K):
-                zb_k = self.IM_Z[k] @ self.mu[k]
-                zb_sum += zb_k.reshape((n, M), order='F')
+            zb_sum = self.get_zb_sum(IM_Z)
+            fX = self.fit_fixed_effects(X, y, zb_sum)
+            eps_marginal_stacked = (y - fX).ravel(order='F')
+            splu, D = self.get_splu_D(IM_Z)
+            self.E_step(splu, D, eps_marginal_stacked, IM_Z)
 
-            # Adjust y and fit fixed effects
-            y_adj = y - zb_sum
-            for m in range(M):
-                self.fem_list[m].fit(X, y_adj[:, m])
-            fX = np.column_stack([self.fem_list[m].predict(X) for m in range(M)])
-
-            # Compute marginal residuals
-            eps = y - fX
-            eps_stacked = eps.ravel(order='F')
-
-            # Compute V sparsely
-            R = sparse.kron(self.phi, sparse.eye(n, format='csr'))
-            V = R.copy()
-            for k in range(K):
-                D_k = sparse.kron(self.rho[k], sparse.kron(sparse.eye(self.o[k], format='csr'), self.tau[k]))
-                V += self.IM_Z[k] @ D_k @ self.IM_Z[k].T
-
-            # Solve linear systems
-            splu = sparse.linalg.splu(V.tocsc())
-            V_inv_eps = splu.solve(eps_stacked)
-
-            # E-step: Update mu_k and Sigma_k
-            for k in range(K):
-                D_k = sparse.kron(self.rho[k], sparse.kron(sparse.eye(self.o[k], format='csr'), self.tau[k]))
-                self.mu[k] = D_k @ self.IM_Z[k].T @ V_inv_eps
-                IM_Zk_D_k = self.IM_Z[k] @ D_k
-                V_inv_IM_Zk_D_k = splu.solve(IM_Zk_D_k.toarray())
-                self.sigma[k] = D_k - D_k @ self.IM_Z[k].T @ V_inv_IM_Zk_D_k
-            
-            # M-step: Update parameters
-            # reCompute random effects contribution due to updated mu_k
-            zb_sum = np.zeros((n, M))
-            for k in range(K):
-                zb_k = self.IM_Z[k] @ self.mu[k]
-                zb_sum += zb_k.reshape((n, M), order='F')
-
-            zb_sum_stacked = zb_sum.ravel(order='F')
-            y_stacked = y.ravel(order='F')
-            fX_stacked = fX.ravel(order='F')  # I wonder if reTraining the fixed effects is necessary here or should we use the previous fX since mu_k used it!!
-            eps_stacked = y_stacked - fX_stacked - zb_sum_stacked
-            eps = eps_stacked.reshape((n, M), order='F')
-            S = eps.T @ eps
-
-            # Compute T
-            T = np.zeros((M, M))
-            for m1 in range(M):
-                for m2 in range(M):
-                    trace_sum = 0
-                    for k in range(K):
-                        o_k, q_k = self.o[k], self.q[k]
-                        idx1 = slice(m1 * o_k * q_k, (m1 + 1) * o_k * q_k)
-                        idx2 = slice(m2 * o_k * q_k, (m2 + 1) * o_k * q_k)
-                        Sigma_k_block = self.sigma[k][idx1, idx2]
-                        trace_sum += np.trace(self.ZTZ[k] @ Sigma_k_block)
-                    T[m1, m2] = trace_sum
-            self.phi = (S + T) / n + 1e-10 * np.eye(M)
-
-            # Update rho_k and tau_k
-            for k in range(K):
-                o_k, q_k = self.o[k], self.q[k]
-                mu_k = self.mu[k]
-                Sigma_k = self.sigma[k]
-
-                # rho_k
-                sum_rho = np.zeros((M, M))
-                for i in range(o_k):
-                    for j in range(q_k):
-                        idx = i * q_k + j
-                        indices = np.array([m * o_k * q_k + idx for m in range(M)])
-                        mu_k_ij = mu_k[indices]
-                        Sigma_k_ij = Sigma_k[np.ix_(indices, indices)]
-                        sum_rho += np.outer(mu_k_ij, mu_k_ij) + Sigma_k_ij
-                self.rho[k] = sum_rho / (o_k * q_k) + 1e-10 * np.eye(M)
-
-                # tau_k
-                sum_tau = np.zeros((q_k, q_k))
-                for m in range(M):
-                    for i in range(o_k):
-                        start = m * o_k * q_k + i * q_k
-                        end = start + q_k
-                        mu_k_mi = mu_k[start:end]
-                        Sigma_k_mi = Sigma_k[start:end, start:end]
-                        sum_tau += np.outer(mu_k_mi, mu_k_mi) + Sigma_k_mi
-                self.tau[k] = sum_tau / (M * o_k) + 1e-10 * np.eye(q_k)
-
-            # Convergence check using updated parameters
-            R = sparse.kron(self.phi, sparse.eye(n, format='csr'))
-            V = R.copy()
-            for k in range(K):
-                D_k = sparse.kron(self.rho[k], sparse.kron(sparse.eye(self.o[k], format='csr'), self.tau[k]))
-                V += self.IM_Z[k] @ D_k @ self.IM_Z[k].T
-
-            # Solve linear systems
-            splu = sparse.linalg.splu(V.tocsc())
-            eps_stacked = y_stacked - fX_stacked
-            V_inv_eps = splu.solve(eps_stacked)
-
-            log_det_V = np.sum(np.log(np.abs(splu.U.diagonal())))
-            mll = -(M * n * np.log(2 * np.pi) + log_det_V + eps_stacked.T @ V_inv_eps) / 2
+            zb_sum = self.get_zb_sum(IM_Z)
+            eps = y - fX - zb_sum
+            self.update_phi(eps, ZTZ)
+            self.update_tau()
+            mll = self.get_mll(eps_marginal_stacked, IM_Z)
             self.mll_evol.append(mll)
+
             if iter_ > 1 and abs((self.mll_evol[-1] - self.mll_evol[-2]) / self.mll_evol[-2]) < self.mll_tol:
                 pbar.set_description("MERM Converged")
                 break
@@ -203,120 +195,173 @@ class MERM:
         """
         if not self.fem_list:
             raise ValueError("Model must be fitted before prediction.")
-        fX = np.column_stack([self.fem_list[m].predict(X) for m in range(len(self.fem_list))])
+        n = X.shape[0]
+        fX = np.zeros((n, self.M))
+        for m in range(self.M):
+            fX[:, m] = self.fem_list[m].predict(X)
         if not sample:
             return fX
-        # Construct residual covariance R = phi ⊗ I_n
-        n = X.shape[0]
-        M = len(self.fem_list)
-        # Construct covariance V, assuming all observations in same group level
-        R = sparse.kron(self.phi, sparse.eye(n, format='csc'), format='csc')
-        V = R.copy()
-        for k in range(len(self.rho)):
-            # Assume single level: Z_k = 1_n (n x 1 vector of ones)
-            Z_k = np.ones((n, 1))
-            IM_Zk = sparse.kron(sparse.eye(M, format='csc'), Z_k, format='csc')
-            # D_k = rho_k ⊗ tau_k (since o_k = 1)
-            D_k = sparse.kron(self.rho[k], self.tau[k], format='csc')
-            # Compute (I_M ⊗ Z_k) D_k (I_M ⊗ Z_k^T)
-            ZkZkT = np.ones((n, n))  # Z_k Z_k^T = 1_n 1_n^T
-            V += sparse.kron(D_k, ZkZkT, format='csc')
+
+        # Covariance V for new X data using phi and tau_k assuming unobserved grouping
+        groups = np.zeros((n, self.K), dtype=int)
+        V = sparse.kron(self.phi, sparse.eye(n, format='csr'))
+        for k in range(self.K):
+            Z_k, q_k, o_k = self.design_Z(groups[:, k], X[:, self.rscol[k]] if self.rscol is not None else None)
+            D_k = sparse.kron(self.tau[k], sparse.eye(o_k, format='csr'))
+            IM_Z_k = sparse.kron(sparse.eye(self.M, format='csr'), Z_k)
+            V += IM_Z_k @ D_k @ IM_Z_k.T
 
         # Sample from multivariate normal
-        fX_stacked = fX.ravel(order='F')
-        y_sampled = np.random.multivariate_normal(fX_stacked, V.toarray())
-        return y_sampled.reshape((n, M), order='F')
+        y_sampled = np.random.multivariate_normal(fX.ravel(order='F'), V.toarray())
+        return y_sampled.reshape((n, self.M), order='F')
     
-    def design_Z(self, group: np.ndarray, random_slope_covariates: np.ndarray = None):
+    def design_Z(self, group: np.ndarray, random_slope_column: np.ndarray = None):
         """
         Construct random effects design matrix for a grouping factor.
         
         Parameters:
             group: (n_samples,) array of group levels.
-            random_slope_covariates: (n_samples, q) array for random slopes (optional).
+            random_slope_column: (n_samples, q) array for random slopes (optional).
         
         Returns:
             Z_k: Sparse matrix (n_samples, o_k * q_k).
             o_k: Number of unique levels.
             q_k: Number of random effects per level.
         """
-        levels = np.unique(group)
+        levels, level_indices = np.unique(group, return_inverse=True)
         n = group.shape[0]
         o = len(levels)
-        q = 1 if random_slope_covariates is None else 1 + random_slope_covariates.shape[1]
-        # Map levels to 0-based indices
-        level_map = {level: idx for idx, level in enumerate(levels)}
-        level_indices = np.array([level_map[level] for level in group])
+        q = 1 if random_slope_column is None else 1 + random_slope_column.shape[1]
         # Number of non-zero elements
         nnz = n * q
         rows = np.zeros(nnz, dtype=int)
         cols = np.zeros(nnz, dtype=int)
         data = np.zeros(nnz, dtype=float)
         for i in range(n):
-            j = level_indices[i]  # Level index
-            base_idx = i * q    # Starting index in sparse arrays
-            base_col = j * q    # Starting column in Z
+            j = level_indices[i]  # level index (0 to o-1)
+            base_idx = i * q      # Starting (intercept) index in sparse arrays
             # Intercept
             rows[base_idx] = i
-            cols[base_idx] = base_col
+            cols[base_idx] = j    # 0 * o + j
             data[base_idx] = 1.0
             # Slopes
-            if random_slope_covariates is not None:
-                for rsc_idx in range(random_slope_covariates.shape[1]):
-                    idx = base_idx + (rsc_idx + 1)
+            if random_slope_column is not None:
+                for rs_idx in range(random_slope_column.shape[1]):
+                    idx = base_idx + (rs_idx + 1)
                     rows[idx] = i
-                    cols[idx] = base_col + (rsc_idx + 1)
-                    data[idx] = random_slope_covariates[i, rsc_idx]
-        return sparse.csr_matrix((data, (rows, cols)), shape=(n, o * q)), o, q
+                    cols[idx] = (rs_idx + 1) * o + j
+                    data[idx] = random_slope_column[i, rs_idx]
+        return sparse.csr_matrix((data, (rows, cols)), shape=(n, q * o)), q, o
 
-    def summary(self):
+    def summary(self, X, y):
         """
-        Plots of variance components and residuals and validation per iteration
+        Display a summary of the fitted multivariate mixed effects model, including:
+        - Convergence statistics (iterations, marginal log-likelihood).
+        - Variance components (residual and random effects variances).
+        - Plots: Marginal log-likelihood, covariance heatmaps (phi, tau_k), residual histograms,
+        and random effects histograms per group.
         """
-        with style():
-            fig, axes = plt.subplots(3, 2, figsize=(12/2.54, 12/2.54), layout='constrained')
+        if not self.mll_evol:
+            raise ValueError("Model must be fitted before calling summary.")
+        # if not hasattr(self, 'X') or not hasattr(self, 'y'):
+        #     raise ValueError("X and y must be stored in self during fit for summary.")
+
+        # Compute correlation matrices
+        phi_diag_sqrt = np.sqrt(np.diag(self.phi))
+        corr_phi = self.phi / np.outer(phi_diag_sqrt, phi_diag_sqrt)
+        corr_tau = {}
+        for k in range(self.K):
+            tau_diag_sqrt = np.sqrt(np.diag(self.tau[k]))
+            corr_tau[k] = self.tau[k] / np.outer(tau_diag_sqrt, tau_diag_sqrt)
+
+        # Compute residuals
+        IM_Z = {k: sparse.kron(sparse.eye(self.M, format='csr'), self.Z[k]) for k in range(self.K)}
+        zb_sum = self.get_zb_sum(IM_Z)
+        fX = np.zeros((self.n, self.M))
+        for m in range(self.M):
+            fX[:, m] = self.fem_list[m].predict(X)
+        eps = y - fX - zb_sum  # Residuals (n x M)
+
+        # Print summary statistics
+        print("Multivariate Mixed Effects Model Summary:")
+        print(f"- Iterations: {len(self.mll_evol)}")
+        print(f"- Final Marginal Log-Likelihood: {self.mll_evol[-1]:.2f}")
+        print(f"- Residual Variances (per response):")
+        for m in range(self.M):
+            print(f"  Response {m+1}: {self.phi[m, m]:.4f}")
+        print(f"- Random Effects Average Variances (per group):")
+        for k in range(self.K):
+            avg_var = np.mean(np.diag(self.tau[k]))
+            print(f"  Group {k+1}: {avg_var:.4f}")
+
+        # Plotting
+        with plt.style.context('default'):  # Adjust if custom style is used
+            # Create figure layout: 2 rows, 2 columns for main plots
+            fig, axes = plt.subplots(2, 2, figsize=(12, 10), constrained_layout=True)
             axes = axes.flatten()
 
-            # Generalized Log-Likelihood
+            # 1. Marginal Log-Likelihood
             axes[0].plot(self.mll_evol, marker='o')
-            axes[0].set_ylabel("MLL")
+            axes[0].set_title("Marginal Log-Likelihood")
             axes[0].set_xlabel("Iteration")
+            axes[0].set_ylabel("MLL")
+            axes[0].grid(True, which='major', linewidth=0.15, linestyle='--')
             axes[0].text(0.95, 0.95, f'MLL = {self.mll_evol[-1]:.2f}', transform=axes[0].transAxes, va='top', ha='right')
 
-            # # Validation MSE
-            # if self.valid_history:
-            #     axes[1].plot(self.valid_history, marker='o')
-            #     axes[1].text(0.95, 0.95, f'MSE = {self.valid_history[-1]:.2f}', transform=axes[1].transAxes, va='top', ha='right')
-            # axes[1].set_ylabel("MSE")
-            # axes[1].set_xlabel("Iteration")
+            # 2. Residual Correlation Heatmap (phi)
+            sns.heatmap(corr_phi, annot=True, cmap='coolwarm', vmin=-1, vmax=1, ax=axes[1],
+                        xticklabels=[f"R{m+1}" for m in range(self.M)],
+                        yticklabels=[f"R{m+1}" for m in range(self.M)])
+            axes[1].set_title("Residual Correlation (phi)")
 
-            # Fixed effect metrics
-            # axes[2].plot(self.sigma_evol, label="Unexplained variance", marker='o')
-            # axes[2].set_ylabel("Unexplained variance")
-            # axes[2].set_xlabel("Iteration")
-            # axes[2].text(0.95, 0.95, fr'$\sigma$ = {self.sigma_evol[-1]:.2f}', transform=axes[2].transAxes, va='top', ha='right')
+            # 3. Residual Histogram (first response or all if M <= 3)
+            if self.M <= 3:
+                for m in range(self.M):
+                    axes[2].hist(eps[:, m], bins=20, alpha=0.5, label=f"Response {m+1}", edgecolor='black')
+                axes[2].set_title("Residuals")
+                axes[2].set_xlabel("Residual")
+                axes[2].set_ylabel("Frequency")
+                axes[2].legend()
+            else:
+                axes[2].hist(eps[:, 0], bins=20, edgecolor='black')
+                axes[2].set_title("Residuals (Response 1)")
+                axes[2].set_xlabel("Residual")
+                axes[2].set_ylabel("Frequency")
 
-            # Random effect metrics
-            # det_re_history = [np.linalg.det(x[0]) for x in self.tau_evol]
-            # trace_re_history = [np.trace(x[0]) for x in self.tau_evol]
-            # axes[3].plot(det_re_history, label="|Random effect|", marker='o', zorder=2)
-            # axes[3].plot(trace_re_history, label="trace(Random effect)", marker='o', zorder=1)
-            # axes[3].set_ylabel("Random effect variance")
-            # axes[3].set_xlabel("Iteration")
-            # axes[3].text(0.95, 0.95, fr'$\mathregular{{\tau}}$ = {self.tau_evol[-1][0].item():.2f}', transform=axes[3].transAxes, va='top', ha='right')
+            # 4. Random Effects Correlation Heatmap (tau[0] for first group)
+            if self.K > 0:
+                labels = [f"R{m+1} E{q+1}" for m in range(self.M) for q in range(self.q[0])]
+                sns.heatmap(corr_tau[0], annot=len(labels) <= 6, cmap='coolwarm', vmin=-1, vmax=1, ax=axes[3],
+                            xticklabels=labels, yticklabels=labels)
+                axes[3].set_title("Random Effects Correlation (tau[0])")
 
-            # Unexplained residuals distribution
-            # axes[4].hist(self.eps)
-            # axes[4].set_ylabel('Frequency')
-            # axes[4].set_xlabel("Unexplained residual")
-
-            # # Random effect residuals distribution
-            # axes[5].hist(self.b[0].ravel())  # only first group for now
-            # axes[5].set_ylabel('Frequency')
-            # axes[5].set_xlabel("Random effect residual")
+            # Adjust axes
             for ax in axes:
-                ax.xaxis.set_major_locator(MaxNLocator(integer=True)) if ax != axes[-1] and ax != axes[-2] else None
+                ax.xaxis.set_major_locator(MaxNLocator(integer=True))
                 ax.minorticks_on()
-                ax.grid(True, which='major', linewidth=0.15)
-                ax.grid(True, which='minor', linestyle=':', linewidth=0.1)
+                ax.grid(True, which='major', linewidth=0.15, linestyle='--')
+
             plt.show()
+
+            # Additional tau[k] plots for other groups (if K <= 3)
+            if self.K > 1 and self.K <= 3:
+                for k in range(1, self.K):
+                    plt.figure(figsize=(6, 5))
+                    labels = [f"R{m+1} E{q+1}" for m in range(self.M) for q in range(self.q[k])]
+                    sns.heatmap(corr_tau[k], annot=len(labels) <= 6, cmap='coolwarm', vmin=-1, vmax=1,
+                                xticklabels=labels, yticklabels=labels)
+                    plt.title(f"Random Effects Correlation (tau[{k}])")
+                    plt.show()
+
+            # Random Effects Histograms (first group, all responses if M <= 3)
+            if self.K > 0:
+                plt.figure(figsize=(12, 5))
+                mu_k = self.mu[0].reshape(self.M, self.q[0] * self.o[0], order='F')
+                for m in range(min(self.M, 3)):  # Limit to 3 responses
+                    plt.hist(mu_k[m], bins=20, alpha=0.5, label=f"Response {m+1}", edgecolor='black')
+                plt.title("Random Effects (Group 1)")
+                plt.xlabel("Random Effect")
+                plt.ylabel("Frequency")
+                plt.legend()
+                plt.grid(True, which='major', linewidth=0.15, linestyle='--')
+                plt.show()
