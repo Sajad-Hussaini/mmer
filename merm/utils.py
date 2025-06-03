@@ -1,4 +1,5 @@
 import numpy as np
+from scipy import sparse
 import pandas as pd
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error, mean_absolute_percentage_error
 from scipy import stats
@@ -8,6 +9,10 @@ import shap
 import statsmodels.api as sm
 from sklearn.model_selection import RandomizedSearchCV, GridSearchCV
 from .style import style
+
+def cov_to_corr(cov):
+    std = np.sqrt(np.diag(cov))
+    return cov / np.outer(std, std)
 
 def plot_pair(df: pd.DataFrame, xcol: str, ycol: str, x_label: str = None, y_label: str = None):
     " Plot scatter, distribution and boxplot of x and y "
@@ -235,3 +240,108 @@ def best_fe_model(fe_model, x, y):
         opt = RandomizedSearchCV(fe_model, param_dist, cv=5, n_iter=100,
                            scoring='neg_mean_squared_error', n_jobs=-1).fit(x, y)
         return opt.best_estimator_, opt.best_params_
+
+def generate_merm_data(n=1000, M=3, K=2, o_k=[50, 40], p=5, slope_columns=[[0], [0, 2]], seed=42):
+    """
+    Generate synthetic data for a multivariate mixed effects model.
+
+    Parameters:
+    - n (int): Number of observations.
+    - M (int): Number of responses.
+    - K (int): Number of grouping factors.
+    - q_k (list): Number of random effect types per group (1 intercept + q_k-1 slopes).
+    - o_k (list): Number of levels per group.
+    - p (int): Number of predictors.
+    - slope_columns (list): List of lists specifying X column indices for random slopes per group.
+    - seed (int): Random seed for reproducibility.
+
+    Returns:
+    - X (ndarray): (n, p) predictor matrix.
+    - Y (ndarray): (n, M) response matrix.
+    - groups (ndarray): (n, K) group assignments.
+    - rscovariate (list): List of (n, q_k[k]-1) arrays for random slopes.
+    - true_phi (ndarray): (M, M) residual covariance matrix.
+    - true_tau (list): List of (M*q_k[k], M*q_k[k]) random effect covariance matrices.
+    """
+    np.random.seed(seed)
+    X = np.random.randn(n, p)
+    groups = np.zeros((n, K), dtype=int)
+    for k in range(K):
+        groups[:, k] = np.repeat(np.arange(o_k[k]), n // o_k[k])
+
+    rscovariate = [None] * K
+    for k in range(K):
+        if slope_columns[k] is not None:
+            rscovariate[k] = X[:, slope_columns[k]]
+
+    # Generate residual covariance (phi: M x M)
+    true_phi = np.eye(M) * 0.5
+    true_phi[np.triu_indices(M, 1)] = 0.2
+    true_phi = true_phi + true_phi.T - np.eye(M) * 0.5
+
+    # Generate random effects covariances (tau_k: M*q_k x M*q_k)
+    true_tau = []
+    q_k = [1 if slope_columns[i] is None else 1 + len(slope_columns[i]) for i in range(K)]
+    # Example: set different diagonal/off-diagonal values for each k
+    diag_vals = [0.4 + 0.2 * k for k in range(K)]      # e.g., 0.4, 0.6, 0.8, ...
+    off_diag_vals = [0.1 + 0.05 * k for k in range(K)] # e.g., 0.1, 0.15, 0.2, ...
+    for k in range(K):
+        tau_k = np.eye(M * q_k[k]) * diag_vals[k]
+        tau_k[np.triu_indices(M * q_k[k], 1)] = off_diag_vals[k]
+        tau_k = tau_k + tau_k.T - np.eye(M * q_k[k]) * diag_vals[k]
+        true_tau.append(tau_k)
+
+    # Generate fixed effects
+    true_cof = np.random.randn(p, M) * 0.5
+    fX = X @ true_cof
+
+    # eps = np.random.multivariate_normal(np.zeros(M), true_phi, size=n)
+    eps = np.random.multivariate_normal(np.zeros(M * n), sparse.kron(true_phi, np.eye(n)).toarray()).reshape((n, M), order='F')
+
+    rand_eff = np.zeros((n, M))
+    for k in range(K):
+        Z_k, q_k_val, o_k_val = design_Z(groups[:, k], X[:, slope_columns[k]] if (slope_columns is not None and slope_columns[k] is not None) else None)
+        IM_Z_k = sparse.kron(sparse.eye(M), Z_k)
+        b_k = np.random.multivariate_normal(np.zeros(M * q_k[k] * o_k[k]), sparse.kron(true_tau[k], np.eye(o_k[k])).toarray())
+        rand_eff += (IM_Z_k @ b_k).reshape((n, M), order='F')
+
+    Y = fX + rand_eff + eps
+    return X, Y, groups, slope_columns, true_phi, true_tau, true_cof
+
+def design_Z(group: np.ndarray, random_slope_covariates: np.ndarray = None):
+        """
+        Construct random effects design matrix for a grouping factor.
+        
+        Parameters:
+            group: (n_samples,) array of group levels.
+            random_slope_covariates: (n_samples, q) array for random slopes (optional).
+        
+        Returns:
+            Z_k: Sparse matrix (n_samples, o_k * q_k).
+            q_k: Number of random effects per level.
+            o_k: Number of unique levels.
+        """
+        levels, level_indices = np.unique(group, return_inverse=True)
+        n = group.shape[0]
+        o = len(levels)
+        q = 1 if random_slope_covariates is None else 1 + random_slope_covariates.shape[1]
+        # Number of non-zero elements
+        nnz = n * q
+        rows = np.zeros(nnz, dtype=int)
+        cols = np.zeros(nnz, dtype=int)
+        data = np.zeros(nnz, dtype=float)
+        for i in range(n):
+            j = level_indices[i]  # level index (0 to o-1)
+            base_idx = i * q      # Starting (intercept) index in sparse arrays
+            # Intercept
+            rows[base_idx] = i
+            cols[base_idx] = j    # 0 * o + j
+            data[base_idx] = 1.0
+            # Slopes
+            if random_slope_covariates is not None:
+                for rs_idx in range(random_slope_covariates.shape[1]):
+                    idx = base_idx + (rs_idx + 1)
+                    rows[idx] = i
+                    cols[idx] = (rs_idx + 1) * o + j
+                    data[idx] = random_slope_covariates[i, rs_idx]
+        return sparse.csr_matrix((data, (rows, cols)), shape=(n, q * o)), q, o

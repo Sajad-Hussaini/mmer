@@ -6,6 +6,7 @@ import seaborn as sns
 from matplotlib.ticker import MaxNLocator
 from tqdm import tqdm
 from .style import style
+from . import utils
 
 class MERM:
     """
@@ -20,16 +21,6 @@ class MERM:
         self.fem = fixed_effects_model
         self.max_iter = max_iter
         self.mll_tol = mll_tol
-
-        self.phi = None     # Residual covariance matrix (M x M)
-        self.tau = {}       # Random effect covariance matrix across Responses and Effect types per group (M.q_k x M.q_k)
-        self.mu = {}        # Conditional random effects mean
-        self.sigma = {}     # Conditional random effects covariance
-        self.Z = {}         # Random effects design matrices
-        self.o = {}         # Number of levels per group
-        self.q = {}         # Number of effect types per group
-        self.fem_list = []  # List of fitted fixed effects models
-        self.mll_evol = []  # Track marginal log-likelihood
     
     def _initialization(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, random_slope_column: list[np.ndarray] = None):
         """
@@ -45,11 +36,19 @@ class MERM:
             raise ValueError(f"Expected {self.M} fixed effects models, got {len(self.fem_list)}")
         
         # Compute design matrices and initialize parameters
-        ZTZ = {}       # Precomputed Z_k.T @ Z_k
-        IM_Z = {}      # Precomputed Kronecker product of identity and Z_k
-        self.phi = np.eye(self.M)
+        self.phi = np.eye(self.M)    # Residual covariance matrix (M x M)
+        self.tau = {}                # Random effect covariance matrix across Responses and Effect types per group (M.q_k x M.q_k)
+        self.mu = {}                 # Conditional random effects mean
+        self.sigma = {}              # Conditional random effects covariance
+        self.Z = {}                  # Random effects design matrices
+        self.o = {}                  # Number of levels per group
+        self.q = {}                  # Number of effect types per group
+        self.mll_evol = []           # Track marginal log-likelihood
+        ZTZ = {}                     # Precomputed Z_k.T @ Z_k
+        IM_Z = {}                    # Precomputed Kronecker product of identity and Z_k
+        self.eps = np.zeros((self.n, self.M))  # Residuals
         for k in range(self.K):
-            rsc_k = X[:, self.rscol[k]] if self.rscol is not None else None
+            rsc_k = X[:, self.rscol[k]] if (self.rscol is not None and self.rscol[k] is not None) else None
             self.Z[k], self.q[k], self.o[k] = self.design_Z(groups[:, k], rsc_k)
             ZTZ[k] = self.Z[k].T @ self.Z[k]
             IM_Z[k] = sparse.kron(sparse.eye(self.M, format='csr'), self.Z[k])
@@ -67,7 +66,7 @@ class MERM:
             zb_sum += (IM_Z[k] @ self.mu[k]).reshape((self.n, self.M), order='F')
         return zb_sum
     
-    def fit_fixed_effects(self, X: np.ndarray, y: np.ndarray, zb_sum: np.ndarray):
+    def fit_fixed_effects(self, X, y, zb_sum):
         """
         Fit the fixed effects models to the adjusted response variables.
         """
@@ -99,11 +98,11 @@ class MERM:
             V_inv_IM_Zk_Dk = splu.solve(IM_Zk_Dk.toarray())
             self.sigma[k] = D[k] - D[k] @ IM_Z[k].T @ V_inv_IM_Zk_Dk
     
-    def update_phi(self, eps, ZTZ):
+    def update_phi(self, ZTZ):
         """
         Update the residual covariance matrix phi based on the residuals.
         """
-        S = eps.T @ eps
+        S = self.eps.T @ self.eps
         T = np.zeros((self.M, self.M))
         for m1 in range(self.M):
             for m2 in range(self.M):
@@ -162,23 +161,25 @@ class MERM:
             Self (fitted model).
         """
         ZTZ, IM_Z = self._initialization(X, y, groups, random_slope_column)
+        self._converged = False
         pbar = tqdm(range(1, self.max_iter + 1), desc="MERM Training", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
         for iter_ in pbar:
             zb_sum = self.get_zb_sum(IM_Z)
             fX = self.fit_fixed_effects(X, y, zb_sum)
-            eps_marginal_stacked = (y - fX).ravel(order='F')
+            eps_marginal = y - fX
             splu, D = self.get_splu_D(IM_Z)
-            self.E_step(splu, D, eps_marginal_stacked, IM_Z)
+            self.E_step(splu, D, eps_marginal.ravel(order='F'), IM_Z)
 
             zb_sum = self.get_zb_sum(IM_Z)
-            eps = y - fX - zb_sum
-            self.update_phi(eps, ZTZ)
+            np.subtract(eps_marginal, zb_sum, out=self.eps)
+            self.update_phi(ZTZ)
             self.update_tau()
-            mll = self.get_mll(eps_marginal_stacked, IM_Z)
+            mll = self.get_mll(eps_marginal.ravel(order='F'), IM_Z)
             self.mll_evol.append(mll)
 
             if iter_ > 1 and abs((self.mll_evol[-1] - self.mll_evol[-2]) / self.mll_evol[-2]) < self.mll_tol:
                 pbar.set_description("MERM Converged")
+                self._converged = True
                 break
         return self
     
@@ -206,7 +207,7 @@ class MERM:
         groups = np.zeros((n, self.K), dtype=int)
         V = sparse.kron(self.phi, sparse.eye(n, format='csr'))
         for k in range(self.K):
-            Z_k, q_k, o_k = self.design_Z(groups[:, k], X[:, self.rscol[k]] if self.rscol is not None else None)
+            Z_k, q_k, o_k = self.design_Z(groups[:, k], X[:, self.rscol[k]] if (self.rscol is not None and self.rscol[k] is not None) else None)
             D_k = sparse.kron(self.tau[k], sparse.eye(o_k, format='csr'))
             IM_Z_k = sparse.kron(sparse.eye(self.M, format='csr'), Z_k)
             V += IM_Z_k @ D_k @ IM_Z_k.T
@@ -215,23 +216,23 @@ class MERM:
         y_sampled = np.random.multivariate_normal(fX.ravel(order='F'), V.toarray())
         return y_sampled.reshape((n, self.M), order='F')
     
-    def design_Z(self, group: np.ndarray, random_slope_column: np.ndarray = None):
+    def design_Z(self, group: np.ndarray, random_slope_covariates: np.ndarray = None):
         """
         Construct random effects design matrix for a grouping factor.
         
         Parameters:
             group: (n_samples,) array of group levels.
-            random_slope_column: (n_samples, q) array for random slopes (optional).
+            random_slope_covariates: (n_samples, q) array for random slopes (optional).
         
         Returns:
             Z_k: Sparse matrix (n_samples, o_k * q_k).
-            o_k: Number of unique levels.
             q_k: Number of random effects per level.
+            o_k: Number of unique levels.
         """
         levels, level_indices = np.unique(group, return_inverse=True)
         n = group.shape[0]
         o = len(levels)
-        q = 1 if random_slope_column is None else 1 + random_slope_column.shape[1]
+        q = 1 if random_slope_covariates is None else 1 + random_slope_covariates.shape[1]
         # Number of non-zero elements
         nnz = n * q
         rows = np.zeros(nnz, dtype=int)
@@ -245,15 +246,15 @@ class MERM:
             cols[base_idx] = j    # 0 * o + j
             data[base_idx] = 1.0
             # Slopes
-            if random_slope_column is not None:
-                for rs_idx in range(random_slope_column.shape[1]):
+            if random_slope_covariates is not None:
+                for rs_idx in range(random_slope_covariates.shape[1]):
                     idx = base_idx + (rs_idx + 1)
                     rows[idx] = i
                     cols[idx] = (rs_idx + 1) * o + j
-                    data[idx] = random_slope_column[i, rs_idx]
+                    data[idx] = random_slope_covariates[i, rs_idx]
         return sparse.csr_matrix((data, (rows, cols)), shape=(n, q * o)), q, o
 
-    def summary(self, X, y):
+    def summary(self, show_plot: bool = True):
         """
         Display a summary of the fitted multivariate mixed effects model, including:
         - Convergence statistics (iterations, marginal log-likelihood).
@@ -263,105 +264,96 @@ class MERM:
         """
         if not self.mll_evol:
             raise ValueError("Model must be fitted before calling summary.")
-        # if not hasattr(self, 'X') or not hasattr(self, 'y'):
-        #     raise ValueError("X and y must be stored in self during fit for summary.")
 
         # Compute correlation matrices
-        phi_diag_sqrt = np.sqrt(np.diag(self.phi))
-        corr_phi = self.phi / np.outer(phi_diag_sqrt, phi_diag_sqrt)
-        corr_tau = {}
-        for k in range(self.K):
-            tau_diag_sqrt = np.sqrt(np.diag(self.tau[k]))
-            corr_tau[k] = self.tau[k] / np.outer(tau_diag_sqrt, tau_diag_sqrt)
-
-        # Compute residuals
-        IM_Z = {k: sparse.kron(sparse.eye(self.M, format='csr'), self.Z[k]) for k in range(self.K)}
-        zb_sum = self.get_zb_sum(IM_Z)
-        fX = np.zeros((self.n, self.M))
-        for m in range(self.M):
-            fX[:, m] = self.fem_list[m].predict(X)
-        eps = y - fX - zb_sum  # Residuals (n x M)
+        corr_phi = utils.cov_to_corr(self.phi)
+        corr_tau = {k: utils.cov_to_corr(self.tau[k]) for k in range(self.K)}
 
         # Print summary statistics
-        print("Multivariate Mixed Effects Model Summary:")
-        print(f"- Iterations: {len(self.mll_evol)}")
-        print(f"- Final Marginal Log-Likelihood: {self.mll_evol[-1]:.2f}")
-        print(f"- Residual Variances (per response):")
+        indent0 = ""
+        indent1 = "   "
+        indent2 = "       "
+        indent3 = "         "
+        indent4 = "            "
+
+        print("\n" + indent0 + "Multivariate Mixed Effects Model Summary")
+        print("=" * 50)
+        print(indent1 + f"FE Model: {type(self.fem_list[0]).__name__}")
+        print(indent1 + f"Iterations: {len(self.mll_evol)}")
+        print(indent1 + f"Converged: {self._converged}")
+        print(indent1 + f"Marginal Log-Likelihood: {self.mll_evol[-1]:.2f}")
+        print(indent1 + f"No. Observations: {self.n}")
+        print(indent1 + f"No. Response Variables: {self.M}")
+        print(indent1 + f"No. Grouping Variables: {self.K}")
+        print("-" * 50)
+        print(indent1 + f"Residual (Unexplained) Variances")
         for m in range(self.M):
-            print(f"  Response {m+1}: {self.phi[m, m]:.4f}")
-        print(f"- Random Effects Average Variances (per group):")
+            print(indent4 + f"Response {m+1}: {self.phi[m, m]:.4f}")
+        print("-" * 50)
+        print(indent1 + f"Random Effects Variances")
         for k in range(self.K):
-            avg_var = np.mean(np.diag(self.tau[k]))
-            print(f"  Group {k+1}: {avg_var:.4f}")
+            print(indent2 + f"Group {k+1}:")
+            for i in range(self.M):
+                print(indent3 + f"Response {i+1}:")
+                for j in range(self.q[k]):
+                    idx = i * self.q[k] + j
+                    effect_name = "intercept" if j == 0 else f"slope{j}"
+                    var = self.tau[k][idx, idx]
+                    print(indent4 + f"{effect_name}: {var:.4f}")
 
-        # Plotting
-        with plt.style.context('default'):  # Adjust if custom style is used
-            # Create figure layout: 2 rows, 2 columns for main plots
-            fig, axes = plt.subplots(2, 2, figsize=(12, 10), constrained_layout=True)
-            axes = axes.flatten()
+        if show_plot:
+            with style():
+                # 1. Marginal Log-Likelihood
+                _cm = 1 / 2.54
+                plt.figure(figsize=(7*_cm, 7*_cm))
+                plt.plot(range(1, len(self.mll_evol) + 1), self.mll_evol, marker='o')
+                plt.title("Marginal Log-Likelihood")
+                plt.xlabel("Iteration")
+                plt.ylabel("MLL")
+                plt.grid(True, which='major', linewidth=0.15, linestyle='--')
+                plt.text(0.95, 0.95, f'MLL = {self.mll_evol[-1]:.4f}', transform=plt.gca().transAxes, va='top', ha='right')
+                plt.gca().xaxis.set_major_locator(MaxNLocator(integer=True))
+                plt.show(block=False)
 
-            # 1. Marginal Log-Likelihood
-            axes[0].plot(self.mll_evol, marker='o')
-            axes[0].set_title("Marginal Log-Likelihood")
-            axes[0].set_xlabel("Iteration")
-            axes[0].set_ylabel("MLL")
-            axes[0].grid(True, which='major', linewidth=0.15, linestyle='--')
-            axes[0].text(0.95, 0.95, f'MLL = {self.mll_evol[-1]:.2f}', transform=axes[0].transAxes, va='top', ha='right')
-
-            # 2. Residual Correlation Heatmap (phi)
-            sns.heatmap(corr_phi, annot=True, cmap='coolwarm', vmin=-1, vmax=1, ax=axes[1],
-                        xticklabels=[f"R{m+1}" for m in range(self.M)],
-                        yticklabels=[f"R{m+1}" for m in range(self.M)])
-            axes[1].set_title("Residual Correlation (phi)")
-
-            # 3. Residual Histogram (first response or all if M <= 3)
-            if self.M <= 3:
-                for m in range(self.M):
-                    axes[2].hist(eps[:, m], bins=20, alpha=0.5, label=f"Response {m+1}", edgecolor='black')
-                axes[2].set_title("Residuals")
-                axes[2].set_xlabel("Residual")
-                axes[2].set_ylabel("Frequency")
-                axes[2].legend()
-            else:
-                axes[2].hist(eps[:, 0], bins=20, edgecolor='black')
-                axes[2].set_title("Residuals (Response 1)")
-                axes[2].set_xlabel("Residual")
-                axes[2].set_ylabel("Frequency")
-
-            # 4. Random Effects Correlation Heatmap (tau[0] for first group)
-            if self.K > 0:
-                labels = [f"R{m+1} E{q+1}" for m in range(self.M) for q in range(self.q[0])]
-                sns.heatmap(corr_tau[0], annot=len(labels) <= 6, cmap='coolwarm', vmin=-1, vmax=1, ax=axes[3],
-                            xticklabels=labels, yticklabels=labels)
-                axes[3].set_title("Random Effects Correlation (tau[0])")
-
-            # Adjust axes
-            for ax in axes:
-                ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-                ax.minorticks_on()
-                ax.grid(True, which='major', linewidth=0.15, linestyle='--')
-
-            plt.show()
-
-            # Additional tau[k] plots for other groups (if K <= 3)
-            if self.K > 1 and self.K <= 3:
-                for k in range(1, self.K):
-                    plt.figure(figsize=(6, 5))
-                    labels = [f"R{m+1} E{q+1}" for m in range(self.M) for q in range(self.q[k])]
-                    sns.heatmap(corr_tau[k], annot=len(labels) <= 6, cmap='coolwarm', vmin=-1, vmax=1,
-                                xticklabels=labels, yticklabels=labels)
-                    plt.title(f"Random Effects Correlation (tau[{k}])")
+                # 2. Residual Correlation Heatmap (phi)
+                phi_dim = self.phi.shape[0]
+                if phi_dim > 1:
+                    plt.figure(figsize=((phi_dim + 5)*_cm, (phi_dim + 5)*_cm))
+                    labels = [f"R{m+1}" for m in range(self.M)]
+                    sns.heatmap(corr_phi, annot=True, cmap='coolwarm', vmin=-1, vmax=1,
+                                xticklabels= labels, yticklabels=labels)
+                    plt.title(r"Residual Correlation ($\phi$)")
                     plt.show()
 
-            # Random Effects Histograms (first group, all responses if M <= 3)
-            if self.K > 0:
-                plt.figure(figsize=(12, 5))
-                mu_k = self.mu[0].reshape(self.M, self.q[0] * self.o[0], order='F')
-                for m in range(min(self.M, 3)):  # Limit to 3 responses
-                    plt.hist(mu_k[m], bins=20, alpha=0.5, label=f"Response {m+1}", edgecolor='black')
-                plt.title("Random Effects (Group 1)")
-                plt.xlabel("Random Effect")
-                plt.ylabel("Frequency")
-                plt.legend()
-                plt.grid(True, which='major', linewidth=0.15, linestyle='--')
-                plt.show()
+                # 3. Random Effects Correlation Heatmaps (tau_k, up to max_plots groups)
+                for k in range(self.K):
+                    tau_dim = self.tau[k].shape[0]
+                    if tau_dim > 1:
+                        labels = [f"R{m+1}-E{q+1}" for m in range(self.M) for q in range(self.q[k])]
+                        plt.figure(figsize=((tau_dim + 5)*_cm, (tau_dim + 5)*_cm))
+                        sns.heatmap(corr_tau[k], annot=True, cmap='coolwarm', vmin=-1, vmax=1,
+                                    xticklabels=labels, yticklabels=labels)
+                        plt.title(fr"Random Effects Correlation ($\tau$) for Group {k+1}")
+                        plt.show()
+
+                # 4. Residual Histograms (combined if M <= max_plots, else separate)
+                for m in range(self.M):
+                    plt.figure(figsize=(7*_cm, 7*_cm))
+                    plt.hist(self.eps[:, m], bins='auto', edgecolor='black')
+                    plt.title(f"Residuals (Response {m+1})")
+                    plt.xlabel("Residual")
+                    plt.ylabel("Frequency")
+                    plt.grid(True, which='major', linewidth=0.15, linestyle='--')
+                    plt.show()
+
+                # 5. Random Effects Histograms (combined per group if M <= max_plots, else separate)
+                for k in range(self.K):
+                    mu_k = self.mu[k].reshape(self.M, self.q[k] * self.o[k], order='F')
+                    for m in range(self.M):
+                        plt.figure(figsize=(7*_cm, 7*_cm))
+                        plt.hist(mu_k[m], bins='auto', edgecolor='black')
+                        plt.title(f"Random Effects (Group {k+1}, Response {m+1})")
+                        plt.xlabel("Random Effect")
+                        plt.ylabel("Frequency")
+                        plt.grid(True, which='major', linewidth=0.15, linestyle='--')
+                        plt.show()
