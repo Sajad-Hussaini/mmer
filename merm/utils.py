@@ -241,7 +241,7 @@ def best_fe_model(fe_model, x, y):
                            scoring='neg_mean_squared_error', n_jobs=-1).fit(x, y)
         return opt.best_estimator_, opt.best_params_
 
-def generate_merm_data(n=1000, M=3, K=2, o_k=[50, 40], p=5, slope_columns=[[0], [0, 2]], seed=42):
+def generate_merm_data(n=1000, M=3, K=2, o_k=[50, 40], p=5, slope_columns=[[0], [0, 2]]):
     """
     Generate synthetic data for a multivariate mixed effects model.
 
@@ -263,17 +263,11 @@ def generate_merm_data(n=1000, M=3, K=2, o_k=[50, 40], p=5, slope_columns=[[0], 
     - true_phi (ndarray): (M, M) residual covariance matrix.
     - true_tau (list): List of (M*q_k[k], M*q_k[k]) random effect covariance matrices.
     """
-    np.random.seed(seed)
     X = np.random.randn(n, p)
     groups = np.zeros((n, K), dtype=int)
     for k in range(K):
         groups[:, k] = np.repeat(np.arange(o_k[k]), n // o_k[k])
-
-    rscovariate = [None] * K
-    for k in range(K):
-        if slope_columns[k] is not None:
-            rscovariate[k] = X[:, slope_columns[k]]
-
+        
     # Generate residual covariance (phi: M x M)
     true_phi = np.eye(M) * 0.5
     true_phi[np.triu_indices(M, 1)] = 0.2
@@ -283,7 +277,7 @@ def generate_merm_data(n=1000, M=3, K=2, o_k=[50, 40], p=5, slope_columns=[[0], 
     true_tau = []
     q_k = [1 if slope_columns[i] is None else 1 + len(slope_columns[i]) for i in range(K)]
     # Example: set different diagonal/off-diagonal values for each k
-    diag_vals = [0.4 + 0.2 * k for k in range(K)]      # e.g., 0.4, 0.6, 0.8, ...
+    diag_vals = [0.4 + 0.15 * k for k in range(K)]      # e.g., 0.4, 0.6, 0.8, ...
     off_diag_vals = [0.1 + 0.05 * k for k in range(K)] # e.g., 0.1, 0.15, 0.2, ...
     for k in range(K):
         tau_k = np.eye(M * q_k[k]) * diag_vals[k]
@@ -295,8 +289,8 @@ def generate_merm_data(n=1000, M=3, K=2, o_k=[50, 40], p=5, slope_columns=[[0], 
     true_cof = np.random.randn(p, M) * 0.5
     fX = X @ true_cof
 
-    # eps = np.random.multivariate_normal(np.zeros(M), true_phi, size=n)
-    eps = np.random.multivariate_normal(np.zeros(M * n), sparse.kron(true_phi, np.eye(n)).toarray()).reshape((n, M), order='F')
+    eps = np.random.multivariate_normal(np.zeros(M), true_phi, size=n)
+    # eps = np.random.multivariate_normal(np.zeros(M * n), sparse.kron(true_phi, np.eye(n)).toarray()).reshape((n, M), order='F')
 
     rand_eff = np.zeros((n, M))
     for k in range(K):
@@ -309,39 +303,36 @@ def generate_merm_data(n=1000, M=3, K=2, o_k=[50, 40], p=5, slope_columns=[[0], 
     return X, Y, groups, slope_columns, true_phi, true_tau, true_cof
 
 def design_Z(group: np.ndarray, random_slope_covariates: np.ndarray = None):
-        """
-        Construct random effects design matrix for a grouping factor.
-        
-        Parameters:
-            group: (n_samples,) array of group levels.
-            random_slope_covariates: (n_samples, q) array for random slopes (optional).
-        
-        Returns:
-            Z_k: Sparse matrix (n_samples, o_k * q_k).
-            q_k: Number of random effects per level.
-            o_k: Number of unique levels.
-        """
-        levels, level_indices = np.unique(group, return_inverse=True)
-        n = group.shape[0]
-        o = len(levels)
-        q = 1 if random_slope_covariates is None else 1 + random_slope_covariates.shape[1]
-        # Number of non-zero elements
-        nnz = n * q
-        rows = np.zeros(nnz, dtype=int)
-        cols = np.zeros(nnz, dtype=int)
-        data = np.zeros(nnz, dtype=float)
-        for i in range(n):
-            j = level_indices[i]  # level index (0 to o-1)
-            base_idx = i * q      # Starting (intercept) index in sparse arrays
-            # Intercept
-            rows[base_idx] = i
-            cols[base_idx] = j    # 0 * o + j
-            data[base_idx] = 1.0
-            # Slopes
-            if random_slope_covariates is not None:
-                for rs_idx in range(random_slope_covariates.shape[1]):
-                    idx = base_idx + (rs_idx + 1)
-                    rows[idx] = i
-                    cols[idx] = (rs_idx + 1) * o + j
-                    data[idx] = random_slope_covariates[i, rs_idx]
-        return sparse.csr_matrix((data, (rows, cols)), shape=(n, q * o)), q, o
+    """
+    Construct random effects design matrix for a grouping factor.
+    Parameters:
+        group: (n_samples,) array of group levels.
+        random_slope_covariates: (n_samples, q) array for random slopes (optional).
+    Returns:
+        Z: Sparse matrix (n_samples, q * o).
+        q: Number of random effects.
+        o: Number of unique levels.
+    """
+    n = group.shape[0]
+    levels, level_indices = np.unique(group, return_inverse=True)
+    o = len(levels)
+    # Intercept block: one-hot encoding for group membership
+    intercept_block = sparse.csr_array((np.ones(n), (np.arange(n), level_indices)), shape=(n, o))
+    blocks = [intercept_block]
+    q = 1
+    if random_slope_covariates is not None:
+        q += random_slope_covariates.shape[1]
+        # For each slope covariate, multiply one-hot by covariate column
+        for j in range(random_slope_covariates.shape[1]):
+            data = random_slope_covariates[:, j]
+            slope_block = sparse.csr_array((data, (np.arange(n), level_indices)), shape=(n, o))
+            blocks.append(slope_block)
+    # Stack all blocks horizontally
+    Z = sparse.hstack(blocks, format='csr')
+    return Z, q, o
+
+def IM_kron_Z(M, Z):
+    """
+    Expands the random effects design matrix Z to a block diagonal matrix for M responses.
+    """
+    return sparse.kron(sparse.eye_array(M, format='csr'), Z, format='csr')
