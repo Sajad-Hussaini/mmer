@@ -1,13 +1,113 @@
 import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error, mean_absolute_percentage_error
-from scipy import stats
+from scipy.stats import probplot, linregress
 import seaborn as sns
 import matplotlib.pyplot as plt
 import shap
-import statsmodels.api as sm
 from sklearn.model_selection import RandomizedSearchCV, GridSearchCV
+from matplotlib.ticker import MaxNLocator
 from .style import style
+from . import utils
+
+_CM = 1 / 2.54  # cm to inches conversion factor
+
+def plot_log_likeligood(model):
+    with style():
+        plt.figure(figsize=(7*_CM, 7*_CM))
+        plt.plot(range(1, len(model.logL) + 1), model.logL, marker='o')
+        plt.title("Log-Likelihood")
+        plt.xlabel("Iteration")
+        plt.ylabel("LogL")
+        plt.grid(True, which='major', linewidth=0.15, linestyle='--')
+        plt.text(0.95, 0.95, f'LogL = {model.logL[-1]:.4f}', transform=plt.gca().transAxes, va='top', ha='right')
+        plt.gca().xaxis.set_major_locator(MaxNLocator(integer=True))
+        plt.show(block=False)
+
+def plot_residual_covariance(model, corr=False):
+    with style():
+        data = utils.cov_to_corr(model.phi) if corr else model.phi
+        dim = data.shape[0]
+        plt.figure(figsize=((dim + 5)*_CM, (dim + 5)*_CM))
+        labels = [f"R{m+1}" for m in range(dim)]
+        sns.heatmap(data, annot=True, cmap='coolwarm', vmin=-1 if corr else None, vmax=1 if corr else None,
+                    xticklabels= labels, yticklabels=labels)
+        default_title = r"Residual Correlation ($\phi$)" if corr else r"Residual Covariance ($\phi$)"
+        plt.title(default_title)
+        plt.show()
+
+def plot_random_effects_covariance(model, corr=False):
+    with style():
+        for k in range(model.n_groups):
+            data = utils.cov_to_corr(model.tau[k]) if corr else model.tau[k]
+            dim = data.shape[0]
+            labels = [f"R{m+1}-{'I' if q == 0 else f'S{q}'}" for m in range(model.n_res) for q in range(model.n_effect[k])]
+            plt.figure(figsize=((dim + 5)*_CM, (dim + 5)*_CM))
+            sns.heatmap(data, annot=True, cmap='coolwarm', vmin=-1 if corr else None, vmax=1 if corr else None,
+                        xticklabels=labels, yticklabels=labels)
+            default_title = fr"Random Effects Correlation ($\tau$) for Group {k+1}" if corr else fr"Random Effects Covariance ($\tau$) for Group {k+1}"
+            plt.title(default_title)
+            plt.show()
+
+def plot_residual_hist(residuals):
+    with style():
+        for m in range(residuals.shape[1]):
+            plt.figure(figsize=(7*_CM, 7*_CM))
+            plt.hist(residuals[:, m], bins='auto', edgecolor='black')
+            plt.title(f"Response {m+1} Residuals")
+            plt.xlabel("Residual")
+            plt.ylabel("Frequency")
+            plt.grid(True, which='major', linewidth=0.15, linestyle='--')
+            plt.show()
+
+def plot_residual_qq(residuals):
+    with style():
+        for m in range(residuals.shape[1]):
+            plt.figure(figsize=(7*_CM, 7*_CM))
+            probplot(residuals[:, m], dist="norm", plot=plt)
+            plt.title(f"Response {m+1} Residuals")
+            plt.grid(True, which='major', linewidth=0.15, linestyle='--')
+            plt.show()
+
+def plot_random_effect_hist(random_effects, n_res, n_effect, n_level):
+    with style():
+        for k, mu_k in random_effects.items():
+            mu_k = mu_k.reshape(n_res, n_effect[k], n_level[k])
+            for m in range(n_res):
+                for j in range(n_effect[k]):
+                    plt.figure(figsize=(7*_CM, 7*_CM))
+                    plt.hist(mu_k[m, j, :], bins='auto', edgecolor='black')
+                    effect_name = "Intercept" if j == 0 else f"Slope {j}"
+                    plt.title(f"Group {k+1} Response {m+1} Random {effect_name}")
+                    plt.xlabel("Random Effect")
+                    plt.ylabel("Frequency")
+                    plt.grid(True, which='major', linewidth=0.15, linestyle='--')
+                    plt.show()
+
+def plot_random_effect_qq(random_effects, n_res, n_effect, n_level):
+    with style():
+        for k, mu_k in random_effects.items():
+            mu_k = mu_k.reshape(n_res, n_effect[k], n_level[k])
+            for m in range(n_res):
+                for j in range(n_effect[k]):
+                    plt.figure(figsize=(7*_CM, 7*_CM))
+                    probplot(mu_k[m, j, :], dist="norm", plot=plt)
+                    effect_name = "Intercept" if j == 0 else f"Slope {j}"
+                    plt.title(f"Group {k+1} Response {m+1} Random {effect_name}")
+                    plt.grid(True, which='major', linewidth=0.15, linestyle='--')
+                    plt.show()
+
+def plot_residuals_vs_fitted(fitted_value, random_effects, residuasls, n_res):
+    with style():
+        for m in range(n_res):
+            plt.figure(figsize=(7*_CM, 7*_CM))
+            plt.scatter(fitted_value[:, m], residuasls[:, m], alpha=0.5, edgecolor='black')
+            plt.axhline(0, color='red', linestyle='--', linewidth=0.5)
+            plt.title(f"Response {m+1}: Residuals vs Fitted")
+            plt.xlabel("Fitted Values")
+            plt.ylabel("Residuals")
+            plt.grid(True, which='major', linewidth=0.15, linestyle='--')
+            plt.show()
 
 def plot_pair(df: pd.DataFrame, xcol: str, ycol: str, x_label: str = None, y_label: str = None):
     " Plot scatter, distribution and boxplot of x and y "
@@ -97,7 +197,7 @@ def plot_residuals(df: pd.DataFrame, xcol: str, ycol: str, x_label: str = None, 
         axes['r'].boxplot(df[ycol], widths=0.7)
 
         sns.regplot(data=df, x=xcol, y=ycol, ci=95, line_kws={'color': 'red'}, ax=axes['c'])
-        p_value = stats.linregress(df[xcol], df[ycol])[3]
+        p_value = linregress(df[xcol], df[ycol])[3]
         axes['c'].text(0.95, 0.95, f'p-value={p_value:.3f}', transform=axes['c'].transAxes, ha='right', va='top')
         axes['c'].set_xlabel(x_label)
         axes['c'].set_ylabel(y_label, rotation=0)
@@ -117,13 +217,3 @@ def shap_plots(model, x: np.ndarray, var: str):
     shap.summary_plot(shap_values, x)
     shap.summary_plot(shap_values, x, plot_type="bar")
     shap.dependence_plot(var, shap_values, x)
-
-def qq_plot(resid):
-    """
-    Normality of Residuals
-    """
-    with style():
-        plt.figure(figsize=(5/2.54, 5/2.54), layout='constrained')
-        sm.qqplot(resid, line='s')
-        plt.title('Q-Q Plot of Residuals')
-        plt.show()
