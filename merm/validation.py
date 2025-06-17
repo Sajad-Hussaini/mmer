@@ -62,61 +62,84 @@ def create_data(columns, transformer_x, vary_param, vary_range, fixed_params):
     
     return df_eval, transformer_x.transform(df_eval.to_numpy())
 
-def best_fe_model(fe_model, x, y):
-        """
-        Tune hyperparameters of the fixed effect regressor
-        """
-        fe_model_name = type(fe_model).__name__
-        if fe_model_name == 'RandomForestRegressor':
-            from scipy.stats import randint, uniform
-            param_dist = {
-                'n_estimators': randint(5, 400),              # Number of trees in the forest
-                'max_depth': randint(2, 15),                  # Maximum depth of the trees
-                'min_samples_split': randint(2, 18),          # Minimum number of samples required to split an internal node
-                'min_samples_leaf': randint(1, 10),           # Minimum number of samples required to be at a leaf node
-                'max_samples': uniform(0.5, 0.4)              # Fraction of samples to draw from x to train each base estimator
-            }
-        elif fe_model_name == 'MLPRegressor':
-            param_dist = {
-                'hidden_layer_sizes': [(5,), (8,), (12,), (18,), (25,), (50,), (5, 5), (5, 5, 5), (100, 100), (50, 50, 50)],
-                'activation': ['relu', 'tanh', 'logistic'],
-                'solver': ['adam', 'sgd', 'lbfgs'],
-                'learning_rate': ['constant', 'adaptive']}
-        elif fe_model_name == 'CatBoostRegressor':
-            param_dist = {
-                'iterations': (5, 300),
-                'learning_rate': (0.01, 0.5),
-                'depth': (2, 15),
-                'l2_leaf_reg': (1, 7),
-                'bagging_temperature': (0.5, 1.5)}
-        elif fe_model_name == 'GradientBoostingRegressor':
-            param_dist = {
-                'n_estimators': (5, 400),
-                'learning_rate': (0.01, 0.5),
-                'max_depth': (2, 15),
-                'min_samples_split': (2, 10),
-                'min_samples_leaf': (1, 8)}
-        elif fe_model_name == 'xGBRegressor':
-            param_dist = {
-                'n_estimators': (5, 400),
-                'max_depth': (2, 15),
-                'learning_rate': (0.001, 0.1),
-                'min_child_weight': (1, 5),
-                'subsample': (0.5, 0.9),
-                'colsample_bytree': (0.5, 0.9)}
-        elif fe_model_name == 'LGBMRegressor':
-            param_dist = {
-                'n_estimators': (5, 400),
-                'learning_rate': (0.001, 0.1),
-                'max_depth': (2, 15),
-                'min_child_samples': (5, 40),
-                'subsample': (0.7, 0.9),
-                'colsample_bytree': (0.6, 0.9)}
-        else:
-            raise ValueError("Unknown regressor for hyperparameter tuning.")
-        opt = RandomizedSearchCV(fe_model, param_dist, cv=5, n_iter=100,
-                           scoring='neg_mean_squared_error', n_jobs=-1).fit(x, y)
-        return opt.best_estimator_, opt.best_params_
+def best_fe_model(fe_model, x, y, cv=5):
+    """
+    Tune hyperparameters of the fixed effect regressor with exhaustive search.
+
+    Parameters:
+    - fe_model: sklearn-compatible regressor instance.
+    - x: ndarray, predictor matrix.
+    - y: ndarray, response matrix (can be multivariate).
+    - cv: int, number of cross-validation folds.
+
+    Returns:
+    - best_model: trained model with optimal hyperparameters.
+    - best_params: dict, best hyperparameters.
+    """
+    fe_model_name = type(fe_model).__name__
+
+    # Define hyperparameter grids for supported regressors
+    if fe_model_name == 'RandomForestRegressor':
+        param_grid = {
+            'n_estimators': [50, 100, 200, 400, 800],
+            'max_depth': [5, 10, 15, 20, None],
+            'min_samples_split': [2, 5, 10, 20],
+            'min_samples_leaf': [1, 2, 4, 8],
+            'max_features': ['sqrt', 'log2', None],
+            'bootstrap': [True, False]
+        }
+    elif fe_model_name == 'MLPRegressor':
+        param_grid = {
+            'hidden_layer_sizes': [(5,), (10,), (20,), (50,), (100,), (5, 5), (10, 10), (50, 50)],
+            'activation': ['relu', 'tanh', 'logistic'],
+            'solver': ['adam', 'sgd', 'lbfgs'],
+            'learning_rate': ['constant', 'adaptive'],
+            'alpha': [0.0001, 0.001, 0.01, 0.1]
+        }
+    elif fe_model_name == 'CatBoostRegressor':
+        param_grid = {
+            'iterations': [50, 100, 200, 500],
+            'learning_rate': [0.01, 0.05, 0.1, 0.3],
+            'depth': [4, 6, 8, 10],
+            'l2_leaf_reg': [1, 3, 5, 7],
+            'bagging_temperature': [0.5, 1.0, 1.5]
+        }
+    elif fe_model_name == 'GradientBoostingRegressor':
+        param_grid = {
+            'n_estimators': [50, 100, 200, 400],
+            'learning_rate': [0.01, 0.05, 0.1, 0.3],
+            'max_depth': [4, 6, 8, 10],
+            'min_samples_split': [2, 5, 10],
+            'min_samples_leaf': [1, 2, 4]
+        }
+    elif fe_model_name == 'xGBRegressor':
+        param_grid = {
+            'n_estimators': [50, 100, 200, 400],
+            'max_depth': [4, 6, 8, 10],
+            'learning_rate': [0.01, 0.05, 0.1],
+            'min_child_weight': [1, 3, 5],
+            'subsample': [0.5, 0.7, 0.9],
+            'colsample_bytree': [0.5, 0.7, 0.9]
+        }
+    elif fe_model_name == 'LGBMRegressor':
+        param_grid = {
+            'n_estimators': [50, 100, 200, 400],
+            'learning_rate': [0.01, 0.05, 0.1],
+            'max_depth': [4, 6, 8, 10],
+            'min_child_samples': [5, 10, 20],
+            'subsample': [0.7, 0.8, 0.9],
+            'colsample_bytree': [0.6, 0.7, 0.8]
+        }
+    else:
+        raise ValueError("Unknown regressor for hyperparameter tuning.")
+
+    # Use GridSearchCV for exhaustive tuning
+    tuner = GridSearchCV(fe_model, param_grid, cv=cv, scoring='neg_mean_squared_error', n_jobs=-1)
+
+    # Fit the tuner
+    tuner.fit(x, y)
+
+    return tuner.best_estimator_, tuner.best_params_
 
 def generate_merm_data(n=1000, M=3, K=2, o_k=[50, 40], p=5, slope_columns=[[0], [0, 2]]):
     """

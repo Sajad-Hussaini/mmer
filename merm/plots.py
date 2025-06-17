@@ -26,7 +26,7 @@ def plot_log_likeligood(model):
 
 def plot_residual_covariance(model, corr=False):
     with style():
-        data = utils.cov_to_corr(model.phi) if corr else model.phi
+        data = utils.cov_to_corr(model.residuals_covariance) if corr else model.residuals_covariance
         dim = data.shape[0]
         plt.figure(figsize=((dim + 5)*_CM, (dim + 5)*_CM))
         labels = [f"R{m+1}" for m in range(dim)]
@@ -38,14 +38,14 @@ def plot_residual_covariance(model, corr=False):
 
 def plot_random_effects_covariance(model, corr=False):
     with style():
-        for k in range(model.n_groups):
-            data = utils.cov_to_corr(model.tau[k]) if corr else model.tau[k]
+        for k in range(model.num_groups):
+            data = utils.cov_to_corr(model.random_effects_covariance[k]) if corr else model.random_effects_covariance[k]
             dim = data.shape[0]
-            labels = [f"R{m+1}-{'I' if q == 0 else f'S{q}'}" for m in range(model.n_res) for q in range(model.n_effect[k])]
+            labels = [f"R{m+1}-{'I' if q == 0 else f'S{q}'}" for m in range(model.num_res) for q in range(model.n_effect[k])]
             plt.figure(figsize=((dim + 5)*_CM, (dim + 5)*_CM))
             sns.heatmap(data, annot=True, cmap='coolwarm', vmin=-1 if corr else None, vmax=1 if corr else None,
                         xticklabels=labels, yticklabels=labels)
-            default_title = fr"Random Effects Correlation ($\tau$) for Group {k+1}" if corr else fr"Random Effects Covariance ($\tau$) for Group {k+1}"
+            default_title = fr"Random Effects Correlation ($\random_effects_covariance$) for Group {k+1}" if corr else fr"Random Effects Covariance ($\random_effects_covariance$) for Group {k+1}"
             plt.title(default_title)
             plt.show()
 
@@ -69,11 +69,11 @@ def plot_residual_qq(residuals):
             plt.grid(True, which='major', linewidth=0.15, linestyle='--')
             plt.show()
 
-def plot_random_effect_hist(random_effects, n_res, n_effect, n_level):
+def plot_random_effect_hist(random_effects, num_res, n_effect, n_level):
     with style():
         for k, mu_k in random_effects.items():
-            mu_k = mu_k.reshape(n_res, n_effect[k], n_level[k])
-            for m in range(n_res):
+            mu_k = mu_k.reshape(num_res, n_effect[k], n_level[k])
+            for m in range(num_res):
                 for j in range(n_effect[k]):
                     plt.figure(figsize=(7*_CM, 7*_CM))
                     plt.hist(mu_k[m, j, :], bins='auto', edgecolor='black')
@@ -84,11 +84,11 @@ def plot_random_effect_hist(random_effects, n_res, n_effect, n_level):
                     plt.grid(True, which='major', linewidth=0.15, linestyle='--')
                     plt.show()
 
-def plot_random_effect_qq(random_effects, n_res, n_effect, n_level):
+def plot_random_effect_qq(random_effects, num_res, n_effect, n_level):
     with style():
         for k, mu_k in random_effects.items():
-            mu_k = mu_k.reshape(n_res, n_effect[k], n_level[k])
-            for m in range(n_res):
+            mu_k = mu_k.reshape(num_res, n_effect[k], n_level[k])
+            for m in range(num_res):
                 for j in range(n_effect[k]):
                     plt.figure(figsize=(7*_CM, 7*_CM))
                     probplot(mu_k[m, j, :], dist="norm", plot=plt)
@@ -97,9 +97,9 @@ def plot_random_effect_qq(random_effects, n_res, n_effect, n_level):
                     plt.grid(True, which='major', linewidth=0.15, linestyle='--')
                     plt.show()
 
-def plot_residuals_vs_fitted(fitted_value, random_effects, residuasls, n_res):
+def plot_residuals_vs_fitted(fitted_value, random_effects, residuasls, num_res):
     with style():
-        for m in range(n_res):
+        for m in range(num_res):
             plt.figure(figsize=(7*_CM, 7*_CM))
             plt.scatter(fitted_value[:, m], residuasls[:, m], alpha=0.5, edgecolor='black')
             plt.axhline(0, color='red', linestyle='--', linewidth=0.5)
