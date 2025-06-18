@@ -27,23 +27,22 @@ class MERM:
         Initialize the model parameters and design matrices based on input data.
         """
         self.num_obs, self.num_responses = y.shape
-        self.self.num_groups = groups.shape[1]
+        self.num_groups = groups.shape[1]
         self.slope_indices = random_slope_indices
 
-        z_matrices, self.num_random_effects, self.num_levels = utils.random_effect_design_matrices(X, groups, self.slope_indices)
-        Z_blocks = utils.block_diag_design_matrices(z_matrices, self.num_responses)
-        Z_crossprods = utils.crossprod_design_matrices(z_matrices)
+        Z_matrices, self.num_random_effects, self.num_levels = utils.random_effect_design_matrices(X, groups, self.slope_indices)
+        # Z_blocks = utils.block_diag_design_matrices(Z_matrices, self.num_responses)
+        Z_crossprods = utils.crossprod_design_matrices(Z_matrices)
 
         self.residuals_covariance = np.eye(self.num_responses)
-        self.random_effects_covariance = {k: np.eye(self.num_responses * effect_k) for k, effect_k in self.num_random_effects.items()}
+        self.random_effects_covariance = {k: np.eye(self.num_responses * q_k) for k, q_k in self.num_random_effects.items()}
         
         self.fe_models = [clone(self.fe_model) for _ in range(self.num_responses)] if not isinstance(self.fe_model, list) else self.fe_model
         if len(self.fe_models) != self.num_responses:
             raise ValueError(f"Expected {self.num_responses} fixed effects models, got {len(self.fe_models)}")
         
         marginal_residuals = self.compute_marginal_residuals(X, y, 0.0)
-        cached_data = TempData(marginal_residuals, Z_blocks, Z_crossprods)
-        return cached_data
+        return marginal_residuals, Z_matrices, Z_crossprods
     
     def compute_marginal_residuals(self, X, y, effects_sum):
         """
@@ -56,81 +55,58 @@ class MERM:
         marginal_residuals = y - fX
         return marginal_residuals
     
-    def V_matvec(self, x_vec):
+    def V_matvec(self, x_vec, Z_matrices):
         """
-        Efficiently computes V @ x_vec using Kronecker structure.
-        Returns: (M*n, 1)
+        Efficiently computes matrix-vector multiplication without full matrix construction and leverage the Kronecker structure.
         """
         n, M = self.num_obs, self.num_responses
-        x_mat = x_vec.reshape((n, M), order='F')
-        Vx = x_mat @ self.residuals_covariance.T
+        x_mat = x_vec.reshape((M, n)).T
+        Vx = x_mat @ self.residuals_covariance
 
         for k in range(self.num_groups):
-            Z_k = self.cached_data.Z[k]
             q_k, o_k = self.num_random_effects[k], self.num_levels[k]
-            tau_k = self.random_effects_covariance[k]
-
-            B_k = Z_k.T @ x_mat
-            B_k3d = B_k.T.reshape((M, q_k, o_k))
-            B_k3d = np.transpose(B_k3d, (2, 0, 1))
-            B_mat = B_k3d.reshape((o_k, M * q_k))
-
-            C_k = B_mat @ tau_k.T
-            C_k3d = C_k.reshape((o_k, M, q_k))
-            C_k3d = np.transpose(C_k3d, (1, 2, 0))
-            C_mat = C_k3d.reshape((M, q_k * o_k)).T
-
-            Vx += Z_k @ C_mat
-        return Vx.ravel(order='F')
+            Z_k = Z_matrices[k]
+            A_k = self.Wk_T_matvec(x_vec, Z_matrices, k)
+            A_k = A_k.reshape((M, q_k * o_k)).T
+            Vx += Z_k @ A_k
+        return Vx.T.ravel()
     
-    def e_step(self, cached_data):
+    def e_step(self, marginal_residuals, Z_matrices):
         """
         Perform the E-step of the EM algorithm to compute the conditional expectation and covariance of the random effects.
         """
         n, M = self.num_obs, self.num_responses
         size = n * M
-        V_op = LinearOperator(shape=(size, size), matvec=self.V_matvec)
-        rhs = cached_data.marginal_residuals.ravel(order='F')
-        V_inv_eps, info_V_inv_eps = cg(V_op, rhs, tol=1e-6, maxiter=1000)
-
-        if info_V_inv_eps != 0:
-            print(f"Warning: CG solver for V_inv_eps did not converge. Info: {info_V_inv_eps}")
-
-        mu = self._compute_mu_optimized(V_inv_eps, self.random_effects_covariance, cached_data.Z_blocks)
-        sigma = self._compute_sigma_optimized(self.random_effects_covariance, V_operator, cached_data.Z_blocks)
-
-        log_likelihood = None 
-
-        cached_data.mu = mu
-        cached_data.sigma = sigma
-        cached_data.log_likelihood = log_likelihood
-        return cached_data
+        V_op = LinearOperator(shape=(size, size), matvec=lambda x_vec: self.V_matvec(x_vec, Z_matrices))
+        rhs = marginal_residuals.T.ravel()
+        V_inv_eps, _ = cg(V_op, rhs)
+        log_likelihood = self.compute_log_likelihood(rhs, V_inv_eps, V_op)
+        mu = self.compute_mu(V_inv_eps, Z_matrices)
+        sigma = self.compute_sigma(V_op, Z_matrices)
+        return mu, sigma, log_likelihood
     
-    def e_stepo(self, cached_data):
-        """
-        Perform the E-step of the EM algorithm to compute the conditional expectation and covariance of the random effects.
-        """
-        splu, D = self.splu_decomposition(self.num_obs, self.num_levels, cached_data.Z_blocks)
-        V_inv_eps = splu.solve(cached_data.marginal_residuals.ravel(order='F'))
-        log_likelihood = self.compute_log_likelihood(cached_data.marginal_residuals.ravel(order='F'), V_inv_eps, splu)
-        mu = self.compute_mu(V_inv_eps, D, cached_data.Z_blocks)
-        sigma = self.compute_sigma(D, splu, cached_data.Z_blocks)
-        cached_data.mu = mu
-        cached_data.sigma = sigma
-        cached_data.log_likelihood = log_likelihood
-        return cached_data
+    # def e_step(self, marginal_residuals, Z_matrices, Z_blocks):
+    #     """
+    #     Perform the E-step of the EM algorithm to compute the conditional expectation and covariance of the random effects.
+    #     """
+    #     splu, D = self.splu_decomposition(self.num_obs, self.num_levels, Z_blocks)
+    #     m_eps_stack = marginal_residuals.T.ravel()
+    #     V_inv_eps = splu.solve(m_eps_stack)
+    #     log_likelihood = self.compute_log_likelihood(m_eps_stack, V_inv_eps, splu)
+    #     mu = self.compute_mu(V_inv_eps, Z_matrices)
+    #     sigma = self.compute_sigma(D, splu, Z_blocks)
+    #     return mu, sigma, log_likelihood
     
-    def m_step(self, X, y, cached_data):
+    def m_step(self, X, y, mu, sigma, Z_matrices, Z_crossprods):
         """
         Perform the E-step of the EM algorithm to update the fixed effects functions, residual, and random effects covariance matrices.
         """
-        effects_sum = self.sum_random_effects(cached_data.mu, cached_data.Z_blocks, self.num_obs)
+        effects_sum = self.sum_random_effects(mu, Z_matrices)
         marginal_residuals = self.compute_marginal_residuals(X, y, effects_sum)
         eps = marginal_residuals - effects_sum
-        self.compute_residuals_covariance(cached_data.sigma, eps, cached_data.Z_crossprods)
-        self.compute_random_effects_covariance(cached_data.mu, cached_data.sigma)
-        cached_data.marginal_residuals = marginal_residuals
-        return cached_data
+        self.compute_residuals_covariance(sigma, eps, Z_crossprods)
+        self.compute_random_effects_covariance(mu, sigma)
+        return marginal_residuals
     
     def compute_residuals_covariance(self, sigma, eps, Z_crossprods):
         """
@@ -141,7 +117,7 @@ class MERM:
         for m1 in range(self.num_responses):
             for m2 in range(self.num_responses):
                 trace_sum = 0.0
-                for k in range(self.self.num_groups):
+                for k in range(self.num_groups):
                     o_k, q_k = self.num_levels[k], self.num_random_effects[k]
                     idx1 = slice(m1 * q_k * o_k, (m1 + 1) * q_k * o_k)
                     idx2 = slice(m2 * q_k * o_k, (m2 + 1) * q_k * o_k)
@@ -154,7 +130,7 @@ class MERM:
         """
         Update the random effects covariance matrix random_effects_covariance.
         """
-        for k in range(self.self.num_groups):
+        for k in range(self.num_groups):
             o_k, q_k = self.num_levels[k], self.num_random_effects[k]
             mu_k = mu[k]
             sigma_k = sigma[k]
@@ -170,58 +146,189 @@ class MERM:
                 sum_tau += np.outer(mu_k_j, mu_k_j) + sigma_k_block
             self.random_effects_covariance[k] = sum_tau / o_k + 1e-6 * np.eye(self.num_responses * q_k)
 
-    def compute_log_likelihood(self, marginal_residuals, V_inv_eps, splu):
+    # def compute_log_likelihood(self, marginal_residuals, V_inv_eps, splu):
+    #     """
+    #     Compute the log-likelihood of the marginal distribution of the residuals (the marginal log-likelihood)
+    #     """
+    #     log_det_V = np.sum(np.log(np.abs(splu.U.diagonal())))
+    #     log_likelihood = -(self.num_responses * self.num_obs * np.log(2 * np.pi) + log_det_V + marginal_residuals.T @ V_inv_eps) / 2
+    #     return log_likelihood
+    
+    def slq_logdet(self, V_op, dim, num_probes=10, m=20):
+        """
+        Approximate log(det(V)) using Stochastic Lanczos Quadrature (SLQ).
+        V_op: LinearOperator for V
+        dim: dimension of V
+        num_probes: number of random vectors
+        m: number of Lanczos steps
+        """
+        logdet_est = 0.0
+        for _ in range(num_probes):
+            v = np.random.choice([-1, 1], size=dim)
+            v = v / np.linalg.norm(v)
+            Q = np.zeros((dim, m+1))
+            alpha = np.zeros(m)
+            beta = np.zeros(m)
+            Q[:, 0] = v
+            for j in range(m):
+                w = V_op @ Q[:, j]
+                if j > 0:
+                    w -= beta[j-1] * Q[:, j-1]
+                alpha[j] = np.dot(Q[:, j], w)
+                w -= alpha[j] * Q[:, j]
+                beta[j] = np.linalg.norm(w)
+                if beta[j] < 1e-10 or j == m-1:
+                    break
+                Q[:, j+1] = w / beta[j]
+            T = np.diag(alpha[:j+1]) + np.diag(beta[:j], 1) + np.diag(beta[:j], -1)
+            eigvals = np.linalg.eigvalsh(T)
+            logdet_est += np.sum(np.log(eigvals))
+        return dim * logdet_est / (num_probes * m)
+    
+    def compute_log_likelihood(self, marginal_residuals, V_inv_eps, V_op):
         """
         Compute the log-likelihood of the marginal distribution of the residuals (the marginal log-likelihood)
         """
-        log_det_V = np.sum(np.log(np.abs(splu.U.diagonal())))
+        log_det_V = self.slq_logdet(V_op, int(self.num_responses * self.num_obs))
         log_likelihood = -(self.num_responses * self.num_obs * np.log(2 * np.pi) + log_det_V + marginal_residuals.T @ V_inv_eps) / 2
         return log_likelihood
     
-    def compute_marginal_covariance(self, self.num_obs, n_level, Z_blocks):
+    def compute_marginal_covariance(self, num_obs, n_level, Z_blocks):
         """
         Compute the marginal covariance matrix V and the random effects covariance matrices D.
         """
         D = {k: sparse.kron(tau_k, sparse.eye_array(n_level[k], format='csr'), format='csr') for k, tau_k in self.random_effects_covariance.items()}
-        V = sparse.kron(self.residuals_covariance, sparse.eye_array(self.num_obs, format='csr'), format='csr')
+        V = sparse.kron(self.residuals_covariance, sparse.eye_array(num_obs, format='csr'), format='csr')
         for k, D_k in D.items():
             V += Z_blocks[k] @ D_k @ Z_blocks[k].T
         return V, D
 
-    def splu_decomposition(self, self.num_obs, n_level, Z_blocks):
+    def splu_decomposition(self, num_obs, n_level, Z_blocks):
         """
         Compute the sparse LU decomposition of the marginal covariance matrix V.
         """
-        V, D = self.compute_marginal_covariance(self.num_obs, n_level, Z_blocks)
+        V, D = self.compute_marginal_covariance(num_obs, n_level, Z_blocks)
         return sparse.linalg.splu(V.tocsc()), D
 
     @staticmethod
-    def compute_mu(V_inv_eps, D, Z_blocks):
+    def compute_muo(V_inv_eps, D, Z_blocks):
         """
         Compute the conditional mean of the random effects.
         """
         return {k: D_k @ Z_blocks[k].T @ V_inv_eps for k, D_k in D.items()}
+    
 
-    @staticmethod
-    def compute_sigma(D, splu, Z_blocks):
+    def compute_mu(self, V_inv_eps, Z_matrices):
+        """
+        Compute the conditional mean of the random effects efficiently using kronecker structure.
+        """
+        mu = {}
+        for k in range(self.num_groups):
+            mu[k] = self.Wk_T_matvec(V_inv_eps, Z_matrices, k)
+        return mu
+
+    def Wk_matvec(self, x_vec, Z_matrices, k):
+        """
+        Efficiently computes matrix-vector multiplication without full matrix construction and leverage the Kronecker structure.
+        It applies (I_M ⊗ Z_k)D_k to a vector x_vec.
+        """
+        n, M = self.num_obs, self.num_responses
+        Z_k = Z_matrices[k]
+        q_k, o_k = self.num_random_effects[k], self.num_levels[k]
+        tau_k = self.random_effects_covariance[k]
+
+        x_mat = x_vec.reshape((M * q_k, o_k)).T
+        A_k = x_mat @ tau_k
+        A_k = A_k.reshape((o_k, M, q_k)).transpose(1, 2, 0).reshape((M, q_k * o_k)).T
+        B_k = Z_k @ A_k
+        B_k.T.ravel()  # (M*n, )
+        return B_k
+
+    def Wk_T_matvec(self, x_vec, Z_matrices, k):
+        """
+        Efficiently computes matrix-vector multiplication without full matrix construction and leverage the Kronecker structure.
+        It aplies D_k(I_M ⊗ Z_k)^T to a vector x_vec.
+        """
+        n, M = self.num_obs, self.num_responses
+        Z_k = Z_matrices[k]
+        q_k, o_k = self.num_random_effects[k], self.num_levels[k]
+        tau_k = self.random_effects_covariance[k]
+
+        x_mat = x_vec.reshape((M, n)).T
+        A_k = Z_k.T @ x_mat
+        A_k = A_k.reshape((q_k, o_k, M)).transpose(1, 2, 0).reshape((o_k, M * q_k))
+        B_k = A_k @ tau_k
+        B_k = B_k.reshape((o_k, M, q_k)).transpose(1, 2, 0).ravel()  # (M*q_k*o_k, )
+        return B_k
+
+    # @staticmethod
+    # def compute_sigma(D, splu, Z_blocks):
+    #     """
+    #     Compute the conditional covariance of the random effects.
+    #     """
+    #     sigma = {}
+    #     for k, D_k in D.items():
+    #         Im_Z_k = Z_blocks[k]
+    #         Im_Z_D = Im_Z_k @ D_k
+    #         V_inv_Im_Z_D = sparse.csr_array(splu.solve(Im_Z_D.toarray()))
+    #         sigma[k] = D_k - D_k @ Im_Z_k.T @ V_inv_Im_Z_D
+    #     return sigma
+    
+    def compute_sigma(self, V_op, Z_matrices):
         """
         Compute the conditional covariance of the random effects.
         """
         sigma = {}
-        for k, D_k in D.items():
-            Im_Z_k = Z_blocks[k]
-            Im_Z_D = Im_Z_k @ D_k
-            V_inv_Im_Z_D = sparse.csr_array(splu.solve(Im_Z_D.toarray()))
-            sigma[k] = D_k - D_k @ Im_Z_k.T @ V_inv_Im_Z_D
+        for k in range(self.num_groups):
+            sigma[k] = self.compute_sigma_k(V_op, Z_matrices, k)
         return sigma
+    
+    def compute_sigma_k(self, V_op, Z_matrices, k):
+        """
+        Compute Sigma_k = D_k - D_k (I_M ⊗ Z_k)^T V^{-1} (I_M ⊗ Z_k) D_k
+        using matrix-free CG.
+        """
+        q_k, o_k = self.num_random_effects[k], self.num_levels[k]
+        M, n = self.num_responses, self.num_obs
+        tau_k = self.random_effects_covariance[k]  # (M*qk x M*qk)
+        D_k = sparse.kron(tau_k, sparse.eye_array(o_k, format='csr'), format='csr')
 
-    def sum_random_effects(self, mu, Z_blocks, self.num_obs):
+        # Loop over standard basis vectors or low-rank approximation
+        sigma_k = np.zeros((M * q_k * o_k, M * q_k * o_k))
+
+        for j in range(M * q_k * o_k):
+            ej = np.zeros(M * q_k * o_k)
+            ej[j] = 1.0
+
+            wj = self.Wk_matvec(ej, Z_matrices, k)  # its like extracting col j of wk 
+            xj, _ = cg(V_op, wj)
+            
+            wk_xj = self.Wk_T_matvec(xj, Z_matrices, k)
+            sigma_k[:, j] = wk_xj
+
+        sigma_k = D_k - sigma_k
+        return sigma_k
+
+    def sum_random_effectso(self, mu, Z_blocks, num_obs):
         """
         Compute the sum of random effects contributions for all groups.
         """
         effects_sum = np.zeros((self.num_obs, self.num_responses))
         for k, mu_k in mu.items():
             effects_sum += (Z_blocks[k] @ mu_k).reshape((self.num_obs, self.num_responses), order='F')
+        return effects_sum
+    
+    def sum_random_effects(self, mu, Z_matrices):
+        """
+        Compute the sum of random effects contributions for all groups.
+        """
+        n, M = self.num_obs, self.num_responses
+        effects_sum = np.zeros((n, M))
+        for k, mu_k in mu.items():
+            q_k, o_k = self.num_random_effects[k], self.num_levels[k]
+            Z_k = Z_matrices[k]
+            A_mat = mu_k.reshape((q_k * o_k, M), order='F')
+            effects_sum += Z_k @ A_mat
         return effects_sum
 
     def fit(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, random_slope_indices: dict = None):
@@ -237,18 +344,21 @@ class MERM:
         Returns:
             Self (fitted model).
         """
-        cached_data = self._prepare_data(X, y, groups, random_slope_indices)
-        pbar = tqdm(range(1, self.max_iter + 1), desc="Model Fitting", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
+        pbar = tqdm(range(1, self.max_iter + 1), desc="Preparing data", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
+        marginal_residuals, Z_matrices, Z_crossprods = self._prepare_data(X, y, groups, random_slope_indices)
+        pbar.set_description("Fitting model (EM steps)")
         for iter_ in pbar:
-            cached_data = self.e_step(cached_data)
-            self.log_likelihood.append(cached_data.log_likelihood)
+            pbar.set_postfix_str("E-step")
+            mu, sigma, log_likelihood = self.e_step(marginal_residuals, Z_matrices)
+            self.log_likelihood.append(log_likelihood)
             if iter_ > 2 and abs((self.log_likelihood[-1] - self.log_likelihood[-2]) / self.log_likelihood[-2]) < self.tol:
                 pbar.set_description("Model Converged")
                 self._is_converged = True
                 break
-            cached_data = self.m_step(X, y, cached_data)
+            pbar.set_postfix_str("M-step")
+            marginal_residuals = self.m_step(X, y, mu, sigma, Z_matrices, Z_crossprods)
         return self
-    
+
     def predict(self, X: np.ndarray) -> np.ndarray:
         """
         Predict responses using the fitted fixed effects models.
@@ -280,10 +390,10 @@ class MERM:
         fX = self.predict(X)
         n = X.shape[0]
         y_sampled = np.zeros_like(fX)
-        groups = np.zeros((n, self.self.num_groups), dtype=int)
+        groups = np.zeros((n, self.num_groups), dtype=int)
         for i in range(n):
-            z_matrices, _, n_level = utils.random_effect_design_matrices(X[i:i+1], groups[i:i+1], self.slope_indices)
-            Z_blocks = utils.block_diag_design_matrices(z_matrices, self.num_responses)
+            Z_matrices, _, n_level = utils.random_effect_design_matrices(X[i:i+1], groups[i:i+1], self.slope_indices)
+            Z_blocks = utils.block_diag_design_matrices(Z_matrices, self.num_responses)
             V_i, _ = self.compute_marginal_covariance(1, n_level, Z_blocks)
             y_sampled[i] = np.random.multivariate_normal(fX[i], V_i)
         return y_sampled
@@ -293,15 +403,15 @@ class MERM:
         Compute residuals (num_obs x num_obs) and random effects (num_responses x num_random_effects x num_levels).
         """
         self.num_obs, _ = y.shape
-        z_matrices, _, n_level = utils.random_effect_design_matrices(X, groups, self.slope_indices)
-        Z_blocks = utils.block_diag_design_matrices(z_matrices, self.num_responses)
+        Z_matrices, _, n_level = utils.random_effect_design_matrices(X, groups, self.slope_indices)
+        Z_blocks = utils.block_diag_design_matrices(Z_matrices, self.num_responses)
         splu, D = self.splu_decomposition(self.num_obs, n_level, Z_blocks)
 
         marginal_residuals = y - self.predict(X)
         V_inv_eps = splu.solve(marginal_residuals.ravel(order='F'))
         mu = self.compute_mu(V_inv_eps, D, Z_blocks)
 
-        effects_sum = self.sum_random_effects(mu, Z_blocks, self.num_obs)
+        effects_sum = self.sum_random_effects(mu, Z_matrices)
         eps = marginal_residuals - effects_sum
         return mu, eps
 
@@ -325,7 +435,7 @@ class MERM:
         print(indent1 + f"Log-Likelihood: {self.log_likelihood[-1]:.2f}")
         print(indent1 + f"No. Observations: {self.num_obs}")
         print(indent1 + f"No. Response Variables: {self.num_responses}")
-        print(indent1 + f"No. Grouping Variables: {self.self.num_groups}")
+        print(indent1 + f"No. Grouping Variables: {self.num_groups}")
         print("-" * 50)
         print(indent1 + f"Residual (Unexplained) Variances")
         print(indent2 + "{:<10} {:>10}".format("Response", "Variance"))
@@ -334,7 +444,7 @@ class MERM:
         print("-" * 50)
         print(indent1 + f"Random Effects Variances")
         print(indent2 + "{:<8} {:<10} {:<15} {:>10}".format("Group", "Response", "Random Effect", "Variance"))
-        for k in range(self.self.num_groups):
+        for k in range(self.num_groups):
             for i in range(self.num_responses):
                 for j in range(self.num_random_effects[k]):
                     idx = i * self.num_random_effects[k] + j
@@ -342,12 +452,3 @@ class MERM:
                     var = self.random_effects_covariance[k][idx, idx]
                     print(indent2 + "{:<8} {:<10} {:<15} {:>10.4f}".format(k + 1, i + 1, effect_name, var))
         print("\n")
-
-@dataclass
-class TempData:
-    """
-    Temporary data structure to hold intermediate results during model fitting.
-    """
-    marginal_residuals: np.ndarray
-    Z_blocks: dict
-    Z_crossprods: dict
