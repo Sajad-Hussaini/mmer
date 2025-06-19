@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 import numpy as np
 from scipy import sparse
 from scipy.sparse.linalg import LinearOperator, cg
@@ -71,6 +70,42 @@ class MERM:
             Vx += Z_k @ A_k
         return Vx.T.ravel()
     
+    def V_matmat(self, X_matrix, Z_matrices):
+        n, M = self.num_obs, self.num_responses
+        num_cols = X_matrix.shape[1] # P
+
+        # 1. x_mat = x_vec.reshape((M, n)).T
+        X_mat_reshaped = X_matrix.reshape((M, n, num_cols)).transpose(1, 0, 2) # (n, M, P)
+        
+        # 2. Vx = x_mat @ self.residuals_covariance
+        # X_mat_reshaped is (n, M, P)
+        # self.residuals_covariance is (M, M)
+        Vx_matrix_reshaped = np.einsum('nmr,rs->nsr', X_mat_reshaped, self.residuals_covariance) # 'n' for n, 'm' for M, 'r' for P, 's' for M
+                                                                                                # Result: (n, M, P)
+
+        for k in range(self.num_groups):
+            q_k, o_k = self.num_random_effects[k], self.num_levels[k]
+            Z_k = Z_matrices[k] # (n, q_k * o_k)
+            
+            # 3. A_k = self.Wk_T_matmat(X_matrix, Z_matrices, k)
+            # Wk_T_matmat returns (M*q_k*o_k, P)
+            A_k_full = self.Wk_T_matmat(X_matrix, Z_matrices, k) # (M * q_k * o_k, P)
+
+            # 4. A_k = A_k.reshape((M, q_k * o_k)).T
+            # A_k_full is (M * q_k * o_k, P)
+            A_k_reshaped_for_Z = A_k_full.reshape((M, q_k * o_k, num_cols)).transpose(1, 0, 2)
+            # Result: (q_k * o_k, M, P)
+
+            # 5. Vx += Z_k @ A_k
+            # Vx_matrix_reshaped is (n, M, P)
+            # Z_k is (n, q_k * o_k)
+            # A_k_reshaped_for_Z is (q_k * o_k, M, P)
+            Vx_matrix_reshaped += np.einsum('zq,qmp->zmp', Z_k, A_k_reshaped_for_Z) # 'z' for n, 'q' for q_k*o_k, 'm' for M, 'p' for P
+                                                                                # Result: (n, M, P)
+
+        # 6. return Vx.T.ravel() -> (M*n, P)
+        return Vx_matrix_reshaped.transpose(1, 0, 2).reshape((M * n, num_cols))
+    
     def e_step(self, marginal_residuals, Z_matrices):
         """
         Perform the E-step of the EM algorithm to compute the conditional expectation and covariance of the random effects.
@@ -80,10 +115,11 @@ class MERM:
         V_op = LinearOperator(shape=(size, size), matvec=lambda x_vec: self.V_matvec(x_vec, Z_matrices))
         rhs = marginal_residuals.T.ravel()
         V_inv_eps, _ = cg(V_op, rhs)
-        log_likelihood = self.compute_log_likelihood(rhs, V_inv_eps, V_op)
+        # log_likelihood = self.compute_log_likelihood(rhs, V_inv_eps, V_op)
+        log_likelihood = -1.0
         mu = self.compute_mu(V_inv_eps, Z_matrices)
-        sigma = self.compute_sigma(V_op, Z_matrices)
-        return mu, sigma, log_likelihood
+        # sigma = self.compute_sigma(V_op, Z_matrices)
+        return mu, V_op, log_likelihood
     
     # def e_step(self, marginal_residuals, Z_matrices, Z_blocks):
     #     """
@@ -97,18 +133,36 @@ class MERM:
     #     sigma = self.compute_sigma(D, splu, Z_blocks)
     #     return mu, sigma, log_likelihood
     
-    def m_step(self, X, y, mu, sigma, Z_matrices, Z_crossprods):
+    def m_step(self, X, y, mu, V_op, Z_matrices, Z_crossprods):
         """
         Perform the E-step of the EM algorithm to update the fixed effects functions, residual, and random effects covariance matrices.
         """
         effects_sum = self.sum_random_effects(mu, Z_matrices)
         marginal_residuals = self.compute_marginal_residuals(X, y, effects_sum)
         eps = marginal_residuals - effects_sum
-        self.compute_residuals_covariance(sigma, eps, Z_crossprods)
-        self.compute_random_effects_covariance(mu, sigma)
+        self.compute_residuals_covariance(V_op, eps, Z_matrices, Z_crossprods)
+        self.compute_random_effects_covariance(mu, V_op, Z_matrices)
         return marginal_residuals
     
-    def compute_residuals_covariance(self, sigma, eps, Z_crossprods):
+    # def compute_residuals_covariance(self, sigma, eps, Z_crossprods):
+    #     """
+    #     the residual covariance matrix residuals_covariance.
+    #     """
+    #     S = eps.T @ eps
+    #     T = np.zeros((self.num_responses, self.num_responses))
+    #     for m1 in range(self.num_responses):
+    #         for m2 in range(self.num_responses):
+    #             trace_sum = 0.0
+    #             for k in range(self.num_groups):
+    #                 o_k, q_k = self.num_levels[k], self.num_random_effects[k]
+    #                 idx1 = slice(m1 * q_k * o_k, (m1 + 1) * q_k * o_k)
+    #                 idx2 = slice(m2 * q_k * o_k, (m2 + 1) * q_k * o_k)
+    #                 sigma_k_block = sigma[k][idx1, idx2]
+    #                 trace_sum += (Z_crossprods[k] @ sigma_k_block).trace()
+    #             T[m1, m2] = trace_sum
+    #     self.residuals_covariance = (S + T) / self.num_obs + 1e-6 * np.eye(self.num_responses)
+
+    def compute_residuals_covariance(self, V_op, eps, Z_matrices, Z_crossprods):
         """
         the residual covariance matrix residuals_covariance.
         """
@@ -118,22 +172,23 @@ class MERM:
             for m2 in range(self.num_responses):
                 trace_sum = 0.0
                 for k in range(self.num_groups):
-                    o_k, q_k = self.num_levels[k], self.num_random_effects[k]
-                    idx1 = slice(m1 * q_k * o_k, (m1 + 1) * q_k * o_k)
-                    idx2 = slice(m2 * q_k * o_k, (m2 + 1) * q_k * o_k)
-                    sigma_k_block = sigma[k][idx1, idx2]
+                    # o_k, q_k = self.num_levels[k], self.num_random_effects[k]
+                    # idx1 = slice(m1 * q_k * o_k, (m1 + 1) * q_k * o_k)
+                    # idx2 = slice(m2 * q_k * o_k, (m2 + 1) * q_k * o_k)
+                    sigma_k_block = self.compute_sigma_k_response_ij(V_op, Z_matrices, k, m1, m2)
+                    # sigma_k_block = sigma[k][idx1, idx2]
                     trace_sum += (Z_crossprods[k] @ sigma_k_block).trace()
                 T[m1, m2] = trace_sum
         self.residuals_covariance = (S + T) / self.num_obs + 1e-6 * np.eye(self.num_responses)
 
-    def compute_random_effects_covariance(self, mu, sigma):
+    def compute_random_effects_covariance(self, mu, V_op, Z_matrices):
         """
         Update the random effects covariance matrix random_effects_covariance.
         """
         for k in range(self.num_groups):
             o_k, q_k = self.num_levels[k], self.num_random_effects[k]
             mu_k = mu[k]
-            sigma_k = sigma[k]
+            # sigma_k = sigma[k]
             sum_tau = np.zeros((self.num_responses * q_k, self.num_responses * q_k))
             for j in range(o_k):
                 indices = []  # Indices for level j across all responses and effect types
@@ -142,9 +197,30 @@ class MERM:
                         idx = m * q_k * o_k + q * o_k + j
                         indices.append(idx)
                 mu_k_j = mu_k[indices]
-                sigma_k_block = sigma_k[np.ix_(indices, indices)]
+                sigma_k_block = self.compute_sigma_k_level_i(V_op, Z_matrices, k, j)
+                # sigma_k_block = sigma_k[np.ix_(indices, indices)]
                 sum_tau += np.outer(mu_k_j, mu_k_j) + sigma_k_block
             self.random_effects_covariance[k] = sum_tau / o_k + 1e-6 * np.eye(self.num_responses * q_k)
+
+    # def compute_random_effects_covariance(self, mu, sigma):
+    #     """
+    #     Update the random effects covariance matrix random_effects_covariance.
+    #     """
+    #     for k in range(self.num_groups):
+    #         o_k, q_k = self.num_levels[k], self.num_random_effects[k]
+    #         mu_k = mu[k]
+    #         sigma_k = sigma[k]
+    #         sum_tau = np.zeros((self.num_responses * q_k, self.num_responses * q_k))
+    #         for j in range(o_k):
+    #             indices = []  # Indices for level j across all responses and effect types
+    #             for m in range(self.num_responses):
+    #                 for q in range(q_k):
+    #                     idx = m * q_k * o_k + q * o_k + j
+    #                     indices.append(idx)
+    #             mu_k_j = mu_k[indices]
+    #             sigma_k_block = sigma_k[np.ix_(indices, indices)]
+    #             sum_tau += np.outer(mu_k_j, mu_k_j) + sigma_k_block
+    #         self.random_effects_covariance[k] = sum_tau / o_k + 1e-6 * np.eye(self.num_responses * q_k)
 
     # def compute_log_likelihood(self, marginal_residuals, V_inv_eps, splu):
     #     """
@@ -243,6 +319,42 @@ class MERM:
         B_k = Z_k @ A_k
         B_k.T.ravel()  # (M*n, )
         return B_k
+    
+    def Wk_matmat(self, X_matrix, Z_matrices, k):
+        n, M = self.num_obs, self.num_responses
+        num_cols = X_matrix.shape[1] # P
+
+        Z_k = Z_matrices[k] # (n, q_k * o_k)
+        q_k, o_k = self.num_random_effects[k], self.num_levels[k]
+        tau_k = self.random_effects_covariance[k] # (M * q_k, M * q_k)
+
+        # 1. x_mat = x_vec.reshape((M * q_k, o_k)).T
+        # X_matrix is (M*q_k*o_k, P)
+        X_mat_reshaped_step1 = X_matrix.reshape((M * q_k, o_k, num_cols)).transpose(1, 0, 2)
+        # Result: (o_k, M * q_k, P)
+
+        # 2. A_k = x_mat @ tau_k
+        # X_mat_reshaped_step1 is (o_k, M * q_k, P)
+        # tau_k is (M * q_k, M * q_k)
+        # This requires an einsum for batch matrix multiplication
+        A_k_step2 = np.einsum('oqc,qd->odc', X_mat_reshaped_step1, tau_k) # 'oqc' for (o_k, M*q_k, P), 'qd' for (M*q_k, M*q_k)
+                                                                    # Indices: o=o_k, q=M*q_k, c=P, d=M*q_k
+                                                                    # Result: (o_k, M*q_k, P)
+        
+        # 3. A_k = A_k.reshape((o_k, M, q_k)).transpose(1, 2, 0).reshape((M, q_k * o_k)).T
+        A_k_step3_1 = A_k_step2.reshape((o_k, M, q_k, num_cols)) # (o_k, M, q_k, P)
+        A_k_step3_2 = A_k_step3_1.transpose(1, 2, 0, 3) # (M, q_k, o_k, P)
+        A_k_step3_3 = A_k_step3_2.reshape((M, q_k * o_k, num_cols)) # (M, q_k * o_k, P)
+        A_k_final_for_Z = A_k_step3_3.transpose(1, 0, 2) # (q_k * o_k, M, P)
+
+        # 4. B_k = Z_k @ A_k
+        # Z_k is (n, q_k * o_k)
+        # A_k_final_for_Z is (q_k * o_k, M, P)
+        B_k_matrix_reshaped = np.einsum('zq,qmp->zmp', Z_k, A_k_final_for_Z) # 'z' for n, 'q' for q_k*o_k, 'm' for M, 'p' for P
+                                                                    # Result: (n, M, P)
+
+        # 5. B_k.T.ravel() -> (M*n, P)
+        return B_k_matrix_reshaped.transpose(1, 0, 2).reshape((M * n, num_cols))
 
     def Wk_T_matvec(self, x_vec, Z_matrices, k):
         """
@@ -260,6 +372,39 @@ class MERM:
         B_k = A_k @ tau_k
         B_k = B_k.reshape((o_k, M, q_k)).transpose(1, 2, 0).ravel()  # (M*q_k*o_k, )
         return B_k
+    
+    def Wk_T_matmat(self, X_matrix, Z_matrices, k):
+        n, M = self.num_obs, self.num_responses
+        num_cols = X_matrix.shape[1] # P
+
+        Z_k = Z_matrices[k] # (n, q_k * o_k)
+        q_k, o_k = self.num_random_effects[k], self.num_levels[k]
+        tau_k = self.random_effects_covariance[k] # (M * q_k, M * q_k)
+
+        # 1. x_mat = x_vec.reshape((M, n)).T
+        X_mat_reshaped_step1 = X_matrix.reshape((M, n, num_cols)).transpose(1, 0, 2)
+        # Result: (n, M, P)
+
+        # 2. A_k = Z_k.T @ x_mat
+        # Z_k.T is (q_k * o_k, n)
+        # X_mat_reshaped_step1 is (n, M, P)
+        A_k_step2 = np.einsum('qn,nmr->qmr', Z_k.T, X_mat_reshaped_step1) # 'q' for q_k*o_k, 'n' for n, 'm' for M, 'r' for P
+                                                                    # Result: (q_k * o_k, M, P)
+
+        # 3. A_k = A_k.reshape((q_k, o_k, M)).transpose(1, 2, 0).reshape((o_k, M * q_k))
+        A_k_step3_1 = A_k_step2.reshape((q_k, o_k, M, num_cols)) # (q_k, o_k, M, P)
+        A_k_step3_2 = A_k_step3_1.transpose(1, 2, 0, 3) # (o_k, M, q_k, P)
+        A_k_step3_3 = A_k_step3_2.reshape((o_k, M * q_k, num_cols)) # (o_k, M * q_k, P)
+
+        # 4. B_k = A_k @ tau_k
+        # A_k_step3_3 is (o_k, M * q_k, P)
+        # tau_k is (M * q_k, M * q_k)
+        # This needs an einsum for batch matrix multiplication
+        B_k_matrix_reshaped = np.einsum('oqc,qd->odc', A_k_step3_3, tau_k) # 'o' for o_k, 'q' for M*q_k, 'c' for P, 'd' for M*q_k
+                                                                    # Result: (o_k, M * q_k, P)
+
+        # 5. B_k = B_k.reshape((o_k, M, q_k)).transpose(1, 2, 0).ravel() -> (M*q_k*o_k, P)
+        return B_k_matrix_reshaped.reshape((o_k, M, q_k, num_cols)).transpose(1, 2, 0, 3).reshape((M * q_k * o_k, num_cols))
 
     # @staticmethod
     # def compute_sigma(D, splu, Z_blocks):
@@ -308,6 +453,67 @@ class MERM:
 
         sigma_k = D_k - sigma_k
         return sigma_k
+    
+    def compute_sigma_k_response_ij(self, V_op, Z_matrices, k, m1, m2):
+        """
+        Compute Sigma_k = D_k - D_k (I_M ⊗ Z_k)^T V^{-1} (I_M ⊗ Z_k) D_k for response m1 and m2
+        using matrix-free CG.
+        """
+        q_k, o_k = self.num_random_effects[k], self.num_levels[k]
+        M, n = self.num_responses, self.num_obs
+        tau_k = self.random_effects_covariance[k]  # (M*qk x M*qk)
+        tau_k_block = tau_k[m1 * q_k : (m1 + 1) * q_k, m2 * q_k : (m2 + 1) * q_k]
+        D_k_m1_m2 = sparse.kron(tau_k_block, sparse.eye_array(o_k, format='csr'), format='csr')
+
+        # Loop over standard basis vectors or low-rank approximation
+        sigma_k_m1_m2 = np.zeros((q_k * o_k, q_k * o_k))
+        col = 0
+        for j in range(m2 * q_k * o_k, (m2 + 1) * q_k * o_k):
+            ej = np.zeros(M * q_k * o_k)
+            ej[j] = 1.0
+
+            wj = self.Wk_matvec(ej, Z_matrices, k)  # its like extracting col j of wk 
+            xj, _ = cg(V_op, wj)
+            wk_xj = self.Wk_T_matvec(xj, Z_matrices, k)
+            sigma_k_m1_m2[:, col] = wk_xj[m1 * q_k * o_k : (m1 + 1) * q_k * o_k]
+            col += 1
+
+        sigma_k_m1_m2 = D_k_m1_m2 - sigma_k_m1_m2
+        return sigma_k_m1_m2
+    
+    def compute_sigma_k_level_i(self, V_op, Z_matrices, k, l1):
+        """
+        Compute Sigma_k = D_k - D_k (I_M ⊗ Z_k)^T V^{-1} (I_M ⊗ Z_k) D_k for levels l1 and l2 across all responses and effects
+        using matrix-free CG.
+        """
+        q_k, o_k = self.num_random_effects[k], self.num_levels[k]
+        M, n = self.num_responses, self.num_obs
+        tau_k = self.random_effects_covariance[k]  # (M*qk x M*qk)
+
+        
+        indices = []  # Indices for level j across all responses and effect types
+        for m in range(M):
+            for q in range(q_k):
+                idx = m * q_k * o_k + q * o_k + l1
+                indices.append(idx)
+
+        D_k_l1_l1 = tau_k   # for a level i it is actually tau_k itself?
+
+        # Loop over standard basis vectors or low-rank approximation
+        sigma_k_l1_l1 = np.zeros((M * q_k, M * q_k))
+        col = 0
+        for j in indices:
+            ej = np.zeros(M * q_k * o_k)
+            ej[j] = 1.0
+
+            wj = self.Wk_matvec(ej, Z_matrices, k)  # its like extracting col j of wk 
+            xj, _ = cg(V_op, wj)
+            wk_xj = self.Wk_T_matvec(xj, Z_matrices, k)
+            sigma_k_l1_l1[:, col] = wk_xj[indices]
+            col += 1
+
+        sigma_k_l1_l1 = D_k_l1_l1 - sigma_k_l1_l1
+        return sigma_k_l1_l1
 
     def sum_random_effectso(self, mu, Z_blocks, num_obs):
         """
@@ -346,17 +552,17 @@ class MERM:
         """
         pbar = tqdm(range(1, self.max_iter + 1), desc="Preparing data", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
         marginal_residuals, Z_matrices, Z_crossprods = self._prepare_data(X, y, groups, random_slope_indices)
-        pbar.set_description("Fitting model (EM steps)")
+        pbar.set_description("Fitting model")
         for iter_ in pbar:
             pbar.set_postfix_str("E-step")
-            mu, sigma, log_likelihood = self.e_step(marginal_residuals, Z_matrices)
+            mu, V_op, log_likelihood = self.e_step(marginal_residuals, Z_matrices)
             self.log_likelihood.append(log_likelihood)
-            if iter_ > 2 and abs((self.log_likelihood[-1] - self.log_likelihood[-2]) / self.log_likelihood[-2]) < self.tol:
-                pbar.set_description("Model Converged")
-                self._is_converged = True
-                break
+            # if iter_ > 2 and abs((self.log_likelihood[-1] - self.log_likelihood[-2]) / self.log_likelihood[-2]) < self.tol:
+            #     pbar.set_description("Model Converged")
+            #     self._is_converged = True
+            #     break
             pbar.set_postfix_str("M-step")
-            marginal_residuals = self.m_step(X, y, mu, sigma, Z_matrices, Z_crossprods)
+            marginal_residuals = self.m_step(X, y, mu, V_op, Z_matrices, Z_crossprods)
         return self
 
     def predict(self, X: np.ndarray) -> np.ndarray:
