@@ -46,13 +46,13 @@ def random_effect_design_matrices(X: np.ndarray, groups: np.ndarray, slope_cols:
         Z[k], q[k], o[k] = random_effect_design_matrix(groups[:, k], rsc_k)
     return Z, q, o
 
-def block_diag_design_matrix(design_matrix: sparse.sparray, n_res: int):
+def block_diag_design_matrix(n_res: int, design_matrix: sparse.sparray):
     """
     Expands a design matrix into a block diagonal matrix using the Kronecker product.
     """
     return sparse.kron(sparse.eye_array(n_res, format='csr'), design_matrix, format='csr')
 
-def block_diag_design_matrices(design_matrices: dict, n_res: int):
+def block_diag_design_matrices(n_res: int, design_matrices: dict):
     """
     Create a dictionary of block diagonal design matrices for each group.
     """
@@ -63,3 +63,34 @@ def crossprod_design_matrices(design_matrices: dict):
     Compute the cross-product of design matrices for each group.
     """
     return {k: Z.T @ Z for k, Z in design_matrices.items()}
+
+def slq_logdet(V_op, dim, num_probes=30, m=50):
+    """
+    Approximate log(det(V)) using Stochastic Lanczos Quadrature (SLQ).
+    V_op: LinearOperator for V
+    dim: dimension of V
+    num_probes: number of random vectors
+    m: number of Lanczos steps
+    """
+    logdet_est = 0.0
+    for _ in range(num_probes):
+        v = np.random.choice([-1, 1], size=dim)
+        v = v / np.linalg.norm(v)
+        Q = np.zeros((dim, m+1))
+        alpha = np.zeros(m)
+        beta = np.zeros(m)
+        Q[:, 0] = v
+        for j in range(m):
+            w = V_op @ Q[:, j]
+            if j > 0:
+                w -= beta[j-1] * Q[:, j-1]
+            alpha[j] = np.dot(Q[:, j], w)
+            w -= alpha[j] * Q[:, j]
+            beta[j] = np.linalg.norm(w)
+            if beta[j] < 1e-10 or j == m-1:
+                break
+            Q[:, j+1] = w / beta[j]
+        T = np.diag(alpha[:j+1]) + np.diag(beta[:j], 1) + np.diag(beta[:j], -1)
+        eigvals, eigvecs = np.linalg.eigh(T)
+        logdet_est += np.sum(np.log(eigvals) * (eigvecs[0, :] ** 2))
+    return dim * logdet_est / num_probes
