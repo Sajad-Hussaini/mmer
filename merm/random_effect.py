@@ -6,17 +6,20 @@ from tqdm import tqdm
 from . import utils
 
 class RandomEffect:
-    def __init__(self, n_obs, n_res, id, slope_id, cov):
+    def __init__(self, n_obs, n_res, id, slope_id):
         self.n_obs = n_obs
         self.n_res = n_res
         self.id = id
         self.slope_id = slope_id
-        self.cov = cov
     
+    def get_cov(self):
+        self.cov = np.eye(self.n_res * self.n_effect)
+
+
     def design_matrix(self, X, groups):
         slope_covariates = X[:, self.slope_id] if self.slope_id is not None else None
-        Z_matrix, self.n_effect, self.n_level = utils.random_effect_design_matrix(groups[:, self.id], slope_covariates)
-        return Z_matrix
+        self.Z_matrix, self.n_effect, self.n_level = utils.random_effect_design_matrix(groups[:, self.id], slope_covariates)
+        return self.Z_matrix
     
     def crossproduct_matrix(self, design_matrix):
         return design_matrix.T @ design_matrix
@@ -47,18 +50,20 @@ class RandomEffect:
         B_k = B_k.reshape((self.n_level, self.n_res, self.n_effect)).transpose(1, 2, 0).ravel()  # (M*q*o, )
         return B_k
     
-    def full_cov_matvec(self, x_vec, design_matrix):
+    def cov_matvec(self, x_vec, design_matrix):
         A_k = self._W_T_matvec(x_vec, design_matrix)
         A_k = A_k.reshape((self.n_res, self.n_effect * self.n_level)).T
         return design_matrix @ A_k
 
 
 class Residual:
-    def __init__(self, n_obs, n_res, cov):
+    def __init__(self, n_obs, n_res):
         self.n_obs = n_obs
         self.n_res = n_res
-        self.cov = cov
 
-    def full_cov_matvec(self, x_vec):
+    def cov_matvec(self, x_vec):
         x_mat = x_vec.reshape((self.n_res, self.n_obs)).T
         return x_mat @ self.cov
+    
+    def get_cov(self):
+        self.cov = np.eye(self.n_res)
