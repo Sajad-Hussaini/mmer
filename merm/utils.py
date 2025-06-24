@@ -58,12 +58,6 @@ def block_diag_design_matrices(n_res: int, design_matrices: dict):
     """
     return {k: block_diag_design_matrix(Z, n_res) for k, Z in design_matrices.items()}
 
-def crossprod_design_matrices(design_matrices: dict):
-    """
-    Compute the cross-product of design matrices for each group.
-    """
-    return {k: Z.T @ Z for k, Z in design_matrices.items()}
-
 def slq_logdet(V_op, dim, num_probes=30, m=50):
     """
     Approximate log(det(V)) using Stochastic Lanczos Quadrature (SLQ).
@@ -73,8 +67,9 @@ def slq_logdet(V_op, dim, num_probes=30, m=50):
     m: number of Lanczos steps
     """
     logdet_est = 0.0
+    rng = np.random.default_rng(seed=42)
     for _ in range(num_probes):
-        v = np.random.choice([-1, 1], size=dim)
+        v = rng.choice([-1, 1], size=dim)
         v = v / np.linalg.norm(v)
         Q = np.zeros((dim, m+1))
         alpha = np.zeros(m)
