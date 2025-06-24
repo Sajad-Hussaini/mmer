@@ -1,9 +1,8 @@
 import numpy as np
 from scipy.sparse.linalg import cg
-from joblib import Parallel, delayed, cpu_count
 from . import utils
 
-NJOBS = max(1, int(cpu_count() * 0.75))
+# NJOBS = max(1, int(cpu_count() * 0.75))
 
 class RandomEffect:    
     def __init__(self, n_obs, n_res, id, slope_id):
