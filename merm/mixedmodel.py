@@ -51,27 +51,15 @@ class MERM:
         for m, model in enumerate(self.fe_models):
             y_adj[:, m] = model.fit(X, y_adj[:, m]).predict(X)
         return y - y_adj
-    
-    def V_matvec(self, x_vec: np.ndarray, random_effects: dict[int, RandomEffect]):
-        """
-        Computes the matrix-vector product V @ x_vec, where V = Σ(I_M ⊗ Z_k) D_k (I_M ⊗ Z_k)^T + R is the marginal covariance.
-        It leverages the Kronecker structure to avoid full matrix construction.
-        """
-        x_mat = x_vec.reshape((self.n_res, self.n_obs)).T
-        Vx = x_mat @ self.resid_cov
-        for re in random_effects.values():
-            np.add(Vx, re.cov_matvec(x_vec), out=Vx)
-        Vx.T.ravel()  # (M*n, )
-        return Vx
 
-    def compute_resid_cov(self, random_effects: dict[int, RandomEffect], V_op: LinearOperator, eps: np.ndarray):
+    def compute_resid_cov(self, eps: np.ndarray, random_effects: dict[int, RandomEffect], V_op: LinearOperator):
         """
         Compute the residual covariance matrix.
         Uses symmetry of the covariance matrix to reduce computations.
         """
         cov = eps.T @ eps
         for re in random_effects.values():
-            np.add(cov, re.resid_cov(V_op), out=cov)
+            np.add(cov, utils.resid_cov(re, V_op), out=cov)
 
         self.resid_cov = cov / self.n_obs + 1e-6 * np.eye(self.n_res)
 
@@ -80,9 +68,9 @@ class MERM:
         Compute the random effects covariance matrix.
         """
         for re in random_effects.values():
-            re.rand_effect_cov(V_op)
+            re.cov = utils.rand_effect_cov(re, V_op)
     
-    def compute_log_likelihood(self, V_op: LinearOperator, marg_resid: np.ndarray, V_inv_eps: np.ndarray):
+    def compute_log_likelihood(self, marg_resid: np.ndarray, V_inv_eps: np.ndarray, V_op: LinearOperator):
         """
         Compute the log-likelihood of the marginal distribution of the residuals.
         aka the marginal log-likelihood
@@ -107,7 +95,7 @@ class MERM:
         Compute the conditional mean of the random effects by leveraging the kronecker structure.
         """
         for re in random_effects.values():
-            re.cond_mean(V_inv_eps)
+            utils.cond_mean(V_inv_eps, re)
     
     def aggregate_rand_effects(self, random_effects: dict[int, RandomEffect]):
         """
@@ -145,16 +133,14 @@ class MERM:
             Self (fitted model).
         """
         marg_resid, rand_effects = self.prepare_data(X, y, groups, random_slopes)
-        size = self.n_res * self.n_obs
-        V_op = LinearOperator(shape=(size, size), matvec=lambda x_vec: self.V_matvec(x_vec, rand_effects))
-
         pbar = tqdm(range(1, self.max_iter + 1), desc="Fitting model", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
         for iter_ in pbar:
             rhs = marg_resid.T.ravel()
+            V_op = utils.V_operator(rand_effects, self.resid_cov, self.n_res, self.n_obs)
             V_inv_eps, _ = cg(V_op, rhs)
             self.compute_mu(V_inv_eps, rand_effects)
 
-            log_likelihood = self.compute_log_likelihood(V_op, rhs, V_inv_eps)
+            log_likelihood = self.compute_log_likelihood(rhs, V_inv_eps, V_op)
             self.log_likelihood.append(log_likelihood)
             if iter_ > 2 and abs((self.log_likelihood[-1] - self.log_likelihood[-2]) / self.log_likelihood[-2]) < self.tol:
                 pbar.set_description("Model Converged")
@@ -166,7 +152,7 @@ class MERM:
             total_re = self.aggregate_rand_effects(rand_effects)
             marg_resid = self.compute_marginal_residual(X, y, total_re)
             eps = marg_resid - total_re
-            self.compute_resid_cov(rand_effects, V_op, eps)
+            self.compute_resid_cov(eps, rand_effects, V_op)
             self.compute_rand_effect_cov(rand_effects, V_op)
 
             # Extract the RandomEffect covariance matrices before discarding them upon last iteration
