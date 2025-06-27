@@ -75,7 +75,7 @@ class MERM:
         Compute the log-likelihood of the marginal distribution of the residuals.
         aka the marginal log-likelihood
         """
-        log_det_V = utils.slq_logdet(V_op, self.n_res * self.n_obs)
+        log_det_V = utils.slq_logdet(V_op)
         log_likelihood = -(self.n_res * self.n_obs * np.log(2 * np.pi) + log_det_V + marg_resid.T @ V_inv_eps) / 2
         return log_likelihood
     
@@ -136,7 +136,7 @@ class MERM:
         pbar = tqdm(range(1, self.max_iter + 1), desc="Fitting model", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
         for iter_ in pbar:
             rhs = marg_resid.T.ravel()
-            V_op = utils.V_operator(rand_effects, self.resid_cov, self.n_res, self.n_obs)
+            V_op = utils.VLinearOperator(rand_effects, self.resid_cov, self.n_res, self.n_obs)
             V_inv_eps, _ = cg(V_op, rhs)
             self.compute_mu(V_inv_eps, rand_effects)
 

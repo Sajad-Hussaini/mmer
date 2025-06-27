@@ -1,8 +1,9 @@
 import numpy as np
 from scipy import sparse
 from scipy.sparse.linalg import LinearOperator, cg
+from scipy.linalg import eigh_tridiagonal
+import warnings
 from joblib import Parallel, delayed, cpu_count
-import functools
 
 NJOBS = max(1, int(cpu_count() * 0.70))
 
@@ -11,26 +12,11 @@ def cond_mean(V_inv_eps, rand_effect):
     Computes the random effect conditional mean by leveraging the kronecker structure.
     """
     rand_effect.mu = W_T_matvec(V_inv_eps, rand_effect)
-    return rand_effect
-
-def resid_cov2(rand_effect, V_op):
-    """
-    Computes the random effect contribution to the residual covariance matrix
-    by constructing $T_{m1,m2} = tr(\Sigma_{m1,m2} Z^T Z)$ for all m in M
-    Uses symmetry of the covariance matrix to reduce computations.
-    """
-    cov = np.zeros((rand_effect.n_res, rand_effect.n_res))
-    for row in range(rand_effect.n_res):
-        for col in range(row, rand_effect.n_res):
-            sigma_block = cond_cov_res_block(rand_effect, V_op, row, col)
-            trace = np.sum(sigma_block * rand_effect.Z_crossprod)
-            cov[col, row] = cov[row, col] = trace
-    return cov
 
 def resid_cov(rand_effect, V_op):
     """
     Computes the random effect contribution to the residual covariance matrix
-    by constructing $T_{m1,m2} = tr(\Sigma_{m1,m2} Z^T Z)$ for all m in M
+    by constructing $T_{m1,m2} = tr(\Sigma_{m1,m2} Z^T Z)$ for all m_{i}
     Uses symmetry of the covariance matrix to reduce computations.
     """
     M = rand_effect.n_res
@@ -50,31 +36,10 @@ def resid_cov(rand_effect, V_op):
 def resid_cov_worker(rand_effect, V_op, row, col):
     """
     Worker function for parallel resid_cov computation.
-    Computes one element of the covariance matrix.
+    Computes one element (row, col) of the covariance matrix.
     """
     sigma_block = cond_cov_res_block(rand_effect, V_op, row, col)
     return row, col, np.sum(sigma_block * rand_effect.Z_crossprod)
-
-def rand_effect_cov2(rand_effect, V_op):
-    """
-    Compute the random effect covariance matrix using
-    $\tau_k = \frac{1}{o_k} \sum_{j=1}^{o_k} \left( \mu_{k_j} \mu_{k_j}^T + \Sigma_{k_{jj}}  \right) + 10^{-6}I_{M\cdot q_k}$.
-    """
-    M, q, o = rand_effect.n_res, rand_effect.n_effect, rand_effect.n_level
-    cov = np.zeros((M * q, M * q))
-
-    # Compute indices for all levels
-    m_idx = np.arange(M)[:, None]
-    q_idx = np.arange(q)[None, :]
-    base_idx = m_idx * q * o + q_idx * o
-    
-    for j in range(o):
-        lvl_indices = (base_idx + j).ravel()
-        mu_j = rand_effect.mu[lvl_indices]
-        sigma_block = cond_cov_lvl_block(rand_effect, V_op, lvl_indices)
-        cov += np.outer(mu_j, mu_j) + sigma_block
-    cov = cov / o + 1e-6 * np.eye(M * q)
-    return cov
 
 def rand_effect_cov(rand_effect, V_op):
     """
@@ -82,21 +47,19 @@ def rand_effect_cov(rand_effect, V_op):
     $\tau_k = \frac{1}{o_k} \sum_{j=1}^{o_k} \left( \mu_{k_j} \mu_{k_j}^T + \Sigma_{k_{jj}}  \right) + 10^{-6}I_{M\cdot q_k}$.
     """
     M, q, o = rand_effect.n_res, rand_effect.n_effect, rand_effect.n_level
-    cov = np.zeros((M * q, M * q))
-
     # Compute indices for all levels
     m_idx = np.arange(M)[:, None]
     q_idx = np.arange(q)[None, :]
     base_idx = m_idx * q * o + q_idx * o
 
-    use_parallel = o > 10
+    use_parallel = o > 2
     if use_parallel:
         results = Parallel(n_jobs=NJOBS, backend='loky')(delayed(rand_effect_cov_worker)
                                                         (rand_effect, V_op, (base_idx + j).ravel()) for j in range(o))
     else:
         results = [rand_effect_cov_worker(rand_effect, V_op, (base_idx + j).ravel()) for j in range(o)]
 
-    cov = sum(results) / o + 1e-6 * np.eye(M * q)
+    cov = np.sum(results, axis=0) / o + 1e-6 * np.eye(M * q)
     return cov
 
 def rand_effect_cov_worker(rand_effect, V_op, lvl_indices):
@@ -104,25 +67,9 @@ def rand_effect_cov_worker(rand_effect, V_op, lvl_indices):
     Worker function for parallel resid_cov computation.
     Computes one element of the covariance matrix.
     """
-    mu_j = rand_effect.mu[lvl_indices]
+    mu = rand_effect.mu[lvl_indices]
     sigma_block = cond_cov_lvl_block(rand_effect, V_op, lvl_indices)
-    return np.outer(mu_j, mu_j) + sigma_block
-
-def V_operator2(random_effects, resid_cov, M, n):
-    """Returns a picklable LinearOperator for the V matrix."""
-    return VLinearOperator(random_effects, resid_cov, M, n)
-
-def create_picklable_V_operator(random_effects, resid_cov, M, n):
-    """Creates a picklable LinearOperator using functools.partial"""
-    matvec_func = functools.partial(V_matvec, 
-                                   random_effects=random_effects, 
-                                   resid_cov=resid_cov, 
-                                   M=M, n=n)
-    return LinearOperator(shape=(M*n, M*n), matvec=matvec_func)
-
-def V_operator(random_effects, resid_cov, M, n):
-    """Returns a picklable LinearOperator for the V matrix."""
-    return create_picklable_V_operator(random_effects, resid_cov, M, n)
+    return np.outer(mu, mu) + sigma_block
 
 def V_matvec(x_vec, random_effects, resid_cov, M, n):
     """
@@ -158,81 +105,15 @@ def cond_cov_res_block(rand_effect, V_op, row, col):
     D_block = np.kron(tau_block, np.eye(o))
     sigma_block = np.zeros((block_size, block_size))
     base_idx = col * block_size # Extracts columns in W_matvec
-
+    vec = np.zeros(M * block_size)
     for i in range(block_size):
-        vec = np.zeros(M * block_size)
+        vec.fill(0.0)
         vec[base_idx + i] = 1.0
         rhs = W_matvec(vec, rand_effect)
         x_sol, _ = cg(V_op, rhs)
         sigma_block[:, i] = W_T_matvec(x_sol, rand_effect)[row * block_size : (row + 1) * block_size]
 
     return D_block - sigma_block
-
-def cond_cov_res_block2(rand_effect, V_op, row, col):
-    """
-    Computes the random effect conditional covariance
-        Σ = D - D (I_M ⊗ Z)^T V^{-1} (I_M ⊗ Z) D
-    for the response block specified by (row, col).
-    """
-    M, q, o = rand_effect.n_res, rand_effect.n_effect, rand_effect.n_level
-    block_size = q * o
-
-    tau_block = rand_effect.cov[row * q : (row + 1) * q, col * q : (col + 1) * q]
-    D_block = np.kron(tau_block, np.eye(o))
-    base_idx = col * block_size # for column indices in W_matvec
-
-    use_parallel = block_size > 50
-    args_list = [(M, block_size, base_idx+i, row, rand_effect, V_op) for i in range(block_size)]
-    if use_parallel:
-        results = Parallel(n_jobs=NJOBS, backend='loky')(delayed(cond_cov_res_block_worker)(arg) for arg in args_list)
-    else:
-        results = [cond_cov_res_block_worker(arg) for arg in args_list]
-    sigma_block = np.column_stack(results)
-    return D_block - sigma_block
-
-def cond_cov_res_block_worker(args):
-    """
-    Worker function for parallel cond_cov_res_block computation.
-    This worker computes one column of the block.
-    """
-    M, block_size, lvl_idx, row, rand_effect, V_op = args
-    vec = np.zeros(M * block_size)
-    vec[lvl_idx] = 1.0
-    rhs = W_matvec(vec, rand_effect)
-    x_sol, _ = cg(V_op, rhs)
-    return W_T_matvec(x_sol, rand_effect)[row * block_size : (row + 1) * block_size]
-
-def cond_cov_lvl_block2(rand_effect, V_op, lvl_indices):
-    """
-    Computes the random effect conditional covariance
-        Σ = D - D (I_M ⊗ Z)^T V^{-1} (I_M ⊗ Z) D
-    for the level block specified by lvl_indices.
-    """
-    M, q, o = rand_effect.n_res, rand_effect.n_effect, rand_effect.n_level
-    block_size = M * q
-
-    D_block = rand_effect.cov
-
-    use_parallel = block_size > 10
-    args_list = [(i, o, block_size, lvl_indices, rand_effect, V_op) for i in range(block_size)]
-    if use_parallel:
-        results = Parallel(n_jobs=NJOBS, backend='loky')(delayed(cond_cov_lvl_block_worker)(arg) for arg in args_list)
-    else:
-        results = [cond_cov_lvl_block_worker(arg) for arg in args_list]
-    sigma_block = np.column_stack(results)
-    return D_block - sigma_block
-
-def cond_cov_lvl_block_worker(args):
-    """
-    Worker function for parallel cond_cov_lvl_block computation.
-    This worker computes one column of the block.
-    """
-    i, o, block_size, lvl_indices, rand_effect, V_op = args
-    vec = np.zeros(block_size * o)
-    vec[lvl_indices[i]] = 1.0
-    rhs = W_matvec(vec, rand_effect)
-    x_sol, _ = cg(V_op, rhs)
-    return W_T_matvec(x_sol, rand_effect)[lvl_indices]
 
 def cond_cov_lvl_block(rand_effect, V_op, lvl_indices):
     """
@@ -245,9 +126,9 @@ def cond_cov_lvl_block(rand_effect, V_op, lvl_indices):
 
     D_block = rand_effect.cov
     sigma_block = np.zeros((block_size, block_size))
-
+    vec = np.zeros(block_size * o)
     for i in range(block_size):
-        vec = np.zeros(block_size * o)
+        vec.fill(0.0)
         vec[lvl_indices[i]] = 1.0
         rhs = W_matvec(vec, rand_effect)
         x_sol, _ = cg(V_op, rhs)
@@ -280,13 +161,6 @@ def W_T_matvec(x_vec, rand_effect):
     B_k = B_k.reshape((rand_effect.n_level, rand_effect.n_res, rand_effect.n_effect)).transpose(1, 2, 0).ravel()  # (M*q*o, )
     return B_k
 
-def cov_to_corr(cov):
-    """
-    Convert covariance matrix to correlation matrix.
-    """
-    std = np.sqrt(np.diag(cov))
-    return cov / np.outer(std, std)
-
 def random_effect_design_matrix(group: np.ndarray, slope_covariates: np.ndarray = None):
     """
     Construct random effects design matrix for a grouping factor.
@@ -315,100 +189,154 @@ def random_effect_design_matrix(group: np.ndarray, slope_covariates: np.ndarray 
     Z = sparse.hstack(blocks, format='csr')
     return Z, q, o
 
-def random_effect_design_matrices(X: np.ndarray, groups: np.ndarray, slope_cols: dict):
+def slq_logdet2(V_op: LinearOperator, lanczos_steps: int = 50, num_probes: int = 30) -> float:
     """
-    Construct random effects design matrices for multiple grouping factors.
-    """
-    Z, q, o = {}, {}, {}
-    for k in range(groups.shape[1]):
-        rsc_k = X[:, slope_cols[k]] if (slope_cols is not None and slope_cols[k] is not None) else None
-        Z[k], q[k], o[k] = random_effect_design_matrix(groups[:, k], rsc_k)
-    return Z, q, o
+    Estimates the log-determinant of a symmetric positive-definite operator V.
 
-def block_diag_design_matrix(n_res: int, design_matrix: sparse.sparray):
-    """
-    Expands a design matrix into a block diagonal matrix using the Kronecker product.
-    """
-    return sparse.kron(sparse.eye_array(n_res, format='csr'), design_matrix, format='csr')
+    This function uses the Stochastic Lanczos Quadrature (SLQ) method, which
+    combines Hutchinson's trace estimator with Lanczos quadrature to provide a
+    scalable, matrix-free estimate of log(det(V)).
 
-def block_diag_design_matrices(n_res: int, design_matrices: dict):
-    """
-    Create a dictionary of block diagonal design matrices for each group.
-    """
-    return {k: block_diag_design_matrix(Z, n_res) for k, Z in design_matrices.items()}
+    Parameters
+    ----------
+    V_op : scipy.sparse.linalg.LinearOperator
+        The linear operator for the matrix V. It must represent a symmetric
+        positive-definite matrix.
+    lanczos_steps : int, optional
+        The number of Lanczos iterations to perform for each probe vector.
+        This controls the accuracy of the quadrature rule. Higher is more
+        accurate but more computationally expensive. Default is 50.
+    num_probes : int, optional
+        The number of random probe vectors to use for the stochastic trace
+        estimation. Higher is more accurate but more computationally expensive.
+        Default is 30.
+    random_seed : int, optional
+        Seed for the random number generator to ensure reproducibility. Default is 42.
 
-def slq_logdet(V_op, dim, num_probes=30, m=50):
+    Returns
+    -------
+    float
+        An estimate of the log-determinant of V.
     """
-    Approximate log(det(V)) using Stochastic Lanczos Quadrature (SLQ).
-    V_op: LinearOperator for V
-    dim: dimension of V
-    num_probes: number of random vectors
-    m: number of Lanczos steps
-    """
+    dim = V_op.shape[0]
     logdet_est = 0.0
-    rng = np.random.default_rng(seed=42)
+    rng = np.random.default_rng(seed=33)
+    
     for _ in range(num_probes):
-        v = rng.choice([-1, 1], size=dim)
-        v = v / np.linalg.norm(v)
+        # Use Rademacher distribution for the probe vector
+        v = rng.choice([-1.0, 1.0], size=dim)
+
+        # The core Lanczos iteration
+        # This builds the tridiagonal matrix T implicitly
+        alphas = np.zeros(lanczos_steps)
+        betas = np.zeros(lanczos_steps - 1)
         
-        alpha = np.zeros(m)
-        beta = np.zeros(m)
-
         q_prev = np.zeros(dim)
-        q_cur = v.copy()
-
-        for j in range(m):
+        q_cur = v / np.linalg.norm(v)
+        
+        for j in range(lanczos_steps):
             w = V_op @ q_cur
-            if j > 0:
-                w -= beta[j-1] * q_prev
-            alpha[j] = np.dot(q_cur, w)
-            w -= alpha[j] * q_cur
-            beta[j] = np.linalg.norm(w)
-            if beta[j] < 1e-10:
-                break
-            q_prev, q_cur = q_cur, w / beta[j]
+            alpha_j = np.dot(q_cur, w)
+            alphas[j] = alpha_j
 
-        T = np.diag(alpha[:j+1]) + np.diag(beta[:j], 1) + np.diag(beta[:j], -1)
-        eigvals, eigvecs = np.linalg.eigh(T)
+            if j < lanczos_steps - 1:
+                w = w - alpha_j * q_cur - (betas[j-1] if j > 0 else 0.0) * q_prev
+                beta_j = np.linalg.norm(w)
+                if beta_j < 1e-10:
+                    # Krylov subspace is exhausted, truncate and exit loop
+                    lanczos_steps = j + 1
+                    alphas = alphas[:lanczos_steps]
+                    betas = betas[:lanczos_steps-1]
+                    break
+                betas[j] = beta_j
+                q_prev, q_cur = q_cur, w / beta_j
+    
+        # Step 2: Use Gaussian quadrature with eigenvalues/vectors of T
+        # This is faster and more memory efficient than forming the dense T matrix
+        eigvals, eigvecs = eigh_tridiagonal(alphas, betas, eigvals_only=False)
+
+        # Step 3: Apply the log function and sum with quadrature weights
+        # The weights are the squared first elements of the eigenvectors of T
+        # Clip eigenvalues at a small epsilon to prevent log(0) or log(<0)
+        # due to floating point inaccuracies.
+        eps = np.finfo(eigvals.dtype).eps
+        if np.any(eigvals <= eps):
+            warnings.warn("Lanczos-generated eigenvalues are non-positive. "
+                          "Clipping at machine epsilon for log calculation. "
+                          "This may indicate the operator is not SPD or "
+                          "lanczos_steps is too small.")
+            eigvals = np.maximum(eigvals, eps)
+            
         logdet_est += np.sum(np.log(eigvals) * (eigvecs[0, :] ** 2))
 
+    # The formula for Hutchinson's trace estimator with Rademacher vectors is
+    # Tr(log(V)) ≈ sum(v_i^T log(V) v_i) / num_probes.
+    # The quadrature term logdet_est approximates v^T log(V) v, but for a
+    # normalized vector u = v / ||v||. Since ||v||^2 = dim, we must scale
+    # the result. The full expression is dim * E[u^T log(V) u].
     return dim * logdet_est / num_probes
 
-def slq_probe(args):
-    V_op, dim, m, seed = args
-    rng = np.random.default_rng(seed)
-    v = rng.choice([-1, 1], size=dim)
-    v = v / np.linalg.norm(v)
-    alpha = np.zeros(m)
-    beta = np.zeros(m)
-    q_prev = np.zeros(dim)
-    q_cur = v.copy()
-    for j in range(m):
-        w = V_op @ q_cur
-        if j > 0:
-            w -= beta[j-1] * q_prev
-        alpha[j] = np.dot(q_cur, w)
-        w -= alpha[j] * q_cur
-        beta[j] = np.linalg.norm(w)
-        if beta[j] < 1e-10:
-            break
-        q_prev, q_cur = q_cur, w / beta[j]
-    T = np.diag(alpha[:j+1]) + np.diag(beta[:j], 1) + np.diag(beta[:j], -1)
-    eigvals, eigvecs = np.linalg.eigh(T)
-    return np.sum(np.log(eigvals) * (eigvecs[0, :] ** 2))
+def slq_probe(V_op, lanczos_steps, seed):
+    """
+    Single probe for SLQ logdet estimation.
+    """
+    try:
+        rng = np.random.default_rng(seed)
+        dim = V_op.shape[0]
+        v = rng.choice([-1.0, 1.0], size=dim)
+        alphas = np.zeros(lanczos_steps)
+        betas = np.zeros(lanczos_steps - 1)
+        q_prev = np.zeros(dim)
+        q_cur = v / np.linalg.norm(v)
+        
+        for j in range(lanczos_steps):
+            w = V_op @ q_cur
+            alpha_j = np.dot(q_cur, w)
+            alphas[j] = alpha_j
 
-def slq_logdet2(V_op, dim, num_probes=30, m=50):
+            if j < lanczos_steps - 1:
+                w = w - alpha_j * q_cur - (betas[j-1] if j > 0 else 0.0) * q_prev
+                beta_j = np.linalg.norm(w)
+                if beta_j < 1e-10:
+                    # Krylov subspace is exhausted, truncate and exit loop
+                    lanczos_steps = j + 1
+                    alphas = alphas[:lanczos_steps]
+                    betas = betas[:lanczos_steps-1]
+                    break
+                betas[j] = beta_j
+                q_prev, q_cur = q_cur, w / beta_j
+
+        eigvals, eigvecs = eigh_tridiagonal(alphas, betas, eigvals_only=False)
+        eps = np.finfo(eigvals.dtype).eps
+        if np.any(eigvals <= eps):
+            warnings.warn("Lanczos-generated eigenvalues are non-positive. "
+                            "Clipping at machine epsilon for log calculation. "
+                            "This may indicate the operator is not SPD or "
+                            "lanczos_steps is too small.")
+            eigvals = np.maximum(eigvals, eps)
+
+        return np.sum(np.log(eigvals) * (eigvecs[0, :] ** 2))
+    except np.linalg.LinAlgError as e:
+        # warnings.warn(f"Probe failed due to LinAlgError: {e}. Skipping.")
+        return 0.0
+
+def slq_logdet(V_op: LinearOperator, lanczos_steps: int = 50, num_probes: int = 30):
     """
     Parallel SLQ logdet estimation.
     """
+    dim = V_op.shape[0]
     seeds = np.random.SeedSequence(42).spawn(num_probes)
-    args = [(V_op, dim, m, int(s.generate_state(1)[0])) for s in seeds]
-    # chunksize = (num_probes + NJOBS - 1) // NJOBS
-
     results = Parallel(n_jobs=NJOBS, backend='loky')(delayed(slq_probe)
-                                                     (arg) for arg in args)
-    logdet_est = sum(results)
+                                                     (V_op, lanczos_steps, int(s.generate_state(1)[0])) for s in seeds)
+    logdet_est = np.sum(results)
     return dim * logdet_est / num_probes
+
+def cov_to_corr(cov):
+    """
+    Convert covariance matrix to correlation matrix.
+    """
+    std = np.sqrt(np.diag(cov))
+    return cov / np.outer(std, std)
 
 class VLinearOperator(LinearOperator):
     def __init__(self, random_effects, resid_cov, M, n):
@@ -426,7 +354,3 @@ class VLinearOperator(LinearOperator):
     def __reduce__(self):
         """Enable pickling for multiprocessing."""
         return (self.__class__, (self.random_effects, self.resid_cov, self.M, self.n))
-
-
-    # def __call__(self, x_vec):
-    #     return V_matvec(x_vec, self.random_effects, self.resid_cov, self.M, self.n)
