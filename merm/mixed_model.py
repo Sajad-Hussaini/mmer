@@ -5,6 +5,7 @@ from sklearn.base import RegressorMixin, clone
 from tqdm import tqdm
 from . import utils
 from .random_effect import RandomEffect
+from .mixed_model_result import MERMResult
 
 class MERM:
     """
@@ -105,19 +106,6 @@ class MERM:
         for re in random_effects.values():
             np.add(total_re, re.map_cond_mean(), out=total_re)
         return total_re
-    
-    def extract_rand_effect_metadata(self, rand_effects: dict[int, RandomEffect]):
-        """
-        Extract metadata from the random effects for later use.
-        """
-        self.rand_effect_cov = {}
-        self.n_effect = {}
-        self.n_level = {}
-        for k, re in rand_effects.items():
-            self.rand_effect_cov[k] = re.cov
-            self.n_effect[k] = re.n_effect
-            self.n_level[k] = re.n_level
-        return self
 
     def fit(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, random_slopes: dict = None):
         """
@@ -133,7 +121,7 @@ class MERM:
             Self (fitted model).
         """
         marg_resid, rand_effects = self.prepare_data(X, y, groups, random_slopes)
-        pbar = tqdm(range(1, self.max_iter + 1), desc="Fitting model", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
+        pbar = tqdm(range(1, self.max_iter + 1), desc="Fitting model...", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
         for iter_ in pbar:
             rhs = marg_resid.T.ravel()
             V_op = utils.VLinearOperator(rand_effects, self.resid_cov, self.n_res, self.n_obs)
@@ -145,8 +133,6 @@ class MERM:
             if iter_ > 2 and abs((self.log_likelihood[-1] - self.log_likelihood[-2]) / self.log_likelihood[-2]) < self.tol:
                 pbar.set_description("Model Converged")
                 self._is_converged = True
-                # Extract the RandomEffect covariance matrices before discarding them upon convergence
-                self.extract_rand_effect_metadata(rand_effects)
                 break
 
             total_re = self.aggregate_rand_effects(rand_effects)
@@ -155,100 +141,4 @@ class MERM:
             self.compute_resid_cov(eps, rand_effects, V_op)
             self.compute_rand_effect_cov(rand_effects, V_op)
 
-            # Extract the RandomEffect covariance matrices before discarding them upon last iteration
-            self.extract_rand_effect_metadata(rand_effects)
-        return self
-
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        """
-        Predict responses using the fitted fixed effects models.
-        
-        Parameters:
-            X: (n_samples, n_features) array of fixed effect covariates.
-        
-        Returns:
-            (n_samples, M) array of predicted responses.
-        """
-        if not self.fe_models:
-            raise ValueError("Model must be fitted before prediction.")
-        
-        fX = np.empty((X.shape[0], self.n_res))
-        for i, model in enumerate(self.fe_models):
-            fX[:, i] = model.predict(X)
-        return fX
-    
-    def sample(self, X: np.ndarray) -> np.ndarray:
-        """
-        Sample responses from the predictive multivariate distribution.
-        
-        Parameters:
-            X: (n_samples, n_features) array of fixed effect covariates.
-        
-        Returns:
-            (n_samples, M) array of sampled responses.
-        """
-        fX = self.predict(X)
-        n = X.shape[0]
-        y_sampled = np.zeros_like(fX)
-        groups = np.zeros((n, self.n_groups), dtype=int)
-        for i in range(n):
-            Z_matrices, _, n_level = utils.random_effect_design_matrices(X[i:i+1], groups[i:i+1], self.slope_indices)
-            Z_blocks = utils.block_diag_design_matrices(Z_matrices, self.n_res)
-            V_i, _ = self.compute_marginal_covariance(1, n_level, Z_blocks)
-            y_sampled[i] = np.random.multivariate_normal(fX[i], V_i)
-        return y_sampled
-    
-    def compute_random_effects_and_residuals(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray):
-        """
-        Compute residuals (n_obs x n_obs) and random effects (n_res x n_effect x num_levels).
-        """
-        self.n_obs, _ = y.shape
-        Z_matrices, _, n_level = utils.random_effect_design_matrices(X, groups, self.slope_indices)
-        Z_blocks = utils.block_diag_design_matrices(Z_matrices, self.n_res)
-        splu, D = self.splu_decomposition(self.n_obs, n_level, Z_blocks)
-
-        marg_resid = y - self.predict(X)
-        V_inv_eps = splu.solve(marg_resid.ravel(order='F'))
-        mu = self.compute_mu(V_inv_eps, D, Z_blocks)
-
-        total_re = self.aggregate_rand_effects(mu, Z_matrices)
-        eps = marg_resid - total_re
-        return mu, eps
-
-    def summary(self):
-        """
-        Display a summary of the fitted multivariate mixed effects model.
-        """
-        if not self.fe_models:
-            raise ValueError("Model must be fitted before calling summary.")
-
-        # Print summary statistics
-        indent0 = ""
-        indent1 = "   "
-        indent2 = "       "
-
-        print("\n" + indent0 + "Multivariate Mixed Effects Model Summary")
-        print("=" * 50)
-        print(indent1 + f"FE Model: {type(self.fe_models[0]).__name__}")
-        print(indent1 + f"Iterations: {len(self.log_likelihood)}")
-        print(indent1 + f"Converged: {self._is_converged}")
-        print(indent1 + f"Log-Likelihood: {self.log_likelihood[-1]:.2f}")
-        print(indent1 + f"No. Observations: {self.n_obs}")
-        print(indent1 + f"No. Response Variables: {self.n_res}")
-        print(indent1 + f"No. Grouping Variables: {self.n_groups}")
-        print("-" * 50)
-        print(indent1 + f"Residual (Unexplained) Variances")
-        print(indent2 + "{:<10} {:>10}".format("Response", "Variance"))
-        for m in range(self.n_res):
-            print(indent2 + "{:<10} {:>10.4f}".format(m + 1, self.resid_cov[m, m]))
-        print("-" * 50)
-        print(indent1 + f"Random Effects Variances")
-        print(indent2 + "{:<8} {:<10} {:<15} {:>10}".format("Group", "Response", "Random Effect", "Variance"))
-        for k in range(self.n_groups):
-            for i in range(self.n_res):
-                for j in range(self.n_effect[k]):
-                    idx = i * self.n_effect[k] + j
-                    effect_name = "Intercept" if j == 0 else f"Slope {j}"
-                    var = self.rand_effect_cov[k][idx, idx]
-                    print(indent2 + "{:<8} {:<10} {:<15} {:>10.4f}".format(k + 1, i + 1, effect_name, var))
-        print("\n")
+        return MERMResult(self, rand_effects)
