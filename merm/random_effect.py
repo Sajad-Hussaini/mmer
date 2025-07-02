@@ -2,37 +2,37 @@ import numpy as np
 from . import utils
 
 class RandomEffect:
-    def __init__(self, n_obs, n_res, id, slope_id):
+    def __init__(self, n_obs, n_res, id, covariates_id):
         self.n_obs = n_obs
         self.n_res = n_res
         self.id = id
-        self.slope_id = slope_id
+        self.covariates_id = covariates_id
         self.n_effect = None
         self.n_level = None
         self.cov = None
         self.mu = None
-        self.Z_matrix = None
-        self.Z_crossprod = None
+        self.Z = None
+        self.ZTZ = None
 
-    def design_matrix(self, X, groups):
+    def design_re(self, X, groups):
         """
         Constructs the random effect design matrix, number of effect type and levels.
         """
-        slope_covariates = X[:, self.slope_id] if self.slope_id is not None else None
-        self.Z_matrix, self.n_effect, self.n_level = utils.random_effect_design_matrix(groups[:, self.id], slope_covariates)
+        slope_covariates = X[:, self.covariates_id] if self.covariates_id is not None else None
+        self.Z, self.n_effect, self.n_level = utils.design_re(groups[:, self.id], slope_covariates)
         self.cov = np.eye(self.n_res * self.n_effect)  # Not the best to initialize covariance matrix here
         return self
     
-    def crossproduct(self):
+    def cross_product(self):
         """
         Computes the cross-product of the design matrix.
         """
-        self.Z_crossprod = self.Z_matrix.T @ self.Z_matrix
+        self.ZTZ = self.Z.T @ self.Z
         return self
     
     def map_cond_mean(self):
         """
         Maps the conditional mean back to the observation space.
         """
-        mu_reshped = self.mu.reshape((self.n_res, self.n_effect * self.n_level)).T
-        return self.Z_matrix @ mu_reshped
+        B = self.mu.reshape((self.n_effect * self.n_level, self.n_res), order='F')
+        return self.Z @ B
