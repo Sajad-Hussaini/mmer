@@ -1,5 +1,5 @@
 from .mixed_model import MERM
-from .mixed_model_result import MERMResults
+from .mixed_model_result import MERMResult
 from .style import style
 from . import utils
 from . import plots

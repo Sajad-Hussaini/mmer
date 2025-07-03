@@ -1,22 +1,21 @@
 import numpy as np
-from . import utils
 
 class MERMResult:
     """
     Result class for the Multivariate Mixed Effects Regression Model (MERM).
     """
-    def __init__(self, fitted_model, random_effects):
-        self.fe_models = fitted_model.fe_models
+    def __init__(self, MERM, random_effects):
+        self.fe_models = MERM.fe_models
 
-        self.n_res = fitted_model.n_res
-        self.n_obs = fitted_model.n_obs
-        self.n_groups = fitted_model.n_groups
-        self.random_slopes = fitted_model.random_slopes
+        self.n_res = MERM.n_res
+        self.n_obs = MERM.n_obs
+        self.n_groups = MERM.n_groups
+        self.random_slopes = MERM.random_slopes
         
         self.rand_effects = random_effects
-        self.resid_cov = fitted_model.resid_cov
-        self.log_likelihood = fitted_model.log_likelihood
-        self._is_converged = fitted_model._is_converged
+        self.resid_cov = MERM.resid_cov
+        self.log_likelihood = MERM.log_likelihood
+        self._is_converged = MERM._is_converged
     
     @property
     def rand_effect_cov(self):
@@ -54,40 +53,21 @@ class MERMResult:
     def sample(self, X: np.ndarray) -> np.ndarray:
         """
         Sample responses from the predictive multivariate distribution.
-        
+        Assuming no observed levels for random effects.
+
         Parameters:
             X: (n_samples, n_features) array of fixed effect covariates.
         
         Returns:
             (n_samples, M) array of sampled responses.
         """
-        fX = self.predict(X)
-        n = X.shape[0]
-        y_sampled = np.zeros_like(fX)
-        groups = np.zeros((n, self.n_groups), dtype=int)
-        for i in range(n):
-            Z_matrices, _, n_level = utils.random_effect_design_matrices(X[i:i+1], groups[i:i+1], self.slope_indices)
-            Z_blocks = utils.block_diag_design_matrices(Z_matrices, self.n_res)
-            V_i, _ = self.compute_marginal_covariance(1, n_level, Z_blocks)
-            y_sampled[i] = np.random.multivariate_normal(fX[i], V_i)
-        return y_sampled
+        pass
     
-    def compute_random_effects_and_residuals(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray):
+    def compute_random_effects_and_residuals(self):
         """
-        Compute residuals (n_obs x n_obs) and random effects (n_res x n_effect x num_levels).
+        Compute residuals (n_obs x n_res) and random effects (n_res x n_effect x n_level).
         """
-        self.n_obs, _ = y.shape
-        Z_matrices, _, n_level = utils.random_effect_design_matrices(X, groups, self.slope_indices)
-        Z_blocks = utils.block_diag_design_matrices(Z_matrices, self.n_res)
-        splu, D = self.splu_decomposition(self.n_obs, n_level, Z_blocks)
-
-        marg_resid = y - self.predict(X)
-        V_inv_eps = splu.solve(marg_resid.ravel(order='F'))
-        mu = self.compute_mu(V_inv_eps, D, Z_blocks)
-
-        total_re = self.aggregate_rand_effects(mu, Z_matrices)
-        eps = marg_resid - total_re
-        return mu, eps
+        pass
 
     def summary(self):
         """
