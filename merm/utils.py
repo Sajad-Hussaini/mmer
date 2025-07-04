@@ -1,7 +1,7 @@
 import numpy as np
 from scipy import sparse
 
-def design_re(group: np.ndarray, covariates: np.ndarray = None):
+def design_rand_effect(group: np.ndarray, covariates: np.ndarray = None):
     """
     Construct random effects design matrix (Z) for a grouping variable.
         Intercept block: one-hot encoding for group membership

@@ -1,10 +1,7 @@
 import numpy as np
 from scipy.sparse.linalg import LinearOperator
 from scipy.linalg import eigh_tridiagonal
-import warnings
-from joblib import Parallel, delayed, cpu_count
-
-NJOBS = max(1, int(cpu_count() * 0.70))
+from joblib import Parallel, delayed
 
 def slq_probe(V_op, lanczos_steps, seed):
     """
@@ -52,7 +49,7 @@ def slq_probe(V_op, lanczos_steps, seed):
     # The quadrature rule: sum of log(eigvals) weighted by squared first elements of eigenvectors
     return np.sum(np.log(eigvals) * (eigvecs[0, :] ** 2))
 
-def logdet(V_op: LinearOperator, lanczos_steps: int = 50, num_probes: int = 30, random_seed: int = 42):
+def logdet(V_op: LinearOperator, lanczos_steps: int = 50, num_probes: int = 30, random_seed: int = 42, n_jobs: int = -2):
     """
     Estimates the log-determinant of a symmetric positive-definite operator V
     using a parallelized Stochastic Lanczos Quadrature method.
@@ -63,9 +60,9 @@ def logdet(V_op: LinearOperator, lanczos_steps: int = 50, num_probes: int = 30, 
     # Create a sequence of independent random seeds for each parallel job
     # This ensures reproducibility while maintaining statistical independence.
     seeds = np.random.SeedSequence(random_seed).spawn(num_probes)
-    results = Parallel(n_jobs=NJOBS)(delayed(slq_probe)
-                                     (V_op, lanczos_steps, int(s.generate_state(1)[0])) 
-                                     for s in seeds)
+    results = Parallel(n_jobs, backend="loky")(delayed(slq_probe)
+                                               (V_op, lanczos_steps, int(s.generate_state(1)[0]))
+                                               for s in seeds)
     logdet_est = np.sum(results)
     # The final estimate is the average of the probe results, scaled by the matrix dimension.
     return dim * logdet_est / num_probes

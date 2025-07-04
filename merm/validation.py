@@ -133,12 +133,7 @@ def best_fe_model(fe_model, x, y, cv=5):
     else:
         raise ValueError("Unknown regressor for hyperparameter tuning.")
 
-    # Use GridSearchCV for exhaustive tuning
-    tuner = GridSearchCV(fe_model, param_grid, cv=cv, scoring='neg_mean_squared_error', n_jobs=-1)
-
-    # Fit the tuner
-    tuner.fit(x, y)
-
+    tuner = GridSearchCV(fe_model, param_grid, cv=cv, scoring='neg_mean_squared_error', n_jobs=-1).fit(x, y)
     return tuner.best_estimator_, tuner.best_params_
 
 def generate_merm_data(n=1000, M=3, K=2, o_k=[50, 40], p=5, slope_columns=[[0], [0, 2]]):

@@ -7,9 +7,9 @@ class MERMResult:
     def __init__(self, MERM, random_effects):
         self.fe_models = MERM.fe_models
 
-        self.n_res = MERM.n_res
-        self.n_obs = MERM.n_obs
-        self.n_groups = MERM.n_groups
+        self.m = MERM.m
+        self.n = MERM.n
+        self.k = MERM.k
         self.random_slopes = MERM.random_slopes
         
         self.rand_effects = random_effects
@@ -23,14 +23,14 @@ class MERMResult:
         return {k: re.cov for k, re in self.rand_effects.items()}
     
     @property
-    def n_effect(self):
+    def q(self):
         """Lazy property to get number of effects when needed."""
-        return {k: re.n_effect for k, re in self.rand_effects.items()}
+        return {k: re.q for k, re in self.rand_effects.items()}
     
     @property
-    def n_level(self):
+    def o(self):
         """Lazy property to get number of levels when needed."""
-        return {k: re.n_level for k, re in self.rand_effects.items()}
+        return {k: re.o for k, re in self.rand_effects.items()}
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         """
@@ -45,7 +45,7 @@ class MERMResult:
         if not self.fe_models:
             raise ValueError("Model must be fitted before prediction.")
         
-        fX = np.empty((X.shape[0], self.n_res))
+        fX = np.empty((X.shape[0], self.m))
         for i, model in enumerate(self.fe_models):
             fX[:, i] = model.predict(X)
         return fX
@@ -65,7 +65,7 @@ class MERMResult:
     
     def compute_random_effects_and_residuals(self):
         """
-        Compute residuals (n_obs x n_res) and random effects (n_res x n_effect x n_level).
+        Compute residuals (n x m) and random effects (m x q x o).
         """
         pass
 
@@ -87,21 +87,21 @@ class MERMResult:
         print(indent1 + f"Iterations: {len(self.log_likelihood)}")
         print(indent1 + f"Converged: {self._is_converged}")
         print(indent1 + f"Log-Likelihood: {self.log_likelihood[-1]:.2f}")
-        print(indent1 + f"No. Observations: {self.n_obs}")
-        print(indent1 + f"No. Response Variables: {self.n_res}")
-        print(indent1 + f"No. Grouping Variables: {self.n_groups}")
+        print(indent1 + f"No. Observations: {self.n}")
+        print(indent1 + f"No. Response Variables: {self.m}")
+        print(indent1 + f"No. Grouping Variables: {self.k}")
         print("-" * 50)
         print(indent1 + f"Residual (Unexplained) Variances")
         print(indent2 + "{:<10} {:>10}".format("Response", "Variance"))
-        for m in range(self.n_res):
+        for m in range(self.m):
             print(indent2 + "{:<10} {:>10.4f}".format(m + 1, self.resid_cov[m, m]))
         print("-" * 50)
         print(indent1 + f"Random Effects Variances")
         print(indent2 + "{:<8} {:<10} {:<15} {:>10}".format("Group", "Response", "Random Effect", "Variance"))
-        for k in range(self.n_groups):
-            for i in range(self.n_res):
-                for j in range(self.n_effect[k]):
-                    idx = i * self.n_effect[k] + j
+        for k in range(self.k):
+            for i in range(self.m):
+                for j in range(self.q[k]):
+                    idx = i * self.q[k] + j
                     effect_name = "Intercept" if j == 0 else f"Slope {j}"
                     var = self.rand_effect_cov[k][idx, idx]
                     print(indent2 + "{:<8} {:<10} {:<15} {:>10.4f}".format(k + 1, i + 1, effect_name, var))

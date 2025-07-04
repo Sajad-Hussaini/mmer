@@ -3,7 +3,6 @@ from scipy import sparse
 from scipy.sparse.linalg import LinearOperator, cg
 from sklearn.base import RegressorMixin, clone
 from tqdm import tqdm
-from . import utils
 from . import linalg_op
 from . import stats
 from . import slq
@@ -19,30 +18,31 @@ class MERM:
         max_iter: Maximum number iterations (default: 50).
         tol: Log-likelihood convergence tolerance  (default: 1e-4).
     """
-    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 50, tol: float = 1e-4):
+    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 50, tol: float = 1e-4, n_jobs: int = -2):
         self.fe_model = fixed_effects_model
         self.max_iter = max_iter
         self.tol = tol
         self.log_likelihood = []
         self._is_converged = False
+        self.n_jobs = n_jobs
 
     def prepare_data(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, random_slopes: dict):
         """
         Initialize the model parameters and design matrices based on input data.
         """
-        self.n_obs, self.n_res = y.shape
-        self.n_groups = groups.shape[1]
-        self.random_slopes = random_slopes if random_slopes is not None else {k: None for k in range(self.n_groups)}
+        self.n, self.m = y.shape
+        self.k = groups.shape[1]
+        self.random_slopes = random_slopes if random_slopes is not None else {k: None for k in range(self.k)}
 
-        rand_effects = {k: RandomEffect(k, self.n_obs, self.n_res, slope_col) for k, slope_col in self.random_slopes.items()}
+        rand_effects = {k: RandomEffect(self.n, self.m, k, slope_col) for k, slope_col in self.random_slopes.items()}
         for re in rand_effects.values():
-            re.design_re(X, groups).cross_product()
+            re.design_rand_effect(X, groups).design_stats().cross_product()
 
-        self.resid_cov = np.eye(self.n_res)
+        self.resid_cov = np.eye(self.m)
         
-        self.fe_models = [clone(self.fe_model) for _ in range(self.n_res)] if not isinstance(self.fe_model, list) else self.fe_model
-        if len(self.fe_models) != self.n_res:
-            raise ValueError(f"Expected {self.n_res} fixed effects models, got {len(self.fe_models)}")
+        self.fe_models = [clone(self.fe_model) for _ in range(self.m)] if not isinstance(self.fe_model, list) else self.fe_model
+        if len(self.fe_models) != self.m:
+            raise ValueError(f"Expected {self.m} fixed effects models, got {len(self.fe_models)}")
         
         resid_mrg = self.compute_marginal_residual(X, y, 0.0)
         return resid_mrg, rand_effects
@@ -65,43 +65,46 @@ class MERM:
         """
         cov = eps.T @ eps
         for re in random_effects.values():
-            np.add(cov, stats.resid_cov(re, V_op, M_op), out=cov)
+            np.add(cov, re.compute_resid_cov_correction(V_op, M_op, self.n_jobs).resid_cov_correction, out=cov)
 
-        self.resid_cov = cov / self.n_obs + 1e-6 * np.eye(self.n_res)
+        self.resid_cov[...] = cov / self.n + 1e-6 * np.eye(self.m)
+        return self
 
     def compute_rand_effect_cov(self, random_effects: dict[int, RandomEffect], V_op: LinearOperator, M_op: LinearOperator):
         """
         Compute the random effects covariance matrix.
         """
         for re in random_effects.values():
-            stats.rand_effect_cov(re, V_op, M_op)
+            re.compute_rand_effect_cov(V_op, M_op, self.n_jobs)
+        return self
     
-    def compute_log_likelihood(self, resid_mrg: np.ndarray, V_inv_resid_mrg: np.ndarray, V_op: LinearOperator):
+    def compute_log_likelihood(self, resid_mrg: np.ndarray, prec_resid: np.ndarray, V_op: LinearOperator):
         """
         Compute the log-likelihood of the marginal distribution of the residuals.
         aka the marginal log-likelihood
+        prec_resid: precision-weighted residuals V⁻¹(y-fx)
         """
-        log_det_V = slq.logdet(V_op)
-        log_likelihood = -(self.n_res * self.n_obs * np.log(2 * np.pi) + log_det_V + resid_mrg.T @ V_inv_resid_mrg) / 2
+        log_det_V = slq.logdet(V_op, n_jobs=self.n_jobs)
+        log_likelihood = -(self.m * self.n * np.log(2 * np.pi) + log_det_V + resid_mrg.T @ prec_resid) / 2
         return log_likelihood
     
-    def compute_marginal_covariance(self, random_effects, n_obs):
+    def compute_marginal_covariance(self, random_effects, n):
         """
         Compute the marginal covariance matrix V
         """
-        V = sparse.kron(self.resid_cov, sparse.eye_array(n_obs, format='csr'), format='csr')
+        V = sparse.kron(self.resid_cov, sparse.eye_array(n, format='csr'), format='csr')
         for re in random_effects.values():
             D = sparse.kron(re.cov, sparse.eye_array(re.n_level, format='csr'), format='csr')
-            Z_full = sparse.kron(sparse.eye_array(re.n_res, format='csr'), re.Z, format='csr')
+            Z_full = sparse.kron(sparse.eye_array(re.m, format='csr'), re.Z, format='csr')
             V += Z_full @ D @ Z_full.T
         return V
 
-    def compute_mu(self, V_inv_resid_mrg: np.ndarray, random_effects: dict[int, RandomEffect]):
+    def compute_mu(self, prec_resid: np.ndarray, random_effects: dict[int, RandomEffect]):
         """
         Compute the conditional mean of the random effects by leveraging the kronecker structure.
         """
         for re in random_effects.values():
-            stats.compute_mu(V_inv_resid_mrg, re)
+            re.compute_mu(prec_resid)
     
     def aggregate_rand_effects(self, random_effects: dict[int, RandomEffect]):
         """
@@ -109,7 +112,7 @@ class MERM:
         returns:
             2d array (n, M)
         """
-        total_re = np.zeros((self.n_obs, self.n_res))
+        total_re = np.zeros((self.n, self.m))
         for re in random_effects.values():
             np.add(total_re, re.map_mu(), out=total_re)
         return total_re
@@ -132,13 +135,13 @@ class MERM:
         for iter_ in pbar:
             rhs = resid_mrg.ravel(order='F')
             V_op = linalg_op.VLinearOperator(rand_effects, self.resid_cov)
-            # M_op = linalg_op.ResidualPreconditioner(self.resid_cov, self.n_obs)
-            M_op = linalg_op.DiagonalPreconditioner(rand_effects, self.resid_cov)
+            M_op = linalg_op.ResidualPreconditioner(self.resid_cov, self.n)
+            # M_op = linalg_op.DiagonalPreconditioner(rand_effects, self.resid_cov)
             # M_op = None
-            V_inv_resid_mrg, _ = cg(V_op, rhs, M=M_op)
-            self.compute_mu(V_inv_resid_mrg, rand_effects)
+            prec_resid, _ = cg(V_op, rhs, M=M_op)
+            self.compute_mu(prec_resid, rand_effects)
 
-            log_likelihood = self.compute_log_likelihood(rhs, V_inv_resid_mrg, V_op)
+            log_likelihood = self.compute_log_likelihood(rhs, prec_resid, V_op)
             self.log_likelihood.append(log_likelihood)
             if iter_ > 2 and abs((self.log_likelihood[-1] - self.log_likelihood[-2]) / self.log_likelihood[-2]) < self.tol:
                 pbar.set_description("Model Converged")
