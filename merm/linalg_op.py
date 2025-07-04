@@ -62,46 +62,6 @@ class ResidualPreconditioner(LinearOperator):
         """Enable pickling for multiprocessing."""
         return (self.__class__, (self.resid_cov, self.n))
 
-class DiagonalPreconditioner(LinearOperator):
-    """
-    The Scalable Workhorse Preconditioner: P = diag(V)
-
-    This is the most versatile and recommended general-purpose preconditioner.
-    It captures the individual variance of every element while ignoring covariance.
-    """
-    def __init__(self, random_effects, resid_cov):
-        self.random_effects = random_effects
-        self.resid_cov = resid_cov
-        self.n = list(random_effects.values())[0].n
-        self.m = resid_cov.shape[0]
-        shape = (self.m * self.n, self.m * self.n)
-
-        V_diag = self._compute_V_diagonal(random_effects, resid_cov)
-        self.inv_V_diag = 1.0 / (V_diag + 1e-9)
-        super().__init__(dtype=np.float64, shape=shape)
-
-    def _compute_V_diagonal(self, random_effects, resid_cov):
-        diag_phi = np.diag(self.resid_cov)
-        V_diag_reshaped = np.full((self.n, self.m), diag_phi, dtype=np.float64)
-
-        for re in random_effects.values():
-            Zk_sq = re.Z.power(2)
-            diag_tau_k = np.diag(re.cov)
-            diag_Dk = np.tile(diag_tau_k, re.o)
-            diag_Dk_reshaped = diag_Dk.reshape((self.m, re.q * re.o))
-
-            for m in range(self.m):
-                V_diag_reshaped[:, m] += Zk_sq @ diag_Dk_reshaped[m, :]
-        return V_diag_reshaped.ravel(order='F')
-
-    def _matvec(self, x_vec):
-        """Applies P⁻¹ via element-wise multiplication."""
-        return x_vec * self.inv_V_diag
-    
-    def __reduce__(self):
-        """Enable pickling for multiprocessing."""
-        return (self.__class__, (self.random_effects, self.resid_cov))
-
 # ====================== Matrix-Vector Operations ======================
 
 def V_matvec(x_vec, random_effects, resid_cov, n, m):

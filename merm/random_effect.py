@@ -72,9 +72,9 @@ class RandomEffect:
         by constructing the uncertainty correction matrix T: m x m
         Uses symmetry of the covariance matrix to reduce computations.
         """
-        use_parallel = self.m > 2
+        use_parallel = self.m > 0
         if use_parallel:
-            results = Parallel(n_jobs, backend='loky')(delayed(self.resid_cov_correction_per_response)
+            results = Parallel(n_jobs, backend='threading')(delayed(self.resid_cov_correction_per_response)
                                                             (V_op, M_op, row, col)
                                                             for row in range(self.m) for col in range(row, self.m))
         else:
@@ -122,9 +122,9 @@ class RandomEffect:
         beta = self.mu.reshape((o, M * q), order='F')
         U = beta.T @ beta
 
-        use_parallel = o > 2
+        use_parallel = o > 0
         if use_parallel:
-            results = Parallel(n_jobs, backend='loky')(delayed(self.re_cov_correction_per_level)
+            results = Parallel(n_jobs, backend='threading')(delayed(self.re_cov_correction_per_level)
                                                             (V_op, M_op, (base_idx + j).ravel()) for j in range(o))
         else:
             results = [self.re_cov_correction_per_level(V_op, M_op, (base_idx + j).ravel()) for j in range(o)]
