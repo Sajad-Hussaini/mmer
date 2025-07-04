@@ -1,6 +1,10 @@
 import numpy as np
 from scipy.sparse.linalg import LinearOperator
 from scipy.linalg import solve
+import scipy.sparse as sparse
+from joblib import Parallel, delayed, cpu_count
+
+NJOBS = max(1, int(cpu_count() * 0.70))
 
 class VLinearOperator(LinearOperator):
     """
@@ -27,10 +31,24 @@ class VLinearOperator(LinearOperator):
         """Enable pickling for multiprocessing."""
         return (self.__class__, (self.random_effects, self.resid_cov))
 
+# ===== PRECONDITIONER IMPLEMENTATIONS =========================================
+
 class ResidualPreconditioner(LinearOperator):
     """
-    A preconditioner for V using the inverse of the residual covariance R.
-    P⁻¹ = R⁻¹ = φ⁻¹ ⊗ Iₙ
+    The Lightweight Preconditioner: P = R = φ ⊗ Iₙ
+
+    This is the simplest and cheapest preconditioner. It approximates the full
+    covariance V with only its residual component R, ignoring all random effects.
+
+    - Use Case:
+      As a fast baseline or when the variance from random effects is known to
+      be very small. It has the lowest setup cost but provides the weakest
+      acceleration. It is always feasible regardless of n or M.
+
+    - Complexity:
+      - Setup Cost: O(M³), for inverting the M x M matrix φ.
+      - Memory: O(M²), to store the inverse of φ.
+      - Application Cost (per matvec): O(n * M²).
     """
     def __init__(self, resid_cov, n):
         self.resid_cov = resid_cov
@@ -57,6 +75,56 @@ class ResidualPreconditioner(LinearOperator):
         """Enable pickling for multiprocessing."""
         return (self.__class__, (self.resid_cov, self.n))
 
+class DiagonalPreconditioner(LinearOperator):
+    """
+    The Scalable Workhorse Preconditioner: P = diag(V)
+
+    This is the most versatile and recommended general-purpose preconditioner.
+    It captures the individual variance of every element while ignoring covariance.
+
+    - Use Case:
+      The best choice for almost all large-scale problems, especially when M is
+      large (e.g., M > 30) or n is very large (e.g., n > 50,000). It offers a
+      significant improvement over the ResidualPreconditioner with a manageable
+      and predictable linear scaling cost. For M=1, this is always the best choice.
+
+    - Complexity:
+      - Setup Cost: O(n * M * K * q), where K is groups, q is effects.
+      - Memory: O(n * M), to store the diagonal of V.
+      - Application Cost (per matvec): O(n * M).
+    """
+    def __init__(self, random_effects, resid_cov):
+        self.random_effects = random_effects
+        self.resid_cov = resid_cov
+        self.M = resid_cov.shape[0]
+        self.n = list(random_effects.values())[0].n_obs
+        shape = (self.M * self.n, self.M * self.n)
+
+        V_diag = self._compute_V_diagonal(random_effects, resid_cov)
+        self.inv_V_diag = 1.0 / (V_diag + 1e-9)
+        super().__init__(dtype=np.float64, shape=shape)
+
+    def _compute_V_diagonal(self, random_effects, resid_cov):
+        diag_phi = np.diag(self.resid_cov)
+        V_diag_reshaped = np.full((self.n, self.M), diag_phi, dtype=np.float64)
+
+        for re in random_effects.values():
+            Zk_sq = re.Z.power(2)
+            diag_tau_k = np.diag(re.cov)
+            diag_Dk = np.tile(diag_tau_k, re.n_level)
+            diag_Dk_reshaped = diag_Dk.reshape((self.M, re.n_effect * re.n_level))
+
+            for m in range(self.M):
+                V_diag_reshaped[:, m] += Zk_sq @ diag_Dk_reshaped[m, :]
+        return V_diag_reshaped.ravel(order='F')
+
+    def _matvec(self, x_vec):
+        """Applies P⁻¹ via element-wise multiplication."""
+        return x_vec * self.inv_V_diag
+    
+    def __reduce__(self):
+        """Enable pickling for multiprocessing."""
+        return (self.__class__, (self.random_effects, self.resid_cov))
 # ====================== Matrix-Vector Operations ======================
 
 def V_matvec(x_vec, random_effects, resid_cov, M, n):

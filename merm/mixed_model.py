@@ -133,7 +133,8 @@ class MERM:
             rhs = resid_mrg.ravel(order='F')
             V_op = linalg_op.VLinearOperator(rand_effects, self.resid_cov)
             # M_op = linalg_op.ResidualPreconditioner(self.resid_cov, self.n_obs)
-            M_op = None
+            M_op = linalg_op.DiagonalPreconditioner(rand_effects, self.resid_cov)
+            # M_op = None
             V_inv_resid_mrg, _ = cg(V_op, rhs, M=M_op)
             self.compute_mu(V_inv_resid_mrg, rand_effects)
 
