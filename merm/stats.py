@@ -34,7 +34,7 @@ def resid_cov(rand_effect, V_op, M_op):
     return cov
 
 def rand_effect_cov(rand_effect, V_op, M_op):
-    """
+    r"""
     Compute the random effect covariance matrix using
     $\hat{\tau}_k = \frac{1}{o_k}(U_k + W_k)$
     """
@@ -58,7 +58,7 @@ def rand_effect_cov(rand_effect, V_op, M_op):
     rand_effect.cov = rand_effect.cov + (U - W) / o + 1e-6 * np.eye(M * q)
 
 def resid_cov_correction(rand_effect, V_op, M_op, row, col):
-    """
+    r"""
     Computes the trace of uncertainty correction matrix for the response block (row, col)
     $T_k_{ij} = \text{trace}\left( (Z_k^T Z_k) (\Sigma_k)_{ij} \right)$
     using the random effect conditional covariance
@@ -84,7 +84,7 @@ def resid_cov_correction(rand_effect, V_op, M_op, row, col):
     return row, col, np.sum(sigma_block * rand_effect.ZTZ)
 
 def re_cov_correction(rand_effect, V_op, M_op, lvl_indices):
-    """
+    r"""
     Computes the right hand term of random effect conditional covariance
         Σ = D - D (I_M ⊗ Z)^T V^{-1} (I_M ⊗ Z) D
     for the level block specified by lvl_indices.
@@ -99,7 +99,7 @@ def re_cov_correction(rand_effect, V_op, M_op, lvl_indices):
         vec.fill(0.0)
         vec[lvl_indices[i]] = 1.0
         rhs = linalg_op.kronZ_D_matvec(vec, rand_effect)
-        x_sol, _ = cg(V_op, rhs, M=M_op)
+        x_sol, _ = cg(V_op, rhs.ravel(order='F'), M=M_op)
         rht = linalg_op.kronZ_D_T_matvec(x_sol, rand_effect)
         sigma_block[:, i] = rht.ravel(order='F')[lvl_indices]
     return sigma_block
