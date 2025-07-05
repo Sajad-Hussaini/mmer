@@ -1,9 +1,8 @@
 import numpy as np
-from scipy.sparse.linalg import LinearOperator
 from scipy.linalg import eigh_tridiagonal
 from joblib import Parallel, delayed
 
-def slq_probe(V_op, lanczos_steps, seed):
+def slq_probe(V_op, lanczos_steps: int, seed: int) -> float:
     """
     Single probe for SLQ logdet estimation with optimized error handling.
     """
@@ -49,7 +48,7 @@ def slq_probe(V_op, lanczos_steps, seed):
     # The quadrature rule: sum of log(eigvals) weighted by squared first elements of eigenvectors
     return np.sum(np.log(eigvals) * (eigvecs[0, :] ** 2))
 
-def logdet(V_op: LinearOperator, lanczos_steps: int = 50, num_probes: int = 30, random_seed: int = 42, n_jobs: int = -2):
+def logdet(V_op, lanczos_steps: int = 50, num_probes: int = 30, random_seed: int = 42, n_jobs: int = -2):
     """
     Estimates the log-determinant of a symmetric positive-definite operator V
     using a parallelized Stochastic Lanczos Quadrature method.
@@ -60,7 +59,7 @@ def logdet(V_op: LinearOperator, lanczos_steps: int = 50, num_probes: int = 30, 
     # Create a sequence of independent random seeds for each parallel job
     # This ensures reproducibility while maintaining statistical independence.
     seeds = np.random.SeedSequence(random_seed).spawn(num_probes)
-    use_parallel = num_probes > 0
+    use_parallel = num_probes > 1
     if use_parallel:
         # Use joblib to parallelize the SLQ probes
         results = Parallel(n_jobs, backend="threading")(delayed(slq_probe)
