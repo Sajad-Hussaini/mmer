@@ -2,7 +2,7 @@ import numpy as np
 from scipy.linalg import eigh_tridiagonal
 from joblib import Parallel, delayed
 
-def slq_probe(V_op, lanczos_steps: int, seed: int) -> float:
+def slq_probe(V_op, lanczos_steps, seed):
     """
     Single probe for SLQ logdet estimation with optimized error handling.
     """
@@ -48,7 +48,7 @@ def slq_probe(V_op, lanczos_steps: int, seed: int) -> float:
     # The quadrature rule: sum of log(eigvals) weighted by squared first elements of eigenvectors
     return np.sum(np.log(eigvals) * (eigvecs[0, :] ** 2))
 
-def logdet(V_op, lanczos_steps: int = 50, num_probes: int = 30, random_seed: int = 42, n_jobs: int = -2):
+def logdet(V_op, lanczos_steps: int = 50, num_probes: int = 30, random_seed: int = 42, n_jobs: int = 4):
     """
     Estimates the log-determinant of a symmetric positive-definite operator V
     using a parallelized Stochastic Lanczos Quadrature method.
@@ -59,15 +59,8 @@ def logdet(V_op, lanczos_steps: int = 50, num_probes: int = 30, random_seed: int
     # Create a sequence of independent random seeds for each parallel job
     # This ensures reproducibility while maintaining statistical independence.
     seeds = np.random.SeedSequence(random_seed).spawn(num_probes)
-    use_parallel = num_probes > 1
-    if use_parallel:
-        # Use joblib to parallelize the SLQ probes
-        results = Parallel(n_jobs, backend="threading")(delayed(slq_probe)
-                                                   (V_op, lanczos_steps, int(s.generate_state(1)[0]))
-                                                   for s in seeds)
-    else:
-        # Fallback to sequential execution if parallelization is not needed
-        results = [slq_probe(V_op, lanczos_steps, int(s.generate_state(1)[0])) for s in seeds]
+    results = Parallel(n_jobs, backend="loky")(delayed(slq_probe)
+                                                    (V_op, lanczos_steps, int(s.generate_state(1)[0])) for s in seeds)
     logdet_est = np.sum(results)
     # The final estimate is the average of the probe results, scaled by the matrix dimension.
     return dim * logdet_est / num_probes

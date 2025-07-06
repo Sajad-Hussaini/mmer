@@ -3,7 +3,7 @@ from scipy import sparse
 from scipy.sparse.linalg import cg
 from sklearn.base import RegressorMixin, clone
 from tqdm import tqdm
-from .linop import VLinearOperator, ResidualPreconditioner, DiagonalPreconditioner
+from .linop import VLinearOperator, ResidualPreconditioner
 from . import slq
 from .random_effect import RandomEffect
 from .residual import Residual
@@ -18,7 +18,7 @@ class MERM:
         max_iter: Maximum number iterations (default: 50).
         tol: Log-likelihood convergence tolerance  (default: 1e-4).
     """
-    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 50, tol: float = 1e-4, n_jobs: int = -2):
+    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 50, tol: float = 1e-4, n_jobs: int = 4):
         self.fe_model = fixed_effects_model
         self.max_iter = max_iter
         self.tol = tol
@@ -111,8 +111,7 @@ class MERM:
         for iter_ in pbar:
             rhs = resid_mrg.ravel(order='F')
             V_op = VLinearOperator(rand_effects, resid)
-            # M_op = ResidualPreconditioner(resid)
-            M_op = DiagonalPreconditioner(rand_effects, resid)
+            M_op = ResidualPreconditioner(resid)
             prec_resid, _ = cg(V_op, rhs, M=M_op)
 
             for re in rand_effects.values():

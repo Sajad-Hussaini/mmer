@@ -66,14 +66,8 @@ class RandomEffect:
         Uses symmetry of the covariance matrix to reduce computations.
         """
         T = np.zeros((self.m, self.m))
-        use_parallel = self.m > 1 and self.q * self.o > 1
-        if use_parallel:
-            results = Parallel(n_jobs, backend='loky')(delayed(self.resid_cov_correction_per_response)
-                                                       (V_op, M_op, row, col)
-                                                       for row in range(self.m) for col in range(row, self.m))
-        else:
-            results = [self.resid_cov_correction_per_response(V_op, M_op, row, col)
-                       for row in range(self.m) for col in range(row, self.m)]
+        results = Parallel(n_jobs, backend='loky')(delayed(self.resid_cov_correction_per_response)
+                                                   (V_op, M_op, row, col) for row in range(self.m) for col in range(row, self.m))
         for row, col, trace in results:
             T[col, row] = T[row, col] = trace
         return T
@@ -115,14 +109,8 @@ class RandomEffect:
 
         beta = self.mu.reshape((self.o, self.m * self.q), order='F')
         U = beta.T @ beta
-
-        use_parallel = self.o > 1 and self.m * self.q > 1
-        if use_parallel:
-            results = Parallel(n_jobs, backend='loky')(delayed(self.re_cov_correction_per_level)
-                                                            (V_op, M_op, (base_idx + j).ravel()) for j in range(self.o))
-        else:
-            results = [self.re_cov_correction_per_level(V_op, M_op, (base_idx + j).ravel()) for j in range(self.o)]
-
+        results = Parallel(n_jobs, backend='loky')(delayed(self.re_cov_correction_per_level)
+                                                   (V_op, M_op, (base_idx + j).ravel()) for j in range(self.o))
         rh_term = np.sum(results, axis=0)
         tau = self.cov + (U - rh_term) / self.o + 1e-6 * np.eye(self.m * self.q)
         return tau
