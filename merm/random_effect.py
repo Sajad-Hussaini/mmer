@@ -124,8 +124,8 @@ class RandomEffect:
             results = [self.re_cov_correction_per_level(V_op, M_op, (base_idx + j).ravel()) for j in range(self.o)]
 
         rh_term = np.sum(results, axis=0)
-        self.cov[...] = self.cov + (U - rh_term) / self.o + 1e-6 * np.eye(self.m * self.q)
-        return self
+        tau = self.cov + (U - rh_term) / self.o + 1e-6 * np.eye(self.m * self.q)
+        return tau
     
     def re_cov_correction_per_level(self, V_op, M_op, lvl_indices):
         """

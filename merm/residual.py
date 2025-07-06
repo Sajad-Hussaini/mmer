@@ -31,8 +31,8 @@ class Residual:
         for re in random_effects.values():
             np.add(S, re.compute_resid_cov_correction(V_op, M_op, n_jobs), out=S)
 
-        self.cov[...] = S / self.n + 1e-6 * np.eye(self.m)
-        return self
+        phi = S / self.n + 1e-6 * np.eye(self.m)
+        return phi
     
     def full_cov_matvec(self, x_vec: np.ndarray) -> np.ndarray:
         """

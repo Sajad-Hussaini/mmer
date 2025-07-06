@@ -3,7 +3,7 @@ from scipy import sparse
 from scipy.sparse.linalg import cg
 from sklearn.base import RegressorMixin, clone
 from tqdm import tqdm
-from .linop import VLinearOperator, ResidualPreconditioner
+from .linop import VLinearOperator, ResidualPreconditioner, DiagonalPreconditioner
 from . import slq
 from .random_effect import RandomEffect
 from .residual import Residual
@@ -111,7 +111,8 @@ class MERM:
         for iter_ in pbar:
             rhs = resid_mrg.ravel(order='F')
             V_op = VLinearOperator(rand_effects, resid)
-            M_op = ResidualPreconditioner(resid)
+            # M_op = ResidualPreconditioner(resid)
+            M_op = DiagonalPreconditioner(rand_effects, resid)
             prec_resid, _ = cg(V_op, rhs, M=M_op)
 
             for re in rand_effects.values():
@@ -128,7 +129,12 @@ class MERM:
             resid_mrg = self.compute_marginal_residual(X, y, total_re)
 
             resid.compute_eps(resid_mrg, total_re)
-            resid.compute_cov(rand_effects, V_op, M_op, self.n_jobs)
-            for re in rand_effects.values():
-                re.compute_cov(V_op, M_op, self.n_jobs)
+            new_phi = resid.compute_cov(rand_effects, V_op, M_op, self.n_jobs)
+            tau_dict = {}
+            for k, re in rand_effects.items():
+                tau_dict[k] = re.compute_cov(V_op, M_op, self.n_jobs)
+            # Safely update the covariance matrices
+            resid.cov = new_phi
+            for k, re in rand_effects.items():
+                re.cov = tau_dict[k]
         return MERMResult(self, rand_effects, resid)
