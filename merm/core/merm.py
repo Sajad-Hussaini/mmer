@@ -3,11 +3,11 @@ from scipy import sparse
 from scipy.sparse.linalg import cg
 from sklearn.base import RegressorMixin, clone
 from tqdm import tqdm
-from .linop import VLinearOperator, ResidualPreconditioner
-from . import slq
+from .operator import VLinearOperator, ResidualPreconditioner
+from ..lanczos_algorithm import slq
 from .random_effect import RandomEffect
 from .residual import Residual
-from .mixed_model_result import MERMResult
+from .merm_result import MERMResult
 
 class MERM:
     """
@@ -18,10 +18,12 @@ class MERM:
         max_iter: Maximum number iterations (default: 50).
         tol: Log-likelihood convergence tolerance  (default: 1e-4).
     """
-    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 50, tol: float = 1e-4, n_jobs: int = 4):
+    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 20, tol: float = 1e-3, slq_steps: int = 10, slq_probes: int = 10, n_jobs: int = 4):
         self.fe_model = fixed_effects_model
         self.max_iter = max_iter
         self.tol = tol
+        self.slq_steps = slq_steps
+        self.slq_probes = slq_probes
         self.log_likelihood = []
         self._is_converged = False
         self.n_jobs = n_jobs
@@ -66,7 +68,7 @@ class MERM:
             resid_mrg: marginal residuals y-fx
             prec_resid: precision-weighted residuals V⁻¹(y-fx)
         """
-        log_det_V = slq.logdet(V_op, n_jobs=self.n_jobs)
+        log_det_V = slq.logdet(V_op, lanczos_steps=self.slq_steps, num_probes=self.slq_probes, n_jobs=self.n_jobs)
         log_likelihood = -(self.m * self.n * np.log(2 * np.pi) + log_det_V + resid_mrg.T @ prec_resid) / 2
         return log_likelihood
     

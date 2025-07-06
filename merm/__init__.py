@@ -1,8 +1,8 @@
-from .mixed_model import MERM
-from .mixed_model_result import MERMResult
-from .style import style
-from . import utils
-from . import plots
-from . import validation
+from .core.merm import MERM
+from .core.merm_result import MERMResult
+from .visual.style import style
+from .core import utils
+from .visual import plots
 
-__all__ = ['MERM', 'MERMResult']
+__version__ = '0.1.0'
+__all__ = ['MERM', 'MERMResult', 'style', 'utils', 'plots']

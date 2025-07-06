@@ -5,10 +5,9 @@ from scipy.stats import probplot, linregress
 import seaborn as sns
 import matplotlib.pyplot as plt
 import shap
-from sklearn.model_selection import RandomizedSearchCV, GridSearchCV
 from matplotlib.ticker import MaxNLocator
 from .style import style
-from . import utils
+from ..core import utils
 
 _CM = 1 / 2.54  # cm to inches conversion factor
 
