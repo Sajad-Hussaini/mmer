@@ -40,7 +40,7 @@ pip install .
 
 ## User Guide
 
-For a step-by-step walkthrough on using **MERM**, refer to the [Quick Start with MERM](merm/examples/exmaple_1.py).
+For step-by-step examples and tutorials on using **MERM**, explore [Examples](merm/examples/).
 
 > 📚 **Note**: The User Guide will be updated with more detailed instructions.
 
