@@ -1,0 +1,48 @@
+# %%
+import optuna
+from sklearn.neural_network import MLPRegressor
+from sklearn.model_selection import cross_val_score
+import numpy as np
+import joblib
+from pathlib import Path
+# %%
+base_path = Path(r"C:\Users\Sajad\Work Folder\merm_example")
+
+X_train_processed = np.load(base_path / 'preprocess' / 'X_train_processed.npy')
+y_train_log = np.load(base_path / 'preprocess' / 'y_train_log.npy')
+
+def objective(trial):
+    """
+    Objective function for Optuna to optimize the MLPRegressor hyperparameters.
+    This function defines the hyperparameters to be tuned and evaluates the model using cross-validation.
+    """
+    n_layers = trial.suggest_int('n_layers', 1, 3)
+    layers = []
+    for i in range(n_layers):
+        layers.append(trial.suggest_int(f'n_units_l{i}', 5, 150))
+    
+    model_params = {
+        'hidden_layer_sizes': tuple(layers),
+        'activation': trial.suggest_categorical('activation', ['relu', 'logistic', 'tanh']),
+        'alpha': trial.suggest_float('alpha', 1e-4, 1.0, log=True),
+        'solver': trial.suggest_categorical('solver', ['adam', 'sgd'])}
+
+    if model_params['solver'] == 'adam':
+        model_params['learning_rate_init'] = trial.suggest_float('learning_rate_init', 1e-4, 1e-2, log=True)
+    else: # sgd
+        model_params['learning_rate'] = trial.suggest_categorical('learning_rate', ['constant', 'adaptive'])
+        model_params['momentum'] = trial.suggest_float('momentum', 0.8, 0.99)
+
+    model = MLPRegressor(random_state=42, max_iter=1500, early_stopping=True, **model_params)
+    score = cross_val_score(model, X_train_processed, y_train_log, cv=5, scoring='neg_mean_squared_error', n_jobs=-1).mean()
+    
+    return -score
+
+study = optuna.create_study(direction='minimize')
+study.optimize(objective, n_trials=200)
+
+# %%
+(base_path / 'best_model').mkdir(exist_ok=True)
+best_model = MLPRegressor(random_state=42, max_iter=1500, early_stopping=True, **study.best_params)
+joblib.dump(best_model, base_path / 'best_model' / 'optuna_best_mlp_model.joblib')
+print("\nFinal model saved successfully! 🎉")
