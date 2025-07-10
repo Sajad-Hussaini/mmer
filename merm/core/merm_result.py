@@ -5,7 +5,7 @@ class MERMResult:
     Result class for the Multivariate Mixed Effects Regression Model (MERM).
     """
     def __init__(self, MERM, random_effects, residuals):
-        self.fe_models = MERM.fe_models
+        self.fe_model = MERM.fe_model
 
         self.m = MERM.m
         self.n = MERM.n
@@ -27,13 +27,7 @@ class MERMResult:
         Returns:
             (n_samples, M) array of predicted responses.
         """
-        if not self.fe_models:
-            raise ValueError("Model must be fitted before prediction.")
-        
-        fX = np.empty((X.shape[0], self.m))
-        for i, model in enumerate(self.fe_models):
-            fX[:, i] = model.predict(X)
-        return fX
+        return self.fe_model.predict(X)
     
     def sample(self, X: np.ndarray) -> np.ndarray:
         """
@@ -58,9 +52,6 @@ class MERMResult:
         """
         Display a summary of the fitted multivariate mixed effects model.
         """
-        if not self.fe_models:
-            raise ValueError("Model must be fitted before calling summary.")
-
         # Print summary statistics
         indent0 = ""
         indent1 = "   "
@@ -68,7 +59,7 @@ class MERMResult:
 
         print("\n" + indent0 + "Multivariate Mixed Effects Model Summary")
         print("=" * 50)
-        print(indent1 + f"FE Model: {type(self.fe_models[0]).__name__}")
+        print(indent1 + f"FE Model: {type(self.fe_model).__name__}")
         print(indent1 + f"Iterations: {len(self.log_likelihood)}")
         print(indent1 + f"Converged: {self._is_converged}")
         print(indent1 + f"Log-Likelihood: {self.log_likelihood[-1]:.2f}")

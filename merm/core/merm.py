@@ -14,9 +14,9 @@ class MERM:
     Multivariate Mixed Effects Regression Model.
     It supports multiple responses, any fixed effects model, multiple random effects, and multiple grouping factors.
     Parameters:
-        fixed_effects_model: A scikit-learn regressor or list of regressors for fixed effects.
-        max_iter: Maximum number iterations (default: 50).
-        tol: Log-likelihood convergence tolerance  (default: 1e-4).
+        fixed_effects_model: A scikit-learn regressor that supports multi-output regression.
+        max_iter: Maximum number iterations (default: 20).
+        tol: Log-likelihood convergence tolerance  (default: 1e-3).
     """
     def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 20, tol: float = 1e-3, slq_steps: int = 10, slq_probes: int = 10, n_jobs: int = 4):
         self.fe_model = fixed_effects_model
@@ -42,10 +42,6 @@ class MERM:
 
         resid = Residual(self.n, self.m)
         
-        self.fe_models = [clone(self.fe_model) for _ in range(self.m)] if not isinstance(self.fe_model, list) else self.fe_model
-        if len(self.fe_models) != self.m:
-            raise ValueError(f"Expected {self.m} fixed effects models, got {len(self.fe_models)}")
-        
         resid_mrg = self.compute_marginal_residual(X, y, 0.0)
         return resid_mrg, rand_effects, resid
     
@@ -55,11 +51,10 @@ class MERM:
         returns:
             2d array (n, M)
         """
-        temp = y - total_rand_effect
-        for m, model in enumerate(self.fe_models):
-            temp[:, m] = model.fit(X, temp[:, m]).predict(X)
-        np.subtract(y, temp, out=temp)
-        return temp
+        vals = y - total_rand_effect
+        vals[...] = self.fe_model.fit(X, vals).predict(X)
+        np.subtract(y, vals, out=vals)
+        return vals
 
     def compute_log_likelihood(self, resid_mrg: np.ndarray, prec_resid: np.ndarray, V_op: VLinearOperator):
         """
