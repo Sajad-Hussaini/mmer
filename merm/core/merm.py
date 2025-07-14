@@ -51,10 +51,12 @@ class MERM:
         returns:
             2d array (n, M)
         """
-        vals = y - total_rand_effect
-        vals[...] = self.fe_model.fit(X, vals).predict(X)
-        np.subtract(y, vals, out=vals)
-        return vals
+        y_adj = y - total_rand_effect
+        if self.m == 1:
+            fx = self.fe_model.fit(X, y_adj.ravel()).predict(X)[:, None]
+        else:
+            fx = self.fe_model.fit(X, y_adj).predict(X)
+        return y - fx
 
     def compute_log_likelihood(self, resid_mrg: np.ndarray, prec_resid: np.ndarray, V_op: VLinearOperator):
         """
