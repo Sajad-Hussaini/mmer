@@ -16,9 +16,9 @@ class MERM:
     Parameters:
         fixed_effects_model: A scikit-learn regressor that supports multi-output regression.
         max_iter: Maximum number iterations (default: 20).
-        tol: Log-likelihood convergence tolerance  (default: 1e-3).
+        tol: Log-likelihood convergence tolerance  (default: 1e-6).
     """
-    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 20, tol: float = 1e-3, slq_steps: int = 10, slq_probes: int = 10, n_jobs: int = 4):
+    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 20, tol: float = 1e-6, slq_steps: int = 5, slq_probes: int = 5, n_jobs: int = 1):
         self.fe_model = fixed_effects_model
         self.max_iter = max_iter
         self.tol = tol

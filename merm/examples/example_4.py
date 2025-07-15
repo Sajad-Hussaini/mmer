@@ -15,6 +15,6 @@ group_test = np.load(base_path / 'preprocess' / 'group_test.npy', allow_pickle=T
 preprocessor = joblib.load(base_path / 'preprocess' / 'preprocessor.joblib')
 fe_model = joblib.load(base_path / 'best_model' / 'optuna_best_mlp_model.joblib')
 
-model = MERM(fe_model, 10, 1e-10, 5, 10, -2)
+model = MERM(fe_model, 10, 1e-6, 5, 5, -5)
 result = model.fit(X_train_processed, y_train_log, group_train, None)
 result.summary()
