@@ -108,6 +108,9 @@ class MERM:
         resid_mrg, rand_effects, resid = self.prepare_data(X, y, groups, random_slopes)
         pbar = tqdm(range(1, self.max_iter + 1), desc="Fitting Model", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
         for iter_ in pbar:
+            old_phi = resid.cov.copy()
+            old_taus = {k: re.cov.copy() for k, re in rand_effects.items()}
+
             rhs = resid_mrg.ravel(order='F')
             V_op = VLinearOperator(rand_effects, resid)
             M_op = ResidualPreconditioner(resid)
@@ -116,27 +119,46 @@ class MERM:
             for re in rand_effects.values():
                 re.compute_mu(prec_resid)
 
-            log_likelihood = self.compute_log_likelihood(rhs, prec_resid, V_op)
-            self.log_likelihood.append(log_likelihood)
-            if iter_ > 2 and abs((self.log_likelihood[-1] - self.log_likelihood[-2]) / self.log_likelihood[-2]) < self.tol:
-                pbar.set_description("Model Converged")
-                self._is_converged = True
-                break
+            # log_likelihood = self.compute_log_likelihood(rhs, prec_resid, V_op)
+            # self.log_likelihood.append(log_likelihood)
+            # if iter_ > 2 and abs((self.log_likelihood[-1] - self.log_likelihood[-2]) / self.log_likelihood[-2]) < self.tol:
+            #     pbar.set_description("Model Converged")
+            #     self._is_converged = True
+            #     break
 
             total_re = self.aggregate_rand_effects(rand_effects)
             resid_mrg = self.compute_marginal_residual(X, y, total_re)
 
             resid.compute_eps(resid_mrg, total_re)
+
             W = {}
             T = {}
-            tau_dict = {}
+            new_tau = {}
             for k, re in rand_effects.items():
                 T[k], W[k] = re.compute_cov_correction(V_op, M_op, self.n_jobs)
-                tau_dict[k] = re.compute_cov(W[k])
+                new_tau[k] = re.compute_cov(W[k])
             
             new_phi = resid.compute_cov(T)
-            # Safely update the covariance matrices
+
             resid.cov = new_phi
             for k, re in rand_effects.items():
-                re.cov = tau_dict[k]
+                re.cov = new_tau[k]
+            
+            if iter_ > 2:
+                phi_change = np.linalg.norm(resid.cov - old_phi) / np.linalg.norm(old_phi)
+                tau_changes = [np.linalg.norm(re.cov - old_taus[k]) / np.linalg.norm(old_taus[k]) for k, re in rand_effects.items()]
+                max_param_change = max([phi_change] + tau_changes)
+                pbar.set_postfix_str(f"Max Param Change: {max_param_change:.2e}")
+
+                if max_param_change < self.tol:
+                    pbar.set_description("Model Converged")
+                    self._is_converged = True
+                    break
+        
+        V_op = VLinearOperator(rand_effects, resid)
+        M_op = ResidualPreconditioner(resid)
+        rhs = resid_mrg.ravel(order='F')
+        prec_resid, _ = cg(V_op, rhs, M=M_op)
+        final_logL = self.compute_log_likelihood(rhs, prec_resid, V_op)
+        self.log_likelihood.append(final_logL)
         return MERMResult(self, rand_effects, resid)
