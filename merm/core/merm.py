@@ -127,10 +127,14 @@ class MERM:
             resid_mrg = self.compute_marginal_residual(X, y, total_re)
 
             resid.compute_eps(resid_mrg, total_re)
-            new_phi = resid.compute_cov(rand_effects, V_op, M_op, self.n_jobs)
+            W = {}
+            T = {}
             tau_dict = {}
             for k, re in rand_effects.items():
-                tau_dict[k] = re.compute_cov(V_op, M_op, self.n_jobs)
+                T[k], W[k] = re.compute_cov_correction(V_op, M_op, self.n_jobs)
+                tau_dict[k] = re.compute_cov(W[k])
+            
+            new_phi = resid.compute_cov(T)
             # Safely update the covariance matrices
             resid.cov = new_phi
             for k, re in rand_effects.items():

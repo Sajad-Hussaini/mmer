@@ -22,14 +22,14 @@ class Residual:
         np.subtract(resid_mrg, total_rand_effect, out=self.eps)
         return self
 
-    def compute_cov(self, random_effects, V_op, M_op, n_jobs):
+    def compute_cov(self, T):
         """
         Compute the residual covariance matrix.
             ɸ = (S + T) / n
         """
         S = self.eps.T @ self.eps
-        for re in random_effects.values():
-            np.add(S, re.compute_resid_cov_correction(V_op, M_op, n_jobs), out=S)
+        for Tk in T.values():
+            np.add(S, Tk, out=S)
 
         phi = S / self.n + 1e-6 * np.eye(self.m)
         return phi
