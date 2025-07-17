@@ -2,6 +2,8 @@ import numpy as np
 from joblib import Parallel, delayed
 from scipy import sparse
 from scipy.sparse.linalg import cg
+import tempfile
+import os
 
 class RandomEffect:
     """
@@ -97,36 +99,69 @@ class RandomEffect:
         """
         return self.kronZ_matvec(self.mu)
 
-    def compute_cov_correction(self, V_op, M_op, n_jobs):
+    def compute_cov_correction(self, V_op, M_op, n_jobs, backend='loky'):
         """
         Computes the correction to the residual covariance matrix φ and
-        random effect covariance matrix τ
-        by constructing the uncertainty correction matrix T: (m, m)
-        and W: (m * q, m * q)
+        random effect covariance matrix τ by constructing
+        the uncertainty correction matrices T: (m, m) and W: (m * q, m * q)
 
-        Uses symmetry of the covariance matrix to reduce computations.
+        Uses symmetry of the covariance matrix to reduce computations
         """
-        T = np.zeros((self.m, self.m))
-        W = np.zeros((self.m * self.q, self.m * self.q))
-        results = Parallel(n_jobs, backend='threading')(delayed(self.cov_correction_per_response)
-                                                        (V_op, M_op, col) for col in range(self.m))
+        shape_T = (self.m, self.m)
+        shape_W = (self.m * self.q, self.m * self.q)
+        dtype = 'float64'
 
-        for col, T_lower_traces, W_lower_blocks in results:
-            # --- Assemble T ---
-            for i, trace in enumerate(T_lower_traces):
+        def worker(col):
+            col, T_traces, W_blocks = self.cov_correction_per_response(V_op, M_op, col)
+            for i, trace in enumerate(T_traces):
                 row = col + i
-                T[col, row] = T[row, col] = trace
-
-            # --- Assemble W ---
-            for i, W_block in enumerate(W_lower_blocks):
+                T_shared[col, row] = T_shared[row, col] = trace
+            for i, block in enumerate(W_blocks):
                 row = col + i
                 r_slice = slice(row * self.q, (row + 1) * self.q)
                 c_slice = slice(col * self.q, (col + 1) * self.q)
-                W[r_slice, c_slice] = W_block
+                W_shared[r_slice, c_slice] = block
                 if row != col:
-                    W[c_slice, r_slice] = W_block.T
+                    W_shared[c_slice, r_slice] = block.T
 
-        return T, W
+        if backend == 'threading':
+            T_shared = np.zeros(shape_T, dtype=dtype)
+            W_shared = np.zeros(shape_W, dtype=dtype)
+            Parallel(n_jobs=n_jobs, backend=backend)(delayed(worker)(col) for col in range(self.m))
+            return T_shared, W_shared
+
+        t_name, w_name = None, None
+        try:
+            # Create temporary files and immediately close them to release the lock.
+            with tempfile.NamedTemporaryFile(delete=False) as f_T:
+                t_name = f_T.name
+            with tempfile.NamedTemporaryFile(delete=False) as f_W:
+                w_name = f_W.name
+            
+            # Create the memmap objects. They now hold the file handles.
+            T_shared = np.memmap(t_name, dtype=dtype, mode='w+', shape=shape_T)
+            W_shared = np.memmap(w_name, dtype=dtype, mode='w+', shape=shape_W)
+            
+            # Run the parallel computation.
+            Parallel(n_jobs=n_jobs, backend=backend)(delayed(worker)(col) for col in range(self.m))
+            
+            # Create the final in-memory copies from the memmap results.
+            T_result = np.array(T_shared)
+            W_result = np.array(W_shared)
+            
+            # Explicitly delete the memmap objects.
+            # This triggers garbage collection and closes their file handles.
+            del T_shared
+            del W_shared
+            
+        finally:
+            # The file handles are released, deletion is done.
+            if t_name and os.path.exists(t_name):
+                os.remove(t_name)
+            if w_name and os.path.exists(w_name):
+                os.remove(w_name)
+
+        return T_result, W_result
     
     def cov_correction_per_response(self, V_op, M_op, col):
         """
@@ -187,7 +222,7 @@ class RandomEffect:
 
     def kronZ_D_T_matvec(self, x_vec):
         """
-        Computes the matrix-vector product W⁻ᵀ @ x_vec, where W⁻ᵀ = D (Iₘ ⊗ Z)⁻ᵀ maps a vector from
+        Computes the matrix-vector product Wᵀ @ x_vec, where Wᵀ = D (Iₘ ⊗ Z)ᵀ maps a vector from
         the observation space to the random effects space (post-weighted by D).
         returns:
             2d array (o, m*q)
@@ -200,7 +235,7 @@ class RandomEffect:
     
     def kronZ_T_matvec(self, x_vec):
         """
-        Computes the matrix-vector product (Iₘ ⊗ Z)⁻ᵀ @ x_vec maps a vector from
+        Computes the matrix-vector product (Iₘ ⊗ Z)ᵀ @ x_vec maps a vector from
         the observation space back to the random effects space.
         returns:
             2d array (q*o, m)
@@ -233,7 +268,7 @@ class RandomEffect:
     def full_cov_matvec(self, x_vec):
         """
         Computes the matrix-vector product full_cov @ x_vec,
-            where full_cov = (Iₘ ⊗ Z) D (Iₘ ⊗ Z)⁻ᵀ
+            where full_cov = (Iₘ ⊗ Z) D (Iₘ ⊗ Z)ᵀ
         is random effect contribution to the marginal covariance.
         returns:
             2d array (n, m)
@@ -257,7 +292,7 @@ class RandomEffect:
 
 # def kronZ_T_matmat(x_mat, rand_effect):
 #     """
-#     Computes the matrix-matrix product (Iₘ ⊗ Z)⁻ᵀ @ x_mat maps a matrix from
+#     Computes the matrix-matrix product (Iₘ ⊗ Z)ᵀ @ x_mat maps a matrix from
 #     the observation space to the random effects space.
 #     returns:
 #         3d array (q*o, n, num_cols)
@@ -316,7 +351,7 @@ class RandomEffect:
 
 # def kronZ_D_T_matmat(x_mat, rand_effect):
 #     """
-#     Computes the matrix-matrix product W⁻ᵀ @ X, where W⁻ᵀ = D (Iₘ ⊗ Z)⁻ᵀ maps a matrix from
+#     Computes the matrix-matrix product Wᵀ @ X, where Wᵀ = D (Iₘ ⊗ Z)ᵀ maps a matrix from
 #     the observation space to the random effects space (post-weighted by D).
 #     returns:
 #         3d array (o, m*q, num_cols)

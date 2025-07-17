@@ -18,7 +18,8 @@ class MERM:
         max_iter: Maximum number iterations (default: 20).
         tol: Log-likelihood convergence tolerance  (default: 1e-6).
     """
-    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 20, tol: float = 1e-6, slq_steps: int = 5, slq_probes: int = 5, n_jobs: int = 1):
+    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 20, tol: float = 1e-6,
+                 slq_steps: int = 5, slq_probes: int = 5, n_jobs: int = 1, backend: str = 'loky'):
         self.fe_model = fixed_effects_model
         self.max_iter = max_iter
         self.tol = tol
@@ -27,6 +28,7 @@ class MERM:
         self.log_likelihood = []
         self._is_converged = False
         self.n_jobs = n_jobs
+        self.backend = backend
 
     def prepare_data(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, random_slopes: None | dict[int, list[int]]):
         """
@@ -65,7 +67,8 @@ class MERM:
             resid_mrg: marginal residuals y-fx
             prec_resid: precision-weighted residuals V⁻¹(y-fx)
         """
-        log_det_V = slq.logdet(V_op, lanczos_steps=self.slq_steps, num_probes=self.slq_probes, n_jobs=self.n_jobs)
+        log_det_V = slq.logdet(V_op, lanczos_steps=self.slq_steps, num_probes=self.slq_probes,
+                               n_jobs=self.n_jobs, backend=self.backend)
         log_likelihood = -(self.m * self.n * np.log(2 * np.pi) + log_det_V + resid_mrg.T @ prec_resid) / 2
         return log_likelihood
     
@@ -119,13 +122,6 @@ class MERM:
             for re in rand_effects.values():
                 re.compute_mu(prec_resid)
 
-            # log_likelihood = self.compute_log_likelihood(rhs, prec_resid, V_op)
-            # self.log_likelihood.append(log_likelihood)
-            # if iter_ > 2 and abs((self.log_likelihood[-1] - self.log_likelihood[-2]) / self.log_likelihood[-2]) < self.tol:
-            #     pbar.set_description("Model Converged")
-            #     self._is_converged = True
-            #     break
-
             total_re = self.aggregate_rand_effects(rand_effects)
             resid_mrg = self.compute_marginal_residual(X, y, total_re)
 
@@ -135,12 +131,10 @@ class MERM:
             T = {}
             new_tau = {}
             for k, re in rand_effects.items():
-                T[k], W[k] = re.compute_cov_correction(V_op, M_op, self.n_jobs)
+                T[k], W[k] = re.compute_cov_correction(V_op, M_op, self.n_jobs, self.backend)
                 new_tau[k] = re.compute_cov(W[k])
             
-            new_phi = resid.compute_cov(T)
-
-            resid.cov = new_phi
+            resid.cov = resid.compute_cov(T)
             for k, re in rand_effects.items():
                 re.cov = new_tau[k]
             

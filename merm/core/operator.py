@@ -5,7 +5,7 @@ from scipy.linalg import solve
 class VLinearOperator(LinearOperator):
     """
     A linear operator that represents the marginal covariance matrix V.
-    V = Σ(Iₘ ⊗ Zₖ) Dₖ (Iₘ ⊗ Zₖ)⁻ᵀ + R
+    V = Σ(Iₘ ⊗ Zₖ) Dₖ (Iₘ ⊗ Zₖ)ᵀ + R
     """
     def __init__(self, random_effects, resid):
         self.random_effects = random_effects
@@ -15,7 +15,7 @@ class VLinearOperator(LinearOperator):
     def _matvec(self, x_vec):
         """
         Computes the marginal covariance matrix-vector product V @ x_vec,
-        where V = Σ(Iₘ ⊗ Zₖ) Dₖ (Iₘ ⊗ Zₖ)⁻ᵀ + R.
+        where V = Σ(Iₘ ⊗ Zₖ) Dₖ (Iₘ ⊗ Zₖ)ᵀ + R.
         returns:
             1d array (Mn,)
         """
@@ -25,7 +25,7 @@ class VLinearOperator(LinearOperator):
         return Vx.ravel(order='F')
 
     def _adjoint(self):
-        """Implements the adjoint operator V⁻ᵀ. Since V is symmetric, return self."""
+        """Implements the adjoint operator Vᵀ. Since V is symmetric, return self."""
         return self
     
     def __reduce__(self):
