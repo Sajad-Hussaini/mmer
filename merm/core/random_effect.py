@@ -96,127 +96,6 @@ class RandomEffect:
             2d array (n, M)
         """
         return self.kronZ_matvec(self.mu)
-    
-    # def compute_resid_cov_correction(self, V_op, M_op, n_jobs):
-    #     """
-    #     Computes the random effect contribution to the residual covariance matrix φ
-    #     by constructing the uncertainty correction matrix T: m x m
-    #     Uses symmetry of the covariance matrix to reduce computations.
-    #     """
-    #     T = np.zeros((self.m, self.m))
-    #     results = Parallel(n_jobs, backend='loky')(delayed(self.resid_cov_correction_per_response)
-    #                                                (V_op, M_op, row, col) for row in range(self.m) for col in range(row, self.m))
-    #     for row, col, trace in results:
-    #         T[col, row] = T[row, col] = trace
-    #     return T
-
-    # def resid_cov_correction_per_response(self, V_op, M_op, row, col):
-    #     """
-    #     Computes the element of the uncertainty correction matrix T that is:
-    #         Tᵢⱼ = trace((Zₖᵀ Zₖ) Σᵢⱼ)
-    #     using the random effect conditional covariance
-    #         Σ = D - D (Iₘ ⊗ Z)ᵀ V⁻¹ (Iₘ ⊗ Z) D
-    #     """
-    #     block_size = self.q * self.o
-
-    #     tau_block = self.cov[row * self.q : (row + 1) * self.q, col * self.q : (col + 1) * self.q]
-    #     D_block = np.kron(tau_block, np.eye(self.o))
-    #     sigma_block = np.zeros((block_size, block_size))
-
-    #     base_idx = col * block_size # starting basis col for extraction
-    #     vec = np.zeros(self.m * block_size)
-    #     for i in range(block_size):
-    #         vec.fill(0.0)
-    #         vec[base_idx + i] = 1.0
-    #         rhs = self.kronZ_D_matvec(vec)
-    #         x_sol, _ = cg(V_op, rhs.ravel(order='F'), M=M_op)
-    #         rht = self.kronZ_D_T_matvec(x_sol)
-    #         sigma_block[:, i] = rht.ravel(order='F')[row * block_size : (row + 1) * block_size]
-    #     np.subtract(D_block, sigma_block, out=sigma_block)
-    #     # return row, col, np.sum(sigma_block * self.ZTZ)
-    #     return row, col, self.ZTZ.multiply(sigma_block).sum()  # element wise multiplication and sum
-    
-    # def compute_resid_cov_correction(self, V_op, M_op, n_jobs):
-    #     """
-    #     Computes the random effect contribution to the residual covariance matrix φ
-    #     by constructing the uncertainty correction matrix T: m x m
-    #     Uses symmetry of the covariance matrix to reduce computations.
-    #     """
-    #     T = np.zeros((self.m, self.m))
-    #     results = Parallel(n_jobs, backend='loky')(delayed(self.resid_cov_correction_per_response)
-    #                                                (V_op, M_op, col) for col in range(self.m))
-    #     # Assemble the full matrix from the lower-triangle results
-    #     for col, lower_triangle_traces in results:
-    #         for i, trace in enumerate(lower_triangle_traces):
-    #             row = col + i # Row index is offset from the starting column
-    #             T[col, row] = T[row, col] = trace
-    #     return T
-    
-    # def resid_cov_correction_per_response(self, V_op, M_op, col):
-    #     """
-    #     Computes the element of the uncertainty correction matrix T that is:
-    #         Tᵢⱼ = trace((Zₖᵀ Zₖ) Σᵢⱼ)
-    #     using the random effect conditional covariance
-    #         Σ = D - D (Iₘ ⊗ Z)ᵀ V⁻¹ (Iₘ ⊗ Z) D
-    #     """
-    #     block_size = self.q * self.o
-
-    #     tau_block = self.cov[:, col * self.q : (col + 1) * self.q]
-    #     D_block = np.kron(tau_block, np.eye(self.o))
-    #     sigma_block = np.zeros((self.m * block_size, block_size))
-
-    #     base_idx = col * block_size # starting basis col for extraction
-    #     vec = np.zeros(self.m * block_size)
-    #     for i in range(block_size):
-    #         vec.fill(0.0)
-    #         vec[base_idx + i] = 1.0
-    #         rhs = self.kronZ_D_matvec(vec)
-    #         x_sol, _ = cg(V_op, rhs.ravel(order='F'), M=M_op)
-    #         rht = self.kronZ_D_T_matvec(x_sol)
-    #         sigma_block[:, i] = rht.ravel(order='F')
-    #     np.subtract(D_block, sigma_block, out=sigma_block)
-    #     # Only compute the traces for the diagonal and rows below it
-    #     traces = [self.ZTZ.multiply(sigma_block[i * block_size : (i + 1) * block_size, :]).sum()
-    #               for i in range(col, self.m)]
-              
-    #     return col, traces
-    
-    # def compute_cov(self, V_op, M_op, n_jobs):
-    #     """
-    #     Compute the random effect covariance matrix τ = (U + W) / o
-    #     """
-    #     # Compute indices for all levels
-    #     m_idx = np.arange(self.m)[:, None]
-    #     q_idx = np.arange(self.q)[None, :]
-    #     base_idx = m_idx * self.q * self.o + q_idx * self.o
-
-    #     beta = self.mu.reshape((self.o, self.m * self.q), order='F')
-    #     U = beta.T @ beta
-    #     results = Parallel(n_jobs, backend='loky')(delayed(self.re_cov_correction_per_level)
-    #                                                (V_op, M_op, (base_idx + j).ravel()) for j in range(self.o))
-    #     rh_term = np.sum(results, axis=0)
-    #     tau = self.cov + (U - rh_term) / self.o + 1e-6 * np.eye(self.m * self.q)
-    #     return tau
-    
-    # def re_cov_correction_per_level(self, V_op, M_op, lvl_indices):
-    #     """
-    #     Computes the right hand term of the random effect conditional covariance Σ:
-    #         D (Iₘ ⊗ Z)⁻ᵀ V⁻¹ (Iₘ ⊗ Z) D
-    #     for the level block specified by lvl_indices.
-    #     """
-    #     block_size = self.m * self.q
-    #     rh_term = np.zeros((block_size, block_size))
-    #     vec = np.zeros(block_size * self.o)
-    #     for i in range(block_size):
-    #         vec.fill(0.0)
-    #         vec[lvl_indices[i]] = 1.0
-    #         rhs = self.kronZ_D_matvec(vec)
-    #         x_sol, _ = cg(V_op, rhs.ravel(order='F'), M=M_op)
-    #         rht = self.kronZ_D_T_matvec(x_sol)
-    #         rh_term[:, i] = rht.ravel(order='F')[lvl_indices]
-    #     return rh_term
-
-# ====================== new optimized Operations ======================
 
     def compute_cov_correction(self, V_op, M_op, n_jobs):
         """
@@ -229,8 +108,8 @@ class RandomEffect:
         """
         T = np.zeros((self.m, self.m))
         W = np.zeros((self.m * self.q, self.m * self.q))
-        results = Parallel(n_jobs, backend='loky')(delayed(self.cov_correction_per_response)
-                                                   (V_op, M_op, col) for col in range(self.m))
+        results = Parallel(n_jobs, backend='threading')(delayed(self.cov_correction_per_response)
+                                                        (V_op, M_op, col) for col in range(self.m))
 
         for col, T_lower_traces, W_lower_blocks in results:
             # --- Assemble T ---
@@ -266,32 +145,29 @@ class RandomEffect:
         base_idx = col * block_size # starting basis col for extraction
         vec = np.zeros(self.m * block_size)
         for i in range(block_size):
-            vec.fill(0.0)
             vec[base_idx + i] = 1.0
             rhs = self.kronZ_D_matvec(vec)
             x_sol, _ = cg(V_op, rhs.ravel(order='F'), M=M_op)
             rht = self.kronZ_D_T_matvec(x_sol)
             sigma_block[:, i] = rht.ravel(order='F')
+            vec[base_idx + i] = 0.0
         np.subtract(D_block, sigma_block, out=sigma_block)
-        # --- Compute T traces (lower triangle only) ---
+
+        # Compute T traces (lower triangle only)
         T_traces = [self.ZTZ.multiply(sigma_block[i * block_size:(i + 1) * block_size, :]).sum()
                     for i in range(col, self.m)]
-
-        # --- Compute W blocks (lower triangle only) ---
+        # Compute W blocks (lower triangle only)
         lower_sigma = sigma_block[col * block_size:, :]
         num_blocks = self.m - col
-
-        W_lower_blocks = lower_sigma.reshape(num_blocks * self.q, self.o, self.q, self.o)
-        W_lower_blocks = W_lower_blocks.sum(axis=(1, 3)).reshape(num_blocks, self.q, self.q)
-
+        W_lower_blocks = lower_sigma.reshape(num_blocks, self.q, self.o, self.q, self.o).sum(axis=(2, 4))
         return col, T_traces, W_lower_blocks
 
     def compute_cov(self, W):
         """
         Compute the random effect covariance matrix τ = (U + W) / o
         """
-        beta = self.mu.reshape((self.o, self.m * self.q), order='F')
-        U = beta.T @ beta
+        beta = self.mu.reshape((self.m * self.q, self.o)) 
+        U = beta @ beta.T 
         tau = (U + W) / self.o + 1e-6 * np.eye(self.m * self.q)
         return tau
 # ====================== Matrix-Vector Operations ======================

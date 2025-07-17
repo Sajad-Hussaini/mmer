@@ -63,7 +63,7 @@ def logdet(V_op, lanczos_steps: int = 10, num_probes: int = 10, random_seed: int
     # Create a sequence of independent random seeds for each parallel job
     # This ensures reproducibility while maintaining statistical independence.
     seeds = np.random.SeedSequence(random_seed).spawn(num_probes)
-    results = Parallel(n_jobs, backend="loky")(delayed(slq_probe)
+    results = Parallel(n_jobs, backend="threading")(delayed(slq_probe)
                                                     (V_op, lanczos_steps, int(s.generate_state(1)[0])) for s in seeds)
     logdet_est = np.sum(results)
     # The final estimate is the average of the probe results, scaled by the matrix dimension.
