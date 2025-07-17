@@ -39,9 +39,9 @@ def objective(trial):
     return -score
 
 study = optuna.create_study(direction='minimize')
-study.optimize(objective, n_trials=400)
+study.optimize(objective, n_trials=500)
 # %%
-(base_path / 'best_model').mkdir(exist_ok=True)
+(base_path / 'tuned_model').mkdir(exist_ok=True)
 
 best_params = study.best_params.copy()
 n_layers = best_params.pop('n_layers')
@@ -52,6 +52,7 @@ for i in range(n_layers):
         layers.append(best_params.pop(layer_key))
 best_params['hidden_layer_sizes'] = tuple(layers)
 
-best_model = MLPRegressor(random_state=42, max_iter=4000, early_stopping=True, **best_params)
-joblib.dump(best_model, base_path / 'best_model' / 'optuna_best_mlp_model.joblib')
-print("\nFinal model saved successfully! 🎉")
+tuned_model = MLPRegressor(random_state=42, max_iter=4000, early_stopping=True, **best_params)
+joblib.dump(tuned_model, base_path / 'tuned_model' / 'tuned_mlp_model.joblib')
+joblib.dump(study, base_path / 'tuned_model' / 'optuna_study.joblib')
+print("\nStudy and tuned model saved successfully! 🎉")
