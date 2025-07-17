@@ -99,7 +99,7 @@ class RandomEffect:
         """
         return self.kronZ_matvec(self.mu)
 
-    def compute_cov_correction(self, V_op, M_op, n_jobs, backend='loky'):
+    def compute_cov_correction(self, V_op, M_op, n_jobs, backend):
         """
         Computes the correction to the residual covariance matrix φ and
         random effect covariance matrix τ by constructing

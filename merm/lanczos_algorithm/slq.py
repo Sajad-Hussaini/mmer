@@ -48,8 +48,7 @@ def slq_probe(V_op, lanczos_steps, seed):
     # The quadrature rule: sum of log(eigvals) weighted by squared first elements of eigenvectors
     return np.sum(np.log(eigvals) * (eigvecs[0, :] ** 2))
 
-def logdet(V_op, lanczos_steps: int = 10, num_probes: int = 10, random_seed: int = 42,
-           n_jobs: int = 4, backend: str = "loky"):
+def logdet(V_op, lanczos_steps, num_probes, n_jobs, backend, random_seed = 42):
     """
     Estimates the log-determinant of a symmetric positive-definite operator V
     using a parallelized Stochastic Lanczos Quadrature method.

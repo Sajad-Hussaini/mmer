@@ -5,7 +5,6 @@ class Residual:
     Residual class to handle residual computations in mixed effects models.
     It provides methods to compute covariance, and residuals, and perform matrix-vector operations.
     """
-    
     def __init__(self, n: int, m: int):
         self.n = n
         self.m = m

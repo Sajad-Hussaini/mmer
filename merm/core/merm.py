@@ -1,7 +1,6 @@
 import numpy as np
-from scipy import sparse
 from scipy.sparse.linalg import cg
-from sklearn.base import RegressorMixin, clone
+from sklearn.base import RegressorMixin
 from tqdm import tqdm
 from .operator import VLinearOperator, ResidualPreconditioner
 from ..lanczos_algorithm import slq
@@ -19,7 +18,7 @@ class MERM:
         tol: Log-likelihood convergence tolerance  (default: 1e-6).
     """
     def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 20, tol: float = 1e-6,
-                 slq_steps: int = 5, slq_probes: int = 5, n_jobs: int = 1, backend: str = 'loky'):
+                 slq_steps: int = 5, slq_probes: int = 5, n_jobs: int = 4, backend: str = 'threading'):
         self.fe_model = fixed_effects_model
         self.max_iter = max_iter
         self.tol = tol
@@ -67,21 +66,9 @@ class MERM:
             resid_mrg: marginal residuals y-fx
             prec_resid: precision-weighted residuals V⁻¹(y-fx)
         """
-        log_det_V = slq.logdet(V_op, lanczos_steps=self.slq_steps, num_probes=self.slq_probes,
-                               n_jobs=self.n_jobs, backend=self.backend)
+        log_det_V = slq.logdet(V_op, self.slq_steps, self.slq_probes, self.n_jobs, self.backend)
         log_likelihood = -(self.m * self.n * np.log(2 * np.pi) + log_det_V + resid_mrg.T @ prec_resid) / 2
         return log_likelihood
-    
-    def compute_marginal_covariance(self, random_effects, n):
-        """
-        Compute the marginal covariance matrix V
-        """
-        V = sparse.kron(self.resid_cov, sparse.eye_array(n, format='csr'), format='csr')
-        for re in random_effects.values():
-            D = sparse.kron(re.cov, sparse.eye_array(re.n_level, format='csr'), format='csr')
-            Z_full = sparse.kron(sparse.eye_array(re.m, format='csr'), re.Z, format='csr')
-            V += Z_full @ D @ Z_full.T
-        return V
     
     def aggregate_rand_effects(self, random_effects: dict[int, RandomEffect]):
         """
