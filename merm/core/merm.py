@@ -97,9 +97,15 @@ class MERM:
         """
         resid_mrg, rand_effects, resid = self.prepare_data(X, y, groups, random_slopes)
         pbar = tqdm(range(1, self.max_iter + 1), desc="Fitting Model", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
+        W = {}
+        T = {}
+        new_tau = {}
+        old_tau = {}
         for iter_ in pbar:
             old_phi = resid.cov.copy()
-            old_taus = {k: re.cov.copy() for k, re in rand_effects.items()}
+            old_tau.clear()
+            for k, re in rand_effects.items():
+                old_tau[k] = re.cov.copy()
 
             rhs = resid_mrg.ravel(order='F')
             V_op = VLinearOperator(rand_effects, resid)
@@ -113,10 +119,9 @@ class MERM:
             resid_mrg = self.compute_marginal_residual(X, y, total_re)
 
             resid.compute_eps(resid_mrg, total_re)
-
-            W = {}
-            T = {}
-            new_tau = {}
+            W.clear()
+            T.clear()
+            new_tau.clear()
             for k, re in rand_effects.items():
                 T[k], W[k] = re.compute_cov_correction(V_op, M_op, self.n_jobs, self.backend)
                 new_tau[k] = re.compute_cov(W[k])
@@ -127,7 +132,7 @@ class MERM:
             
             if iter_ > 2:
                 phi_change = np.linalg.norm(resid.cov - old_phi) / np.linalg.norm(old_phi)
-                tau_changes = [np.linalg.norm(re.cov - old_taus[k]) / np.linalg.norm(old_taus[k]) for k, re in rand_effects.items()]
+                tau_changes = [np.linalg.norm(re.cov - old_tau[k]) / np.linalg.norm(old_tau[k]) for k, re in rand_effects.items()]
                 max_param_change = max([phi_change] + tau_changes)
                 pbar.set_postfix_str(f"Max Param Change: {max_param_change:.2e}")
 
