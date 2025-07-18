@@ -105,8 +105,8 @@ class RandomEffect:
         """
         T = np.zeros((self.m, self.m))
         W = np.zeros((self.m * self.q, self.m * self.q))
-        results = Parallel(n_jobs=n_jobs, backend=backend)(delayed(self.cov_correction_per_response)
-                                                           (V_op, M_op, col) for col in range(self.m))
+        results = Parallel(n_jobs=n_jobs, backend=backend, return_as="generator")(delayed(self.cov_correction_per_response)
+                                                                                  (V_op, M_op, col) for col in range(self.m))
 
         for col, T_lower_traces, W_lower_blocks in results:
             for i, (trace, W_block) in enumerate(zip(T_lower_traces, W_lower_blocks)):
