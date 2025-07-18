@@ -17,7 +17,6 @@ class RandomEffect:
         self.q = None
         self.o = None
         self.cov = None
-        self.mu = None
         self.Z = None
         self.ZTZ = None
 
@@ -76,7 +75,6 @@ class RandomEffect:
             raise ValueError("Must call design_rand_effect() first")
         
         self.cov = np.eye(self.m * self.q)
-        self.mu = np.zeros((self.o, self.m * self.q))
         self.ZTZ = self.Z.T @ self.Z
         return self
     
@@ -86,16 +84,15 @@ class RandomEffect:
             prec_resid: precision-weighted residuals V⁻¹(y-fx)
             μ: 2d array (o, m*q)
         """
-        self.mu[...] = self.kronZ_D_T_matvec(prec_resid)
-        return self
+        return self.kronZ_D_T_matvec(prec_resid)
 
-    def map_mu(self):
+    def map_mu(self, mu):
         """
         Maps the random effect conditional mean μ to the observation space
         returns:
             2d array (n, M)
         """
-        return self.kronZ_matvec(self.mu)
+        return self.kronZ_matvec(mu)
 
     def compute_cov_correction(self, V_op, M_op, n_jobs, backend):
         """
@@ -112,14 +109,11 @@ class RandomEffect:
                                                            (V_op, M_op, col) for col in range(self.m))
 
         for col, T_lower_traces, W_lower_blocks in results:
-            # --- Assemble T ---
-            for i, trace in enumerate(T_lower_traces):
+            for i, (trace, W_block) in enumerate(zip(T_lower_traces, W_lower_blocks)):
                 row = col + i
+                # --- Assemble T ---
                 T[col, row] = T[row, col] = trace
-
-            # --- Assemble W ---
-            for i, W_block in enumerate(W_lower_blocks):
-                row = col + i
+                # --- Assemble W ---
                 r_slice = slice(row * self.q, (row + 1) * self.q)
                 c_slice = slice(col * self.q, (col + 1) * self.q)
                 W[r_slice, c_slice] = W_block
@@ -137,37 +131,31 @@ class RandomEffect:
         as well as the correction matrix W per response.
         """
         block_size = self.q * self.o
-        D_block = np.kron(self.cov[:, col * self.q : (col + 1) * self.q], np.eye(self.o))
-        sigma_block = np.zeros((self.m * block_size, block_size))
-
-        base_idx = col * block_size # starting basis col for extraction
+        num_blocks = self.m - col
+        lower_sigma = np.zeros((num_blocks * block_size, block_size))
+        base_idx = col * block_size
         vec = np.zeros(self.m * block_size)
         for i in range(block_size):
             vec[base_idx + i] = 1.0
-            rhs = self.kronZ_D_matvec(vec)
-            x_sol, _ = cg(V_op, rhs.ravel(order='F'), M=M_op)
-            rht = self.kronZ_D_T_matvec(x_sol)
-            sigma_block[:, i] = rht.ravel(order='F')
+            rhs = self.kronZ_D_matvec(vec).ravel(order='F')
+            x_sol, _ = cg(V_op, rhs, M=M_op)
+            lower_sigma[:, i] = (self.D_matvec(vec) - self.kronZ_D_T_matvec(x_sol)).ravel(order='F')[col * block_size : ]
             vec[base_idx + i] = 0.0
-        np.subtract(D_block, sigma_block, out=sigma_block)
 
-        # Compute T traces (lower triangle only)
-        T_traces = [self.ZTZ.multiply(sigma_block[i * block_size:(i + 1) * block_size, :]).sum()
-                    for i in range(col, self.m)]
-        # Compute W blocks (lower triangle only)
-        lower_sigma = sigma_block[col * block_size:, :]
-        num_blocks = self.m - col
+        T_traces = [self.ZTZ.multiply(lower_sigma[i * block_size:(i + 1) * block_size, :]).sum()
+                    for i in range(num_blocks)]
         W_lower_blocks = lower_sigma.reshape(num_blocks, self.q, self.o, self.q, self.o).sum(axis=(2, 4))
         return col, T_traces, W_lower_blocks
 
-    def compute_cov(self, W):
+    def compute_cov(self, mu, W):
         """
         Compute the random effect covariance matrix τ = (U + W) / o
         """
-        beta = self.mu.reshape((self.m * self.q, self.o)) 
-        U = beta @ beta.T 
-        tau = (U + W) / self.o + 1e-6 * np.eye(self.m * self.q)
+        U = mu.T @ mu
+        np.add(U, W, out=U)
+        tau = U / self.o + 1e-6 * np.eye(self.m * self.q)
         return tau
+
 # ====================== Matrix-Vector Operations ======================
 
     def kronZ_D_matvec(self, x_vec):
@@ -239,90 +227,10 @@ class RandomEffect:
         A_k = self.kronZ_T_matvec(x_vec)
         B_k = self.kronZ_D_matvec(A_k)
         return B_k
-
-# ====================== Matrix-Matrix Operations if needed later ======================
-
-# def cov_R_matmat(x_mat, resid_cov, n, m):
-#     """
-#     Computes the residual covariance matrix-mat product (φ ⊗ Iₙ) @ x_mat.
-#     returns:
-#         3d array (n, n, num_cols)
-#     """
-#     num_cols = x_mat.shape[1]
-#     x_tensor = x_mat.reshape((n, m, num_cols), order='F')
-#     A_k_tensor = np.einsum('ijk,jl->ilk', x_tensor, resid_cov)
-#     return A_k_tensor
-
-# def kronZ_T_matmat(x_mat, rand_effect):
-#     """
-#     Computes the matrix-matrix product (Iₘ ⊗ Z)ᵀ @ x_mat maps a matrix from
-#     the observation space to the random effects space.
-#     returns:
-#         3d array (q*o, n, num_cols)
-#     """
-#     num_cols = x_mat.shape[1]
-#     x_tensor = x_mat.reshape((rand_effect.n, rand_effect.m, num_cols), order='F')
-#     A_k_tensor = np.einsum('ij,jkl->ikl', rand_effect.Z.T, x_tensor)
-#     return A_k_tensor
-
-# def kronZ_matmat(x_mat, rand_effect):
-#     """
-#     Computes the matrix-matrix product (Iₘ ⊗ Z) @ x_mat maps a matrix from
-#     the random effects space to the observation space.
-#     returns:
-#         3d array (n, n, num_cols)
-#     """
-#     num_cols = x_mat.shape[1]
-#     # Reshape input into a 3D tensor (q*o, n, num_cols)
-#     x_tensor = x_mat.reshape((rand_effect.q * rand_effect.o, rand_effect.m, num_cols), order='F')
-#     # Apply the same Z matrix to each of the num_cols slices
-#     # 'ij,jkl->ikl' means: for each l, do matmul of (i,j) by (j,k)
-#     A_k_tensor = np.einsum('ij,jkl->ikl', rand_effect.Z, x_tensor)
-#     return A_k_tensor
-
-# def cov_D_matmat(x_mat, rand_effect):
-#     """
-#     Computes the random effect covariance matrix-matrix product (τ ⊗ Iₒ) @ x_mat.
-#     returns:
-#         3d array (o, m*q, num_cols)
-#     """
-#     num_cols = x_mat.shape[1]
-#     # Reshape input into a 3D tensor (o, m*q, num_cols)
-#     x_tensor = x_mat.reshape((rand_effect.o, rand_effect.m * rand_effect.q, num_cols), order='F')
-#     # Apply the same cov matrix to each of the num_cols slices
-#     # 'ijk,jl->ilk' means: for each k, do matrix multiply of (i,j) by (j,l)
-#     Dx_tensor = np.einsum('ijk,jl->ilk', x_tensor, rand_effect.cov)
-#     return Dx_tensor
-
-# def kronZ_D_matmat(x_mat, rand_effect):
-#     """
-#     Computes the matrix-matrix product W @ X, where W = (Iₘ ⊗ Z) D maps a matrix from
-#     the random effects space (pre-weighted by D) to the observation space.
-#     returns:
-#         3d array (n, n, num_cols)
-#     """
-#     num_cols = x_mat.shape[1]
-#     m, q, o = rand_effect.m, rand_effect.q, rand_effect.o
-#     # Step 1: Apply D (from cov_D_matmat)
-#     x_tensor = x_mat.reshape((o, m * q, num_cols), order='F')
-#     A_k_tensor = np.einsum('ijk,jl->ilk', x_tensor, rand_effect.cov) # Shape (o, m*q, num_cols)
-#     # Step 2: Apply (Iₘ ⊗ Z) (from kronZ_matmat)
-#     # Reshape the intermediate tensor for the final multiplication
-#     A_k_reshaped = A_k_tensor.reshape((q * o, m, num_cols), order='F')
-#     B_k_tensor = np.einsum('ij,jkl->ikl', rand_effect.Z, A_k_reshaped)
-#     return B_k_tensor
-
-# def kronZ_D_T_matmat(x_mat, rand_effect):
-#     """
-#     Computes the matrix-matrix product Wᵀ @ X, where Wᵀ = D (Iₘ ⊗ Z)ᵀ maps a matrix from
-#     the observation space to the random effects space (post-weighted by D).
-#     returns:
-#         3d array (o, m*q, num_cols)
-#     """
-#     num_cols = x_mat.shape[1]
-#     m, q, o, n = rand_effect.m, rand_effect.q, rand_effect.o, rand_effect.n
-#     x_tensor = x_mat.reshape((n, m , num_cols), order='F')
-#     A_k_tensor = np.einsum('ij,jkl->ikl', rand_effect.Z.T, x_tensor)
-#     A_k_reshaped = A_k_tensor.reshape((o, m*q, num_cols), order='F')
-#     B_k_tensor = np.einsum('ijk,jl->ilk', A_k_reshaped, rand_effect.cov)
-#     return B_k_tensor
+    
+    def cov_to_corr(self):
+        """
+        Convert covariance matrix to correlation matrix.
+        """
+        std = np.sqrt(np.diag(self.cov))
+        return self.cov / np.outer(std, std)

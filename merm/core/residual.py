@@ -4,29 +4,19 @@ class Residual:
     """
     Residual class to handle residual computations in mixed effects models.
     It provides methods to compute covariance, and residuals, and perform matrix-vector operations.
+    where ϵ = y - fx - Σ(Iₘ ⊗ Z)μ
     """
     def __init__(self, n: int, m: int):
         self.n = n
         self.m = m
         self.cov = np.eye(m)
-        self.eps = np.zeros((n, m))
-    
-    def compute_eps(self, resid_mrg: np.ndarray, total_rand_effect: np.ndarray) -> np.ndarray:
-        """
-        Compute the conditional residuals:
-            ϵ = y - fx - Σ(Iₘ ⊗ Z)μ
-        returns:
-            2d array (n, m)
-        """
-        np.subtract(resid_mrg, total_rand_effect, out=self.eps)
-        return self
 
-    def compute_cov(self, T):
+    def compute_cov(self, eps, T):
         """
         Compute the residual covariance matrix.
             ɸ = (S + T) / n
         """
-        S = self.eps.T @ self.eps
+        S = eps.T @ eps
         for Tk in T.values():
             np.add(S, Tk, out=S)
 
@@ -42,3 +32,10 @@ class Residual:
         x_mat = x_vec.reshape((self.n, self.m), order='F')
         Rx = x_mat @ self.cov
         return Rx
+    
+    def cov_to_corr(self):
+        """
+        Convert covariance matrix to correlation matrix.
+        """
+        std = np.sqrt(np.diag(self.cov))
+        return self.cov / np.outer(std, std)

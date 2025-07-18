@@ -69,8 +69,8 @@ class MERM:
         log_det_V = slq.logdet(V_op, self.slq_steps, self.slq_probes, self.n_jobs, self.backend)
         log_likelihood = -(self.m * self.n * np.log(2 * np.pi) + log_det_V + resid_mrg.T @ prec_resid) / 2
         return log_likelihood
-    
-    def aggregate_rand_effects(self, random_effects: dict[int, RandomEffect]):
+
+    def aggregate_rand_effects(self, random_effects: dict[int, RandomEffect], prec_resid: np.ndarray):
         """
         Computes sum of all random effects in observation space.
             Σₖ(Iₘ ⊗ Zₖ)μₖ
@@ -78,9 +78,11 @@ class MERM:
             2d array (n, M)
         """
         total_re = np.zeros((self.n, self.m))
-        for re in random_effects.values():
-            np.add(total_re, re.map_mu(), out=total_re)
-        return total_re
+        mu = {}
+        for k, re in random_effects.items():
+            mu[k] = re.compute_mu(prec_resid)
+            np.add(total_re, re.map_mu(mu[k]), out=total_re)
+        return total_re, mu
 
     def fit(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, random_slopes: None | dict[int, list[int]] = None):
         """
@@ -112,23 +114,20 @@ class MERM:
             M_op = ResidualPreconditioner(resid)
             prec_resid, _ = cg(V_op, rhs, M=M_op)
 
-            for re in rand_effects.values():
-                re.compute_mu(prec_resid)
-
-            total_re = self.aggregate_rand_effects(rand_effects)
+            total_re, mu = self.aggregate_rand_effects(rand_effects, prec_resid)
             resid_mrg = self.compute_marginal_residual(X, y, total_re)
 
-            resid.compute_eps(resid_mrg, total_re)
+            eps = resid_mrg - total_re
             W.clear()
             T.clear()
             new_tau.clear()
             for k, re in rand_effects.items():
                 T[k], W[k] = re.compute_cov_correction(V_op, M_op, self.n_jobs, self.backend)
-                new_tau[k] = re.compute_cov(W[k])
-            
-            resid.cov = resid.compute_cov(T)
+                new_tau[k] = re.compute_cov(mu[k], W[k])
+
+            resid.cov[...] = resid.compute_cov(eps, T)
             for k, re in rand_effects.items():
-                re.cov = new_tau[k]
+                re.cov[...] = new_tau[k]
             
             if iter_ > 2:
                 phi_change = np.linalg.norm(resid.cov - old_phi) / np.linalg.norm(old_phi)
