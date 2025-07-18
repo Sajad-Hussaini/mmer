@@ -2,13 +2,12 @@ import numpy as np
 from joblib import Parallel, delayed
 from scipy import sparse
 from scipy.sparse.linalg import cg
-import tempfile
-import os
 
 class RandomEffect:
     """
-    Random Effect class to handle residual computations in mixed effects models.
-    It provides methods to compute covariance matrices, design matrices, and perform matrix-vector operations.
+    Random Effect class encapsulates the design and computation of random effects in a mixed model context.
+    It constructs the random effects design matrix (Z), computes the conditional mean (μ),
+    and manages the covariance structure of the random effects.
     """
     def __init__(self, n: int, m: int, group_col: int, covariates_cols: list[int]):
         self.n = n
@@ -18,7 +17,6 @@ class RandomEffect:
         self.q = None
         self.o = None
         self.cov = None
-        self.resid_cov_correction = None
         self.mu = None
         self.Z = None
         self.ZTZ = None
@@ -102,66 +100,33 @@ class RandomEffect:
     def compute_cov_correction(self, V_op, M_op, n_jobs, backend):
         """
         Computes the correction to the residual covariance matrix φ and
-        random effect covariance matrix τ by constructing
-        the uncertainty correction matrices T: (m, m) and W: (m * q, m * q)
+        random effect covariance matrix τ
+        by constructing the uncertainty correction matrix T: (m, m)
+        and W: (m * q, m * q)
 
-        Uses symmetry of the covariance matrix to reduce computations
+        Uses symmetry of the covariance matrix to reduce computations.
         """
-        shape_T = (self.m, self.m)
-        shape_W = (self.m * self.q, self.m * self.q)
-        dtype = 'float64'
+        T = np.zeros((self.m, self.m))
+        W = np.zeros((self.m * self.q, self.m * self.q))
+        results = Parallel(n_jobs=n_jobs, backend=backend)(delayed(self.cov_correction_per_response)
+                                                           (V_op, M_op, col) for col in range(self.m))
 
-        def worker(col):
-            col, T_traces, W_blocks = self.cov_correction_per_response(V_op, M_op, col)
-            for i, trace in enumerate(T_traces):
+        for col, T_lower_traces, W_lower_blocks in results:
+            # --- Assemble T ---
+            for i, trace in enumerate(T_lower_traces):
                 row = col + i
-                T_shared[col, row] = T_shared[row, col] = trace
-            for i, block in enumerate(W_blocks):
+                T[col, row] = T[row, col] = trace
+
+            # --- Assemble W ---
+            for i, W_block in enumerate(W_lower_blocks):
                 row = col + i
                 r_slice = slice(row * self.q, (row + 1) * self.q)
                 c_slice = slice(col * self.q, (col + 1) * self.q)
-                W_shared[r_slice, c_slice] = block
+                W[r_slice, c_slice] = W_block
                 if row != col:
-                    W_shared[c_slice, r_slice] = block.T
+                    W[c_slice, r_slice] = W_block.T
 
-        if backend == 'threading':
-            T_shared = np.zeros(shape_T, dtype=dtype)
-            W_shared = np.zeros(shape_W, dtype=dtype)
-            Parallel(n_jobs=n_jobs, backend=backend)(delayed(worker)(col) for col in range(self.m))
-            return T_shared, W_shared
-
-        t_name, w_name = None, None
-        try:
-            # Create temporary files and immediately close them to release the lock.
-            with tempfile.NamedTemporaryFile(delete=False) as f_T:
-                t_name = f_T.name
-            with tempfile.NamedTemporaryFile(delete=False) as f_W:
-                w_name = f_W.name
-            
-            # Create the memmap objects. They now hold the file handles.
-            T_shared = np.memmap(t_name, dtype=dtype, mode='w+', shape=shape_T)
-            W_shared = np.memmap(w_name, dtype=dtype, mode='w+', shape=shape_W)
-            
-            # Run the parallel computation.
-            Parallel(n_jobs=n_jobs, backend=backend)(delayed(worker)(col) for col in range(self.m))
-            
-            # Create the final in-memory copies from the memmap results.
-            T_result = np.array(T_shared)
-            W_result = np.array(W_shared)
-            
-            # Explicitly delete the memmap objects.
-            # This triggers garbage collection and closes their file handles.
-            del T_shared
-            del W_shared
-            
-        finally:
-            # The file handles are released, deletion is done.
-            if t_name and os.path.exists(t_name):
-                os.remove(t_name)
-            if w_name and os.path.exists(w_name):
-                os.remove(w_name)
-
-        return T_result, W_result
+        return T, W
     
     def cov_correction_per_response(self, V_op, M_op, col):
         """
@@ -172,9 +137,7 @@ class RandomEffect:
         as well as the correction matrix W per response.
         """
         block_size = self.q * self.o
-
-        tau_block = self.cov[:, col * self.q : (col + 1) * self.q]
-        D_block = np.kron(tau_block, np.eye(self.o))
+        D_block = np.kron(self.cov[:, col * self.q : (col + 1) * self.q], np.eye(self.o))
         sigma_block = np.zeros((self.m * block_size, block_size))
 
         base_idx = col * block_size # starting basis col for extraction
