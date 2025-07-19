@@ -1,7 +1,5 @@
 import numpy as np
-from joblib import Parallel, delayed
 from scipy import sparse
-from scipy.sparse.linalg import cg
 
 class RandomEffect:
     """
@@ -97,60 +95,6 @@ class RandomEffect:
             1d array (mn,)
         """
         return self.kronZ_matvec(mu)
-
-    def compute_cov_correction(self, V_op, M_op, n_jobs, backend):
-        """
-        Computes the correction to the residual covariance matrix φ and
-        random effect covariance matrix τ
-        by constructing the uncertainty correction matrix T: (m, m)
-        and W: (m * q, m * q)
-
-        Uses symmetry of the covariance matrix to reduce computations.
-        """
-        T = np.zeros((self.m, self.m))
-        W = np.zeros((self.m * self.q, self.m * self.q))
-        results = Parallel(n_jobs=n_jobs, backend=backend,
-                           return_as="generator")(delayed(self.cov_correction_per_response)
-                                                  (V_op, M_op, col) for col in range(self.m))
-
-        for col, T_lower_traces, W_lower_blocks in results:
-            for i, (trace, W_block) in enumerate(zip(T_lower_traces, W_lower_blocks)):
-                row = col + i
-                # --- Assemble T ---
-                T[col, row] = T[row, col] = trace
-                # --- Assemble W ---
-                r_slice = slice(row * self.q, (row + 1) * self.q)
-                c_slice = slice(col * self.q, (col + 1) * self.q)
-                W[r_slice, c_slice] = W_block
-                if row != col:
-                    W[c_slice, r_slice] = W_block.T
-
-        return T, W
-    
-    def cov_correction_per_response(self, V_op, M_op, col):
-        """
-        Computes the element of the uncertainty correction matrix T that is:
-            Tᵢⱼ = trace((Zₖᵀ Zₖ) Σᵢⱼ)
-        using the random effect conditional covariance
-            Σ = D - D (Iₘ ⊗ Z)ᵀ V⁻¹ (Iₘ ⊗ Z) D
-        as well as the correction matrix W per response.
-        """
-        block_size = self.q * self.o
-        num_blocks = self.m - col
-        lower_sigma = np.zeros((num_blocks * block_size, block_size))
-        base_idx = col * block_size
-        vec = np.zeros(self.m * block_size)
-        for i in range(block_size):
-            vec[base_idx + i] = 1.0
-            rhs = self.kronZ_D_matvec(vec)
-            x_sol, _ = cg(V_op, rhs, M=M_op)
-            lower_sigma[:, i] = (self.D_matvec(vec) - self.kronZ_D_T_matvec(x_sol))[col * block_size : ]
-            vec[base_idx + i] = 0.0
-
-        T_traces = [self.ZTZ.multiply(lower_sigma[i * block_size:(i + 1) * block_size, :]).sum()
-                    for i in range(num_blocks)]
-        W_lower_blocks = lower_sigma.reshape(num_blocks, self.q, self.o, self.q, self.o).sum(axis=(2, 4))
-        return col, T_traces, W_lower_blocks
 
     def compute_cov(self, mu, W):
         """

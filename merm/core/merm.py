@@ -2,7 +2,7 @@ import numpy as np
 from scipy.sparse.linalg import cg
 from sklearn.base import RegressorMixin
 from tqdm import tqdm
-from .operator import VLinearOperator, ResidualPreconditioner
+from .operator import VLinearOperator, ResidualPreconditioner, compute_cov_correction
 from ..lanczos_algorithm import slq
 from .random_effect import RandomEffect
 from .residual import Residual
@@ -101,7 +101,7 @@ class MERM:
         new_tau = {}
         T_sum = np.zeros((self.m, self.m))
         for k, re in random_effects.items():
-            T_k, W_k = re.compute_cov_correction(V_op, M_op, self.n_jobs, self.backend)
+            T_k, W_k = compute_cov_correction(k, V_op, M_op, self.n_jobs, self.backend)
             np.add(T_sum, T_k, out=T_sum)
             new_tau[k] = re.compute_cov(mu[k], W_k)
 
