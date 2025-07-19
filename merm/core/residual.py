@@ -11,14 +11,14 @@ class Residual:
         self.m = m
         self.cov = np.eye(m)
 
-    def compute_cov(self, eps, T):
+    def compute_cov(self, eps, T_sum):
         """
         Compute the residual covariance matrix.
             ɸ = (S + T) / n
         """
-        S = eps.T @ eps
-        for Tk in T.values():
-            np.add(S, Tk, out=S)
+        epsr = eps.reshape((self.m, self.n))
+        S = epsr @ epsr.T
+        np.add(S, T_sum, out=S)
 
         phi = S / self.n + 1e-6 * np.eye(self.m)
         return phi
@@ -26,12 +26,13 @@ class Residual:
     def full_cov_matvec(self, x_vec: np.ndarray) -> np.ndarray:
         """
         Computes the residual covariance matrix-vector product (φ ⊗ Iₙ) @ x_vec.
+        takes:
+            1d array (mn,)
         returns:
-            2d array (n, m)
+            1d array (mn,)
         """
-        x_mat = x_vec.reshape((self.n, self.m), order='F')
-        Rx = x_mat @ self.cov
-        return Rx
+        Rx = x_vec.reshape((self.m, self.n)).T @ self.cov
+        return Rx.T.ravel()
     
     def cov_to_corr(self):
         """

@@ -81,16 +81,20 @@ class RandomEffect:
     def compute_mu(self, prec_resid):
         """
         Computes the random effect conditional mean μ.
-            prec_resid: precision-weighted residuals V⁻¹(y-fx)
-            μ: 2d array (o, m*q)
+        takes: 
+            1d array (mn,) prec_resid: precision-weighted residuals V⁻¹(y-fx)
+        returns:
+            1d array (mqo,) μ: conditional mean of the random effects
         """
         return self.kronZ_D_T_matvec(prec_resid)
 
     def map_mu(self, mu):
         """
         Maps the random effect conditional mean μ to the observation space
+        takes:
+            1d array (mqo,)
         returns:
-            2d array (n, M)
+            1d array (mn,)
         """
         return self.kronZ_matvec(mu)
 
@@ -105,8 +109,9 @@ class RandomEffect:
         """
         T = np.zeros((self.m, self.m))
         W = np.zeros((self.m * self.q, self.m * self.q))
-        results = Parallel(n_jobs=n_jobs, backend=backend, return_as="generator")(delayed(self.cov_correction_per_response)
-                                                                                  (V_op, M_op, col) for col in range(self.m))
+        results = Parallel(n_jobs=n_jobs, backend=backend,
+                           return_as="generator")(delayed(self.cov_correction_per_response)
+                                                  (V_op, M_op, col) for col in range(self.m))
 
         for col, T_lower_traces, W_lower_blocks in results:
             for i, (trace, W_block) in enumerate(zip(T_lower_traces, W_lower_blocks)):
@@ -137,9 +142,9 @@ class RandomEffect:
         vec = np.zeros(self.m * block_size)
         for i in range(block_size):
             vec[base_idx + i] = 1.0
-            rhs = self.kronZ_D_matvec(vec).ravel(order='F')
+            rhs = self.kronZ_D_matvec(vec)
             x_sol, _ = cg(V_op, rhs, M=M_op)
-            lower_sigma[:, i] = (self.D_matvec(vec) - self.kronZ_D_T_matvec(x_sol)).ravel(order='F')[col * block_size : ]
+            lower_sigma[:, i] = (self.D_matvec(vec) - self.kronZ_D_T_matvec(x_sol))[col * block_size : ]
             vec[base_idx + i] = 0.0
 
         T_traces = [self.ZTZ.multiply(lower_sigma[i * block_size:(i + 1) * block_size, :]).sum()
@@ -151,7 +156,8 @@ class RandomEffect:
         """
         Compute the random effect covariance matrix τ = (U + W) / o
         """
-        U = mu.T @ mu
+        mur = mu.reshape((self.m * self.q, self.o))
+        U = mur @ mur.T
         np.add(U, W, out=U)
         tau = U / self.o + 1e-6 * np.eye(self.m * self.q)
         return tau
@@ -162,67 +168,72 @@ class RandomEffect:
         """
         Computes the matrix-vector product W @ x_vec, where W = (Iₘ ⊗ Z) D maps a vector from
         the random effects space (pre-weighted by D) to the observation space.
+        takes:
+            1d array (mqo,)
         returns:
-            2d array (n, m)
+            1d array (mn,)
         """
-        x_mat = x_vec.reshape((self.o, self.m * self.q), order='F')
-        A_k = x_mat @ self.cov
-        A_k = A_k.reshape((self.q * self.o, self.m), order='F')
-        B_k = self.Z @ A_k
-        return B_k
-
+        A_k = x_vec.reshape((self.m * self.q, self.o)).T @ self.cov
+        B_k = self.Z @ A_k.T.reshape((self.m, self.q * self.o)).T
+        return B_k.T.ravel()
+    
     def kronZ_D_T_matvec(self, x_vec):
         """
         Computes the matrix-vector product Wᵀ @ x_vec, where Wᵀ = D (Iₘ ⊗ Z)ᵀ maps a vector from
         the observation space to the random effects space (post-weighted by D).
+        takes:
+            1d array (mn,)
         returns:
-            2d array (o, m*q)
+            1d array (mqo,)
         """
-        x_mat = x_vec.reshape((self.n, self.m), order='F')
-        A_k = self.Z.T @ x_mat
-        A_k = A_k.reshape((self.o, self.m * self.q), order='F')
-        B_k = A_k @ self.cov
-        return B_k
+        A_k = self.Z.T @ x_vec.reshape((self.m, self.n)).T
+        B_k = A_k.T.reshape((self.m * self.q, self.o)).T @ self.cov
+        return B_k.T.ravel()
     
     def kronZ_T_matvec(self, x_vec):
         """
         Computes the matrix-vector product (Iₘ ⊗ Z)ᵀ @ x_vec maps a vector from
         the observation space back to the random effects space.
+        takes:
+            1d array (mn,)
         returns:
-            2d array (q*o, m)
+            1d array (mqo,)
         """
-        x_mat = x_vec.reshape((self.n, self.m), order='F')
-        A_k = self.Z.T @ x_mat
-        return A_k
+        A_k = self.Z.T @ x_vec.reshape((self.m, self.n)).T
+        return A_k.T.ravel()
 
     def kronZ_matvec(self, x_vec):
         """
         Computes the matrix-vector product (Iₘ ⊗ Z) @ x_vec maps a vector from
         the random effects space to the observation space.
+        takes:
+            1d array (mqo,)
         returns:
-            2d array (n, m)
+            1d array (mn,)
         """
-        x_mat = x_vec.reshape((self.q * self.o, self.m), order='F')
-        A_k = self.Z @ x_mat
-        return A_k
+        A_k = self.Z @ x_vec.reshape((self.m, self.q * self.o)).T
+        return A_k.T.ravel()
     
     def D_matvec(self, x_vec):
         """
         Computes the random effect covariance matrix-vector product (τ ⊗ Iₒ) @ x_vec.
+        takes:
+            1d array (mqo,)
         returns:
-            2d array (o, m*q)
+            1d array (mqo,)
         """
-        x_mat = x_vec.reshape((self.o, self.m * self.q), order='F')
-        Dx =  x_mat @ self.cov
-        return Dx
+        Dx =  x_vec.reshape((self.m * self.q, self.o)).T @ self.cov
+        return Dx.T.ravel()
     
     def full_cov_matvec(self, x_vec):
         """
         Computes the matrix-vector product full_cov @ x_vec,
             where full_cov = (Iₘ ⊗ Z) D (Iₘ ⊗ Z)ᵀ
         is random effect contribution to the marginal covariance.
+        takes:
+            1d array (mn,)
         returns:
-            2d array (n, m)
+            1d array (mn,)
         """
         A_k = self.kronZ_T_matvec(x_vec)
         B_k = self.kronZ_D_matvec(A_k)
