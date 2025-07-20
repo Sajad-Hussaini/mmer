@@ -26,7 +26,7 @@ class VLinearOperator(LinearOperator):
         Vx = self.residual.full_cov_matvec(x_vec)
         for re in self.random_effects.values():
             np.add(Vx, re.full_cov_matvec(x_vec), out=Vx)
-        return Vx.ravel(order='F')
+        return Vx
 
     def _adjoint(self):
         """Implements the adjoint operator Vᵀ. Since V is symmetric, return self."""
@@ -60,9 +60,8 @@ class ResidualPreconditioner(LinearOperator):
         """
         Computes (φ⁻¹ ⊗ Iₙ) @ x_vec.
         """
-        x_mat = x_vec.reshape((self.n, self.m), order='F')
-        Px = x_mat @ self.cov_inv
-        return Px.ravel(order='F')
+        Px = x_vec.reshape((self.m, self.n)).T @ self.cov_inv
+        return Px.T.ravel()
     
     def _adjoint(self):
         """ Since P is symmetric, return self."""
@@ -105,6 +104,19 @@ def compute_cov_correction(k, V_op: VLinearOperator, M_op: ResidualPreconditione
 
     return T, W
 
+def compute_sigma_column(i, base_idx, vec, V_op, k, M_op, col, block_size):
+    vec[base_idx + i] = 1.0
+    rhs = V_op.random_effects[k].kronZ_D_matvec(vec)
+    x_sol, _ = cg(V_op, rhs, M=M_op)
+    result = (V_op.random_effects[k].D_matvec(vec) -
+              V_op.random_effects[k].kronZ_D_T_matvec(x_sol))[col * block_size:]
+    vec[base_idx + i] = 0.0
+    return result
+
+def _compute_T_traces(V_op, k, lower_sigma, num_blocks, block_size):
+    return [V_op.random_effects[k].ZTZ.multiply(lower_sigma[i * block_size:(i + 1) * block_size, :]).sum()
+                for i in range(num_blocks)]
+
 def cov_correction_per_response(k, V_op: VLinearOperator, M_op: ResidualPreconditioner, col):
     """
     Computes the element of the uncertainty correction matrix T that is:
@@ -122,13 +134,8 @@ def cov_correction_per_response(k, V_op: VLinearOperator, M_op: ResidualPrecondi
     base_idx = col * block_size
     vec = np.zeros(m * block_size)
     for i in range(block_size):
-        vec[base_idx + i] = 1.0
-        rhs = V_op.random_effects[k].kronZ_D_matvec(vec)
-        x_sol, _ = cg(V_op, rhs, M=M_op)
-        lower_sigma[:, i] = (V_op.random_effects[k].D_matvec(vec) - V_op.random_effects[k].kronZ_D_T_matvec(x_sol))[col * block_size : ]
-        vec[base_idx + i] = 0.0
+        lower_sigma[:, i] = compute_sigma_column(i, base_idx, vec, V_op, k, M_op, col, block_size)
 
-    T_traces = [V_op.random_effects[k].ZTZ.multiply(lower_sigma[i * block_size:(i + 1) * block_size, :]).sum()
-                for i in range(num_blocks)]
+    T_traces = _compute_T_traces(V_op, k, lower_sigma, num_blocks, block_size)
     W_lower_blocks = lower_sigma.reshape(num_blocks, q, o, q, o).sum(axis=(2, 4))
     return col, T_traces, W_lower_blocks
