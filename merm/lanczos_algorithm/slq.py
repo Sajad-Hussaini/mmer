@@ -1,8 +1,9 @@
 import numpy as np
 from scipy.linalg import eigh_tridiagonal
 from joblib import Parallel, delayed
+from ..core.operator import VLinearOperator
 
-def slq_probe(V_op, lanczos_steps, seed):
+def slq_probe(V_op: VLinearOperator, lanczos_steps: int, seed: int):
     """
     Single probe for SLQ logdet estimation with optimized error handling.
     """
@@ -37,7 +38,7 @@ def slq_probe(V_op, lanczos_steps, seed):
     try:
         # Compute eigenvalues and eigenvectors of the tridiagonal matrix T
         eigvals, eigvecs = eigh_tridiagonal(alphas, betas, eigvals_only=False)
-    except (np.linalg.LinAlgError, ValueError):
+    except Exception:
         # If eigenvalue computation fails (e.g., due to an unstable T),
         # Return 0 for failed probes - will be averaged out
         return 0.0
@@ -48,7 +49,7 @@ def slq_probe(V_op, lanczos_steps, seed):
     # The quadrature rule: sum of log(eigvals) weighted by squared first elements of eigenvectors
     return np.sum(np.log(eigvals) * (eigvecs[0, :] ** 2))
 
-def logdet(V_op, lanczos_steps, num_probes, n_jobs, backend, random_seed = 42):
+def logdet(V_op: VLinearOperator, lanczos_steps: int, num_probes: int, n_jobs: int, backend: str, random_seed: int = 42):
     """
     Estimates the log-determinant of a symmetric positive-definite operator V
     using a parallelized Stochastic Lanczos Quadrature method.
@@ -68,6 +69,6 @@ def logdet(V_op, lanczos_steps, num_probes, n_jobs, backend, random_seed = 42):
     result = Parallel(n_jobs=n_jobs, backend=backend,
                       return_as="generator")(delayed(slq_probe)(V_op, lanczos_steps, int(s.generate_state(1)[0]))
                                              for s in seeds)
-    logdet_est = np.sum(result)
+    logdet_est = sum(result)
     # The final estimate is the average of the probe results, scaled by the matrix dimension.
     return dim * logdet_est / num_probes

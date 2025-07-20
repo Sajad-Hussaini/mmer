@@ -16,7 +16,7 @@ class VLinearOperator(LinearOperator):
         self.residual = residual
         super().__init__(dtype=np.float64, shape=(self.residual.m * self.residual.n, self.residual.m * self.residual.n))
 
-    def _matvec(self, x_vec):
+    def _matvec(self, x_vec: np.ndarray):
         """
         Computes the marginal covariance matrix-vector product V @ x_vec,
         where V = Σ(Iₘ ⊗ Zₖ) Dₖ (Iₘ ⊗ Zₖ)ᵀ + R.
@@ -56,12 +56,13 @@ class ResidualPreconditioner(LinearOperator):
 
         super().__init__(dtype=np.float64, shape=(self.m * self.n, self.m * self.n))
 
-    def _matvec(self, x_vec):
+    def _matvec(self, x_vec: np.ndarray):
         """
         Computes (φ⁻¹ ⊗ Iₙ) @ x_vec.
+        knowing that (XᵀC)ᵀ = CᵀX = CX
         """
-        Px = x_vec.reshape((self.m, self.n)).T @ self.cov_inv
-        return Px.T.ravel()
+        Px = self.cov_inv @ x_vec.reshape((self.m, self.n))
+        return Px.ravel()
     
     def _adjoint(self):
         """ Since P is symmetric, return self."""
@@ -73,7 +74,7 @@ class ResidualPreconditioner(LinearOperator):
     
 # ====================== Other Standalone Methods ======================
 
-def compute_cov_correction(k, V_op: VLinearOperator, M_op: ResidualPreconditioner, n_jobs, backend):
+def compute_cov_correction(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, n_jobs: int, backend: str):
     """
     Computes the correction to the residual covariance matrix φ and
     random effect covariance matrix τ
@@ -104,20 +105,25 @@ def compute_cov_correction(k, V_op: VLinearOperator, M_op: ResidualPreconditione
 
     return T, W
 
-def compute_sigma_column(i, base_idx, vec, V_op, k, M_op, col, block_size):
+def compute_sigma_column(i: int, base_idx: int, vec: np.ndarray, k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner,
+                         col: int, block_size: int):
+    """ Computes the i-th column of the conditional covariance matrix Σ for lower triangular part. """
     vec[base_idx + i] = 1.0
     rhs = V_op.random_effects[k].kronZ_D_matvec(vec)
     x_sol, _ = cg(V_op, rhs, M=M_op)
-    result = (V_op.random_effects[k].D_matvec(vec) -
+    lower_sigma = (V_op.random_effects[k].D_matvec(vec) -
               V_op.random_effects[k].kronZ_D_T_matvec(x_sol))[col * block_size:]
     vec[base_idx + i] = 0.0
-    return result
+    return lower_sigma
 
-def _compute_T_traces(V_op, k, lower_sigma, num_blocks, block_size):
-    return [V_op.random_effects[k].ZTZ.multiply(lower_sigma[i * block_size:(i + 1) * block_size, :]).sum()
-                for i in range(num_blocks)]
+def compute_T_traces(k: int, V_op: VLinearOperator, lower_sigma: np.ndarray, num_blocks: int, block_size: int):
+    """
+    computes the traces of the blocks of the uncertainty correction matrix T for one response column
+    Tᵢⱼ = trace((Zₖᵀ Zₖ) Σᵢⱼ)
+    """
+    return [V_op.random_effects[k].ZTZ.multiply(lower_sigma[i * block_size:(i + 1) * block_size, :]).sum() for i in range(num_blocks)]
 
-def cov_correction_per_response(k, V_op: VLinearOperator, M_op: ResidualPreconditioner, col):
+def cov_correction_per_response(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, col: int):
     """
     Computes the element of the uncertainty correction matrix T that is:
         Tᵢⱼ = trace((Zₖᵀ Zₖ) Σᵢⱼ)
@@ -134,8 +140,8 @@ def cov_correction_per_response(k, V_op: VLinearOperator, M_op: ResidualPrecondi
     base_idx = col * block_size
     vec = np.zeros(m * block_size)
     for i in range(block_size):
-        lower_sigma[:, i] = compute_sigma_column(i, base_idx, vec, V_op, k, M_op, col, block_size)
+        lower_sigma[:, i] = compute_sigma_column(i, base_idx, vec, k, V_op, M_op, col, block_size)
 
-    T_traces = _compute_T_traces(V_op, k, lower_sigma, num_blocks, block_size)
+    T_traces = compute_T_traces(k, V_op, lower_sigma, num_blocks, block_size)
     W_lower_blocks = lower_sigma.reshape(num_blocks, q, o, q, o).sum(axis=(2, 4))
     return col, T_traces, W_lower_blocks

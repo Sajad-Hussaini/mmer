@@ -7,6 +7,7 @@ class RandomEffect:
     It constructs the random effects design matrix (Z), computes the conditional mean (μ),
     and manages the covariance structure of the random effects.
     """
+    __slots__ = ('n', 'm', 'col', 'covariates_cols', 'q', 'o', 'cov', 'Z', 'ZTZ')
     def __init__(self, n: int, m: int, group_col: int, covariates_cols: list[int]):
         self.n = n
         self.m = m
@@ -58,25 +59,16 @@ class RandomEffect:
 
     def design_rand_effect(self, X: np.ndarray, groups: np.ndarray):
         """
-        Constructs the random effect design matrix, number of effect type and levels.
+        Constructs the random effect design matrix, number of effect type and levels,
+        covariance matrix, and symmetric Gram matrix (G = Zᵀ Z).
         """
         slope_covariates = X[:, self.covariates_cols] if self.covariates_cols is not None else None
         self.Z, self.q, self.o = self.design_Z(groups[:, self.col], slope_covariates)
-        return self
-    
-    def prepare_data(self):
-        """
-        Prepare initial covariance matrix, expected values, and symmetric Gram matrix.
-            G = Zᵀ Z
-        """
-        if self.q is None:
-            raise ValueError("Must call design_rand_effect() first")
-        
         self.cov = np.eye(self.m * self.q)
         self.ZTZ = self.Z.T @ self.Z
         return self
     
-    def compute_mu(self, prec_resid):
+    def compute_mu(self, prec_resid: np.ndarray):
         """
         Computes the random effect conditional mean μ.
         takes: 
@@ -86,7 +78,7 @@ class RandomEffect:
         """
         return self.kronZ_D_T_matvec(prec_resid)
 
-    def map_mu(self, mu):
+    def map_mu(self, mu: np.ndarray):
         """
         Maps the random effect conditional mean μ to the observation space
         takes:
@@ -96,7 +88,7 @@ class RandomEffect:
         """
         return self.kronZ_matvec(mu)
 
-    def compute_cov(self, mu, W):
+    def compute_cov(self, mu: np.ndarray, W: np.ndarray):
         """
         Compute the random effect covariance matrix τ = (U + W) / o
         """
@@ -108,7 +100,7 @@ class RandomEffect:
 
 # ====================== Matrix-Vector Operations ======================
 
-    def kronZ_D_matvec(self, x_vec):
+    def kronZ_D_matvec(self, x_vec: np.ndarray):
         """
         Computes the matrix-vector product W @ x_vec, where W = (Iₘ ⊗ Z) D maps a vector from
         the random effects space (pre-weighted by D) to the observation space.
@@ -117,11 +109,11 @@ class RandomEffect:
         returns:
             1d array (mn,)
         """
-        A_k = x_vec.reshape((self.m * self.q, self.o)).T @ self.cov
-        B_k = self.Z @ A_k.T.reshape((self.m, self.q * self.o)).T
-        return B_k.T.ravel()
-    
-    def kronZ_D_T_matvec(self, x_vec):
+        A_k = self.cov @ x_vec.reshape((self.m * self.q, self.o))
+        B_k = A_k.reshape((self.m, self.q * self.o)) @ self.Z.T
+        return B_k.ravel()
+
+    def kronZ_D_T_matvec(self, x_vec: np.ndarray):
         """
         Computes the matrix-vector product Wᵀ @ x_vec, where Wᵀ = D (Iₘ ⊗ Z)ᵀ maps a vector from
         the observation space to the random effects space (post-weighted by D).
@@ -130,11 +122,11 @@ class RandomEffect:
         returns:
             1d array (mqo,)
         """
-        A_k = self.Z.T @ x_vec.reshape((self.m, self.n)).T
-        B_k = A_k.T.reshape((self.m * self.q, self.o)).T @ self.cov
-        return B_k.T.ravel()
+        A_k = x_vec.reshape((self.m, self.n)) @ self.Z
+        B_k = self.cov @ A_k.reshape((self.m * self.q, self.o))
+        return B_k.ravel()
     
-    def kronZ_T_matvec(self, x_vec):
+    def kronZ_T_matvec(self, x_vec: np.ndarray):
         """
         Computes the matrix-vector product (Iₘ ⊗ Z)ᵀ @ x_vec maps a vector from
         the observation space back to the random effects space.
@@ -143,10 +135,10 @@ class RandomEffect:
         returns:
             1d array (mqo,)
         """
-        A_k = self.Z.T @ x_vec.reshape((self.m, self.n)).T
-        return A_k.T.ravel()
+        A_k = x_vec.reshape((self.m, self.n)) @ self.Z
+        return A_k.ravel()
 
-    def kronZ_matvec(self, x_vec):
+    def kronZ_matvec(self, x_vec: np.ndarray):
         """
         Computes the matrix-vector product (Iₘ ⊗ Z) @ x_vec maps a vector from
         the random effects space to the observation space.
@@ -155,10 +147,10 @@ class RandomEffect:
         returns:
             1d array (mn,)
         """
-        A_k = self.Z @ x_vec.reshape((self.m, self.q * self.o)).T
-        return A_k.T.ravel()
+        A_k = x_vec.reshape((self.m, self.q * self.o)) @ self.Z.T
+        return A_k.ravel()
     
-    def D_matvec(self, x_vec):
+    def D_matvec(self, x_vec: np.ndarray):
         """
         Computes the random effect covariance matrix-vector product (τ ⊗ Iₒ) @ x_vec.
         takes:
@@ -166,10 +158,10 @@ class RandomEffect:
         returns:
             1d array (mqo,)
         """
-        Dx =  x_vec.reshape((self.m * self.q, self.o)).T @ self.cov
-        return Dx.T.ravel()
+        Dx =  self.cov @ x_vec.reshape((self.m * self.q, self.o))
+        return Dx.ravel()
     
-    def full_cov_matvec(self, x_vec):
+    def full_cov_matvec(self, x_vec: np.ndarray):
         """
         Computes the matrix-vector product full_cov @ x_vec,
             where full_cov = (Iₘ ⊗ Z) D (Iₘ ⊗ Z)ᵀ
@@ -183,7 +175,7 @@ class RandomEffect:
         B_k = self.kronZ_D_matvec(A_k)
         return B_k
     
-    def cov_to_corr(self):
+    def to_corr(self):
         """
         Convert covariance matrix to correlation matrix.
         """

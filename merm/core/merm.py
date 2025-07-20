@@ -18,12 +18,13 @@ class MERM:
         tol: Log-likelihood convergence tolerance  (default: 1e-6).
     """
     def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 20, tol: float = 1e-6,
-                 slq_steps: int = 5, slq_probes: int = 5, n_jobs: int = 4, backend: str = 'threading'):
+                 slq_steps: int = 5, slq_probes: int = 5, precond: bool = False, n_jobs: int = 1, backend: str = 'threading'):
         self.fe_model = fixed_effects_model
         self.max_iter = max_iter
         self.tol = tol
         self.slq_steps = slq_steps
         self.slq_probes = slq_probes
+        self.precond = precond
         self.log_likelihood = []
         self._is_converged = False
         self.n_jobs = n_jobs
@@ -39,10 +40,8 @@ class MERM:
 
         rand_effects = {k: RandomEffect(self.n, self.m, k, slope_col) for k, slope_col in self.random_slopes.items()}
         for re in rand_effects.values():
-            re.design_rand_effect(X, groups).prepare_data()
-
+            re.design_rand_effect(X, groups)
         resid = Residual(self.n, self.m)
-        
         resid_mrg = self.compute_marginal_residual(X, y, 0.0)
         return resid_mrg, rand_effects, resid
     
@@ -89,13 +88,13 @@ class MERM:
         old_tau = {k: re.cov.copy() for k, re in random_effects.items()}
         old_phi = residual.cov.copy()
         V_op = VLinearOperator(random_effects, residual)
-        M_op = ResidualPreconditioner(residual)
+        M_op = ResidualPreconditioner(residual) if self.precond else None
         prec_resid, _ = cg(V_op, resid_mrg, M=M_op)
         total_re, mu = self.aggregate_rand_effects(random_effects, prec_resid)
         return total_re, mu, old_tau, old_phi, V_op, M_op
 
     def _m_step(self, random_effects: dict[int, RandomEffect], residual: Residual, resid_mrg: np.ndarray,
-                total_re, mu, V_op, M_op):
+                total_re: np.ndarray, mu: dict[int, np.ndarray], V_op: VLinearOperator, M_op: ResidualPreconditioner):
         """Performs the M-step of the EM algorithm."""
         eps = np.subtract(resid_mrg, total_re, out=total_re)
         new_tau = {}
@@ -108,8 +107,10 @@ class MERM:
         residual.cov[...] = residual.compute_cov(eps, T_sum)
         for k, re in random_effects.items():
             re.cov[...] = new_tau[k]
+        return self
 
-    def _check_convergence(self, random_effects, residual, old_tau, old_phi):
+    def _check_convergence(self, random_effects: dict[int, RandomEffect], residual: Residual,
+                           old_tau: dict[int, np.ndarray], old_phi: np.ndarray):
         """Checks if the model parameters have converged."""
         phi_change = np.linalg.norm(residual.cov - old_phi) / np.linalg.norm(old_phi)
         tau_changes = [np.linalg.norm(re.cov - old_tau[k]) / np.linalg.norm(old_tau[k])
@@ -117,7 +118,7 @@ class MERM:
         max_param_change = max([phi_change] + tau_changes)
         return max_param_change, max_param_change < self.tol
 
-    def _run_em_iteration(self, X, y, rand_effects, resid, resid_mrg):
+    def _run_em_iteration(self, X: np.ndarray, y: np.ndarray, rand_effects: dict[int, RandomEffect], resid: Residual, resid_mrg: np.ndarray):
         """ Run the EM algorithm for fitting the model. """
         # --- E-Step ---
         total_re, mu, old_tau, old_phi, V_op, M_op = self._e_step(rand_effects, resid, resid_mrg)
@@ -157,7 +158,7 @@ class MERM:
                     break
         
         V_op = VLinearOperator(rand_effects, resid)
-        M_op = ResidualPreconditioner(resid)
+        M_op = ResidualPreconditioner(resid) if self.precond else None
         prec_resid, _ = cg(V_op, resid_mrg, M=M_op)
         final_logL = self.compute_log_likelihood(resid_mrg, prec_resid, V_op)
         self.log_likelihood.append(final_logL)

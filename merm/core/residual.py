@@ -6,12 +6,13 @@ class Residual:
     It provides methods to compute covariance, and residuals, and perform matrix-vector operations.
     where ϵ = y - fx - Σ(Iₘ ⊗ Z)μ
     """
+    __slots__ = ('n', 'm', 'cov')
     def __init__(self, n: int, m: int):
         self.n = n
         self.m = m
         self.cov = np.eye(m)
 
-    def compute_cov(self, eps, T_sum):
+    def compute_cov(self, eps: np.ndarray, T_sum: np.ndarray):
         """
         Compute the residual covariance matrix.
             ɸ = (S + T) / n
@@ -23,7 +24,7 @@ class Residual:
         phi = S / self.n + 1e-6 * np.eye(self.m)
         return phi
     
-    def full_cov_matvec(self, x_vec: np.ndarray) -> np.ndarray:
+    def full_cov_matvec(self, x_vec: np.ndarray):
         """
         Computes the residual covariance matrix-vector product (φ ⊗ Iₙ) @ x_vec.
         takes:
@@ -31,10 +32,9 @@ class Residual:
         returns:
             1d array (mn,)
         """
-        Rx = x_vec.reshape((self.m, self.n)).T @ self.cov
-        return Rx.T.ravel()
+        return (self.cov @ x_vec.reshape((self.m, self.n))).ravel()
     
-    def cov_to_corr(self):
+    def to_corr(self):
         """
         Convert covariance matrix to correlation matrix.
         """
