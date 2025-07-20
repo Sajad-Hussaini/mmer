@@ -1,3 +1,4 @@
+import gc
 import numpy as np
 from scipy.sparse.linalg import LinearOperator
 from scipy.linalg import solve
@@ -87,21 +88,20 @@ def compute_cov_correction(k: int, V_op: VLinearOperator, M_op: ResidualPrecondi
     q = V_op.random_effects[k].q
     T = np.zeros((m, m))
     W = np.zeros((m * q, m * q))
-    results = Parallel(n_jobs=n_jobs, backend=backend,
-                       return_as="generator")(delayed(cov_correction_per_response)
-                                              (k, V_op, M_op, col) for col in range(m))
+    with Parallel(n_jobs=n_jobs, backend=backend, return_as="generator") as parallel:
+        results = parallel(delayed(cov_correction_per_response)(k, V_op, M_op, col) for col in range(m))
 
-    for col, T_lower_traces, W_lower_blocks in results:
-        for i, (trace, W_block) in enumerate(zip(T_lower_traces, W_lower_blocks)):
-            row = col + i
-            # --- Assemble T ---
-            T[col, row] = T[row, col] = trace
-            # --- Assemble W ---
-            r_slice = slice(row * q, (row + 1) * q)
-            c_slice = slice(col * q, (col + 1) * q)
-            W[r_slice, c_slice] = W_block
-            if row != col:
-                W[c_slice, r_slice] = W_block.T
+        for col, T_lower_traces, W_lower_blocks in results:
+            for i, (trace, W_block) in enumerate(zip(T_lower_traces, W_lower_blocks)):
+                row = col + i
+                # --- Assemble T ---
+                T[col, row] = T[row, col] = trace
+                # --- Assemble W ---
+                r_slice = slice(row * q, (row + 1) * q)
+                c_slice = slice(col * q, (col + 1) * q)
+                W[r_slice, c_slice] = W_block
+                if row != col:
+                    W[c_slice, r_slice] = W_block.T
 
     return T, W
 
@@ -144,4 +144,5 @@ def cov_correction_per_response(k: int, V_op: VLinearOperator, M_op: ResidualPre
 
     T_traces = compute_T_traces(k, V_op, lower_sigma, num_blocks, block_size)
     W_lower_blocks = lower_sigma.reshape(num_blocks, q, o, q, o).sum(axis=(2, 4))
+    gc.collect() 
     return col, T_traces, W_lower_blocks
