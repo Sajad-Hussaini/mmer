@@ -144,5 +144,5 @@ def cov_correction_per_response(k: int, V_op: VLinearOperator, M_op: ResidualPre
 
     T_traces = compute_T_traces(k, V_op, lower_sigma, num_blocks, block_size)
     W_lower_blocks = lower_sigma.reshape(num_blocks, q, o, q, o).sum(axis=(2, 4))
-    gc.collect() 
+    gc.collect()
     return col, T_traces, W_lower_blocks

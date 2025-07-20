@@ -1,3 +1,4 @@
+import gc
 import numpy as np
 from scipy.linalg import eigh_tridiagonal
 from joblib import Parallel, delayed
@@ -66,9 +67,9 @@ def logdet(V_op: VLinearOperator, lanczos_steps: int, num_probes: int, n_jobs: i
     seeds = np.random.SeedSequence(random_seed).spawn(num_probes)
     # Parallel executes the tasks and returns a generator.
     # np.sum consumes the results from the generator as they become available.
-    result = Parallel(n_jobs=n_jobs, backend=backend,
-                      return_as="generator")(delayed(slq_probe)(V_op, lanczos_steps, int(s.generate_state(1)[0]))
-                                             for s in seeds)
-    logdet_est = sum(result)
+    with Parallel(n_jobs=n_jobs, backend=backend, return_as="generator") as parallel:
+        result = parallel(delayed(slq_probe)(V_op, lanczos_steps, int(s.generate_state(1)[0])) for s in seeds)
+        logdet_est = sum(result)
     # The final estimate is the average of the probe results, scaled by the matrix dimension.
+    gc.collect()
     return dim * logdet_est / num_probes
