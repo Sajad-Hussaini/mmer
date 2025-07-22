@@ -74,8 +74,131 @@ class ResidualPreconditioner(LinearOperator):
         return (self.__class__, (self.cov_inv, self.n, self.m))
     
 # ====================== Other Standalone Methods ======================
+def _generate_rademacher_probes(n_rows, n_probes):
+    """Generates random probe vectors from a Rademacher distribution ({-1, 1})."""
+    return (np.random.randint(0, 2, size=(n_rows, n_probes)) * 2 - 1).astype(np.float64)
 
-def compute_cov_correction(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, n_jobs: int, backend: str):
+def _compute_single_probe(probe_vector, re, V_op, M_op):
+    """Helper function to compute C @ uᵢ = D_k (I⊗Z_k)ᵀ V⁻¹ (I⊗Z_k) D_k @ uᵢ."""
+    v1 = re.kronZ_D_matvec(probe_vector)
+    v2, _ = cg(V_op, v1, M=M_op)
+    result = re.kronZ_D_T_matvec(v2)
+    # gc.collect()  # if worker accumulates memory, uncomment this line
+    return result
+
+def compute_cov_correction(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner,
+                           n_jobs: int, backend: str, n_probes: int = 100):
+    """
+    Computes the uncertainty correction matrices T: (m, m) and W: (m * q, m * q)
+    for a given grouping factor k using Stochastic Trace Estimation (STE).
+    Uses symmetry of the covariance matrix to reduce computations.
+    """
+    m = V_op.residual.m
+    re = V_op.random_effects[k]
+    q, o = re.q, re.o
+    
+    # We need to estimate the diagonal of the conditional covariance matrix:
+    # Σ_k = D_k - D_k (I⊗Z_k)ᵀ V⁻¹ (I⊗Z_k) D_k
+    # Let C = D_k (I⊗Z_k)ᵀ V⁻¹ (I⊗Z_k) D_k. We estimate diag(C) stochastically.
+    
+    n_cols_d = m * q * o
+    probes = _generate_rademacher_probes(n_cols_d, n_probes)
+
+    with Parallel(n_jobs=n_jobs, backend=backend) as parallel:
+        C_probes = parallel(delayed(_compute_single_probe)(probes[:, i], re, V_op, M_op) for i in range(n_probes))
+        
+    C_probes = np.column_stack(C_probes)
+    diag_C = np.mean(probes * C_probes, axis=1)
+    diag_D = np.kron(np.diag(re.cov), np.ones(o))
+    diag_sigma_k = diag_D - diag_C
+
+    # Reshape the diagonal of Σ_k to match its block structure (M x M blocks of size q*o x q*o)
+    sigma_k_diag_reshaped = diag_sigma_k.reshape((m, q, o))
+    
+    # --- Compute W ---
+    W = np.zeros((m * q, m * q))
+    w_diag_blocks = sigma_k_diag_reshaped.sum(axis=2)
+    for i in range(m):
+        start, end = i * q, (i + 1) * q
+        W[start:end, start:end] = np.diag(w_diag_blocks[i, :])
+
+    # --- Compute T ---
+    T = np.zeros((m, m))
+    ZTZ_diag = re.ZTZ.diagonal()
+    diag_sigma_k_reshaped = diag_sigma_k.reshape(m, q * o)
+    for i in range(m):
+        T[i, i] = ZTZ_diag @ diag_sigma_k_reshaped[i, :]
+
+    return T, W
+
+# def compute_cov_correctionx(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner,
+#                            n_jobs: int, backend: str, n_probes: int = 100):
+#     """
+#     Computes the uncertainty correction matrices T: (m, m) and W: (m * q, m * q)
+#     for a given grouping factor k using Stochastic Trace Estimation (STE).
+#     Uses symmetry of the covariance matrix to reduce computations.
+#     """
+#     m = V_op.residual.m
+#     re = V_op.random_effects[k]
+#     q, o = re.q, re.o
+    
+#     # We need to estimate the diagonal of the conditional covariance matrix:
+#     # Σ_k = D_k - D_k (I⊗Z_k)ᵀ V⁻¹ (I⊗Z_k) D_k
+#     # Let C = D_k (I⊗Z_k)ᵀ V⁻¹ (I⊗Z_k) D_k. We estimate diag(C) stochastically.
+    
+#     n_cols_d = m * q * o
+#     probes = _generate_rademacher_probes(n_cols_d, n_probes)
+    
+#     C_probes = np.zeros_like(probes)
+
+#     for i in range(n_probes):
+#         probe_vector = probes[:, i]
+        
+#         # This calculates C @ uᵢ for each probe uᵢ
+#         v1 = re.kronZ_D_matvec(probe_vector)  # v1 = (I⊗Z_k)D_k @ uᵢ
+#         v2, _ = cg(V_op, v1, M=M_op) # v2 = V⁻¹ @ v1
+#         C_probes[:, i] = re.kronZ_D_T_matvec(v2) # C_probes[:, i] = D_k(I⊗Z_k)ᵀ @ v2
+        
+#     # Estimate the diagonal of C using the identity diag(C) = (probes * C_probes).mean(axis=1)
+#     diag_C = np.mean(probes * C_probes, axis=1)
+    
+#     # Now we have the diagonal of Σ_k
+#     diag_D = np.kron(np.diag(re.cov), np.ones(o))
+#     diag_sigma_k = diag_D - diag_C
+
+#     # Reshape the diagonal of Σ_k to match its block structure (M x M blocks of size q*o x q*o)
+#     sigma_k_diag_reshaped = diag_sigma_k.reshape((m, q, o))
+    
+#     # --- Correctly Calculate W ---
+#     # W_k = Σ_l (Σ_k)_ll, which is the sum of the diagonal blocks of Σ_k over levels 'l' (or 'o').
+#     # We can get this by summing our estimated diagonal over the 'o' dimension.
+#     W = np.zeros((m * q, m * q))
+#     w_diag_blocks = sigma_k_diag_reshaped.sum(axis=2) # Sum over 'o' dimension
+#     for i in range(m):
+#         for j in range(m):
+#             if i == j:
+#                 # The diagonal blocks of W_k are the sum of the diagonals of (Σ_k)_ii
+#                 start, end = i * q, (i + 1) * q
+#                 W[start:end, start:end] = np.diag(w_diag_blocks[i, :])
+    
+#     # --- Correctly Calculate T ---
+#     # T_ij = trace((Z_kᵀ Z_k) (Σ_k)_ij).
+#     # Since we only have the diagonal of Σ_k, we can only compute the trace for the
+#     # diagonal blocks (i=j), where the trace becomes a dot product.
+#     T = np.zeros((m, m))
+#     ZTZ_diag = re.ZTZ.diagonal() # Diagonal of the ZTZ matrix (o*q,)
+    
+#     for i in range(m):
+#         for j in range(m):
+#             if i == j:
+#                 # Extract the diagonal of the (i,i)-th block of Σ_k
+#                 sigma_ii_diag = diag_sigma_k.reshape(m, q*o)[i, :]
+#                 # T_ii = trace(ZTZ * diag(Σ_k_ii)) = ZTZ_diag.T @ sigma_ii_diag
+#                 T[i, i] = ZTZ_diag @ sigma_ii_diag
+
+#     return T, W
+
+def compute_cov_correction2(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, n_jobs: int, backend: str):
     """
     Computes the correction to the residual covariance matrix φ and
     random effect covariance matrix τ
