@@ -85,13 +85,13 @@ class MERM:
 
     def _e_step(self, random_effects: dict[int, RandomEffect], residual: Residual, resid_mrg: np.ndarray):
         """Performs the E-step of the EM algorithm."""
-        old_tau = {k: re.cov.copy() for k, re in random_effects.items()}
-        old_phi = residual.cov.copy()
         V_op = VLinearOperator(random_effects, residual)
         M_op = ResidualPreconditioner(residual) if self.precond else None
         prec_resid, _ = cg(V_op, resid_mrg, M=M_op)
+        final_logL = self.compute_log_likelihood(resid_mrg, prec_resid, V_op)
+        self.log_likelihood.append(final_logL)
         total_re, mu = self.aggregate_rand_effects(random_effects, prec_resid)
-        return total_re, mu, old_tau, old_phi, V_op, M_op
+        return total_re, mu, V_op, M_op
 
     def _m_step(self, random_effects: dict[int, RandomEffect], residual: Residual, resid_mrg: np.ndarray,
                 total_re: np.ndarray, mu: dict[int, np.ndarray], V_op: VLinearOperator, M_op: ResidualPreconditioner):
@@ -109,19 +109,15 @@ class MERM:
             re.cov[...] = new_tau[k]
         return self
 
-    def _check_convergence(self, random_effects: dict[int, RandomEffect], residual: Residual,
-                           old_tau: dict[int, np.ndarray], old_phi: np.ndarray):
+    def _check_convergence(self):
         """Checks if the model parameters have converged."""
-        phi_change = np.linalg.norm(residual.cov - old_phi) / np.linalg.norm(old_phi)
-        tau_changes = [np.linalg.norm(re.cov - old_tau[k]) / np.linalg.norm(old_tau[k])
-                       for k, re in random_effects.items()]
-        max_param_change = max([phi_change] + tau_changes)
-        return max_param_change, max_param_change < self.tol
+        tol = np.abs((self.log_likelihood[-1] - self.log_likelihood[-2]) / self.log_likelihood[-2])
+        return tol < self.tol
 
     def _run_em_iteration(self, X: np.ndarray, y: np.ndarray, rand_effects: dict[int, RandomEffect], resid: Residual, resid_mrg: np.ndarray):
         """ Run the EM algorithm for fitting the model. """
         # --- E-Step ---
-        total_re, mu, old_tau, old_phi, V_op, M_op = self._e_step(rand_effects, resid, resid_mrg)
+        total_re, mu, V_op, M_op = self._e_step(rand_effects, resid, resid_mrg)
 
         # --- Update marginal residual for M-step ---
         resid_mrg = self.compute_marginal_residual(X, y, total_re.reshape((self.m, self.n)).T)
@@ -129,7 +125,7 @@ class MERM:
         # --- M-Step ---
         self._m_step(rand_effects, resid, resid_mrg, total_re, mu, V_op, M_op)
 
-        return resid_mrg, old_tau, old_phi
+        return resid_mrg
     
     def fit(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, random_slopes: None | dict[int, list[int]] = None):
         """
@@ -147,19 +143,11 @@ class MERM:
         resid_mrg, rand_effects, resid = self.prepare_data(X, y, groups, random_slopes)
         pbar = tqdm(range(1, self.max_iter + 1), desc="Fitting Model", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
         for iter_ in pbar:
-            resid_mrg, old_tau, old_phi = self._run_em_iteration(X, y, rand_effects, resid, resid_mrg)
-            # --- Convergence Check ---
+            resid_mrg = self._run_em_iteration(X, y, rand_effects, resid, resid_mrg)
             if iter_ > 2:
-                change, converged = self._check_convergence(rand_effects, resid, old_tau, old_phi)
-                pbar.set_postfix_str(f"Max Param Change: {change:.2e}")
+                converged = self._check_convergence()
                 if converged:
                     pbar.set_description("Model Converged")
                     self._is_converged = True
                     break
-        
-        V_op = VLinearOperator(rand_effects, resid)
-        M_op = ResidualPreconditioner(resid) if self.precond else None
-        prec_resid, _ = cg(V_op, resid_mrg, M=M_op)
-        final_logL = self.compute_log_likelihood(resid_mrg, prec_resid, V_op)
-        self.log_likelihood.append(final_logL)
         return MERMResult(self, rand_effects, resid)
