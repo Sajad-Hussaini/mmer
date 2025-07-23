@@ -117,7 +117,7 @@ def _compute_C_probe(probe_vector: np.ndarray, k: int, V_op: VLinearOperator, M_
     """ Computes matrix vector product of C @ P, where C=D(Iₘ ⊗ Z)ᵀ V⁻¹(Iₘ ⊗ Z)D."""
     re = V_op.random_effects[k]
     v1 = re.kronZ_D_matvec(probe_vector)
-    v2, _ = cg(V_op, v1, M=M_op)
+    v2, _ = cg(V_op, v1, maxiter=200, M=M_op)
     return re.kronZ_D_T_matvec(v2) * probe_vector
 
 def compute_cov_correction(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner,
@@ -198,7 +198,7 @@ def _estimate_C_block(i: int, probes: np.ndarray, vec: np.ndarray, re: RandomEff
     """ Computes the i-th column of the conditional covariance matrix Σ for lower triangular part. """
     vec[col * block_size : (col + 1) * block_size] = probes[:, i]
     rhs = re.kronZ_D_matvec(vec)
-    x_sol, _ = cg(V_op, rhs, M=M_op)
+    x_sol, _ = cg(V_op, rhs, maxiter=200, M=M_op)
     lower_c = re.kronZ_D_T_matvec(x_sol)[col * block_size:]
     vec[col * block_size : (col + 1) * block_size] = 0
     return lower_c
@@ -240,7 +240,7 @@ def compute_sigma_column(i: int, base_idx: int, vec: np.ndarray, re: RandomEffec
     """ Computes the i-th column of the conditional covariance matrix Σ for lower triangular part. """
     vec[base_idx + i] = 1.0
     rhs = re.kronZ_D_matvec(vec)
-    x_sol, _ = cg(V_op, rhs, M=M_op)
+    x_sol, _ = cg(V_op, rhs, maxiter=200, M=M_op)
     lower_sigma = (re.D_matvec(vec) - re.kronZ_D_T_matvec(x_sol))[col * block_size:]
     vec[base_idx + i] = 0.0
     return lower_sigma
