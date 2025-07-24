@@ -73,15 +73,39 @@ class ResidualPreconditioner(LinearOperator):
         """Enable pickling for multiprocessing."""
         return (self.__class__, (self.cov_inv, self.n, self.m))
     
-# ====================== Stochastic Trace Estimation for Correction ======================
+
+# ====================== Main Adaptive Correction Function ======================
+
+def compute_cov_correction(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, n_jobs: int, backend: str, method: str):
+    """
+    Adaptively computes the uncertainty correction matrices T and W.
+
+    - If the random effect block size (q*o) is smaller than ste_threshold, it uses the
+      exact, deterministic method for maximum accuracy.
+    - If the block size is large, it switches to the fast and stable Stochastic
+      Diagonal Estimation method to ensure performance.
+    """
+    re = V_op.random_effects[k]
+    block_size = re.q * re.o
+    n_probes = min(max(20, block_size // 10), 50)
+    if method == 'detr':
+        # For small problems, the exact method is better and often faster.
+        return compute_cov_correction_detr(k, V_op, M_op, n_jobs, backend)
+    elif method == 'bste':
+        # For medium-sized to large problems, the stochastic block trace method is necessary for performance.
+        return compute_cov_correction_bste(k, V_op, M_op, n_jobs, backend, n_probes)
+    elif method == 'ste':
+        # For very large problems, the stochastic trace method is efficient.
+        return compute_cov_correction_ste(k, V_op, M_op, n_jobs, backend, n_probes)
 
 def _generate_rademacher_probes(n_rows, n_probes, seed=42):
     """Generates random probe vectors from a Rademacher distribution ({-1, 1})."""
     rng = np.random.default_rng(seed)
     return (rng.integers(0, 2, size=(n_rows, n_probes)) * 2 - 1).astype(np.float64)
 
-def compute_cov_correction1(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner,
-                           n_jobs: int, backend: str, n_probes: int = 100):
+# ====================== Stochastic Trace Estimation for Correction ======================
+
+def compute_cov_correction_ste(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, n_jobs: int, backend: str, n_probes: int):
     """
     Computes the uncertainty correction matrices T and W for a given grouping factor k
     using a unified Stochastic Diagonal Estimation procedure.
@@ -117,11 +141,12 @@ def _compute_C_probe(probe_vector: np.ndarray, k: int, V_op: VLinearOperator, M_
     """ Computes matrix vector product of C @ P, where C=D(Iₘ ⊗ Z)ᵀ V⁻¹(Iₘ ⊗ Z)D."""
     re = V_op.random_effects[k]
     v1 = re.kronZ_D_matvec(probe_vector)
-    v2, _ = cg(V_op, v1, maxiter=200, M=M_op)
+    v2, _ = cg(A=V_op, b=v1, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
     return re.kronZ_D_T_matvec(v2) * probe_vector
 
-def compute_cov_correction(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner,
-                           n_jobs: int, backend: str, n_probes: int = 100):
+# ====================== Block Stochastic Trace Estimation for Correction ======================
+
+def compute_cov_correction_bste(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, n_jobs: int, backend: str, n_probes: int):
     """
     Computes the full, symmetric uncertainty correction matrices T: (m, m) and W: (m * q, m * q)
     using Stochastic Block Trace Estimation.
@@ -198,14 +223,14 @@ def _estimate_C_block(i: int, probes: np.ndarray, vec: np.ndarray, re: RandomEff
     """ Computes the i-th column of the conditional covariance matrix Σ for lower triangular part. """
     vec[col * block_size : (col + 1) * block_size] = probes[:, i]
     rhs = re.kronZ_D_matvec(vec)
-    x_sol, _ = cg(V_op, rhs, maxiter=200, M=M_op)
+    x_sol, _ = cg(A=V_op, b=rhs, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
     lower_c = re.kronZ_D_T_matvec(x_sol)[col * block_size:]
     vec[col * block_size : (col + 1) * block_size] = 0
     return lower_c
 
 # ====================== Deterministic for Correction ======================
 
-def compute_cov_correction3(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, n_jobs: int, backend: str):
+def compute_cov_correction_detr(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, n_jobs: int, backend: str):
     """
     Computes the correction to the residual covariance matrix φ and
     random effect covariance matrix τ
@@ -240,7 +265,7 @@ def compute_sigma_column(i: int, base_idx: int, vec: np.ndarray, re: RandomEffec
     """ Computes the i-th column of the conditional covariance matrix Σ for lower triangular part. """
     vec[base_idx + i] = 1.0
     rhs = re.kronZ_D_matvec(vec)
-    x_sol, _ = cg(V_op, rhs, maxiter=200, M=M_op)
+    x_sol, _ = cg(A=V_op, b=rhs, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
     lower_sigma = (re.D_matvec(vec) - re.kronZ_D_T_matvec(x_sol))[col * block_size:]
     vec[base_idx + i] = 0.0
     return lower_sigma

@@ -15,16 +15,21 @@ class MERM:
     Parameters:
         fixed_effects_model: A scikit-learn regressor that supports multi-output regression.
         max_iter: Maximum number iterations (default: 20).
-        tol: Log-likelihood convergence tolerance  (default: 1e-6).
+        tol: Log-likelihood convergence tolerance  (default: 1e-5).
     """
-    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 20, tol: float = 1e-6,
-                 slq_steps: int = 5, slq_probes: int = 5, precond: bool = False, n_jobs: int = 1, backend: str = 'threading'):
+    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 20, tol: float = 1e-5,
+                 slq_steps: int = 5, slq_probes: int = 5, V_conditioner: bool = False, correction_method: str = 'ste', n_jobs: int = 1, backend: str = 'threading'):
         self.fe_model = fixed_effects_model
         self.max_iter = max_iter
         self.tol = tol
         self.slq_steps = slq_steps
         self.slq_probes = slq_probes
-        self.precond = precond
+        self.V_conditioner = V_conditioner
+        self.correction_method = correction_method
+        existing_method = ['ste', 'bste', 'detr']
+        if self.correction_method not in existing_method:
+            raise ValueError(f"Unknown correction method: '{self.correction_method}'. Available methods are {existing_method}.")
+
         self.log_likelihood = []
         self._is_converged = False
         self.n_jobs = n_jobs
@@ -86,7 +91,7 @@ class MERM:
     def _e_step(self, random_effects: dict[int, RandomEffect], residual: Residual, resid_mrg: np.ndarray):
         """Performs the E-step of the EM algorithm."""
         V_op = VLinearOperator(random_effects, residual)
-        M_op = ResidualPreconditioner(residual) if self.precond else None
+        M_op = ResidualPreconditioner(residual) if self.V_conditioner else None
         prec_resid, _ = cg(V_op, resid_mrg, M=M_op)
         final_logL = self.compute_log_likelihood(resid_mrg, prec_resid, V_op)
         self.log_likelihood.append(final_logL)
@@ -100,7 +105,7 @@ class MERM:
         new_tau = {}
         T_sum = np.zeros((self.m, self.m))
         for k, re in random_effects.items():
-            T_k, W_k = compute_cov_correction(k, V_op, M_op, self.n_jobs, self.backend)
+            T_k, W_k = compute_cov_correction(k, V_op, M_op, self.n_jobs, self.backend, self.correction_method)
             np.add(T_sum, T_k, out=T_sum)
             new_tau[k] = re.compute_cov(mu[k], W_k)
 

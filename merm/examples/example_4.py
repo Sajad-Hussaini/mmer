@@ -14,8 +14,8 @@ group_train = np.load(base_path / 'preprocess' / 'group_train.npy', allow_pickle
 group_test = np.load(base_path / 'preprocess' / 'group_test.npy', allow_pickle=True)
 preprocessor = joblib.load(base_path / 'preprocess' / 'preprocessor.joblib')
 fe_model = joblib.load(base_path / 'tuned_model' / 'tuned_mlp_model.joblib')
-
-model = MERM(fe_model, 40, 1e-5, 5, 5, True, 12, 'loky')
+# %%
+model = MERM(fe_model, 40, 1e-5, 5, 5, False, 'bste', 12, 'loky')
 result = model.fit(X_train_processed, y_train_log, group_train, None)
 result.summary()
 # %%
