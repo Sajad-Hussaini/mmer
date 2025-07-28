@@ -17,9 +17,9 @@ y_test_log = np.load(base_path / 'preprocess' / 'y_test_log.npy')
 group_train = np.load(base_path / 'preprocess' / 'group_train.npy', allow_pickle=True)
 group_test = np.load(base_path / 'preprocess' / 'group_test.npy', allow_pickle=True)
 preprocessor = joblib.load(base_path / 'preprocess' / 'preprocessor.joblib')
-result = joblib.load(base_path / 'fitted_model' / 'fitted_model.joblib')
+result = joblib.load(base_path / 'fitted_model' / 'fitted_model_mlp.joblib')
 
-# result.summary()
+result.summary()
 y_pred_train_log = result.predict(X_train_processed)
 y_pred_test_log = result.predict(X_test_processed)
 # %%
@@ -72,7 +72,8 @@ for i, ax in zip(outputs_to_plot, axes):
 plt.tight_layout()
 plt.show()
 # %%
-spectral_periods = np.arange(0.5, 10.5, 0.5)
+spectral_periods = np.array([0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.1, 0.12, 0.15, 0.17, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
+                    0.6, 0.75, 0.9, 1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 7.5, 9.0, 10.0])
 
 # Choose a few records from the test set to plot
 records_to_plot = [10, 50, 100, 150]

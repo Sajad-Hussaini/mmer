@@ -8,7 +8,7 @@ class RandomEffect:
     and manages the covariance structure of the random effects.
     """
     __slots__ = ('n', 'm', 'col', 'covariates_cols', 'q', 'o', 'cov', 'Z', 'ZTZ')
-    def __init__(self, n: int, m: int, group_col: int, covariates_cols: list[int]):
+    def __init__(self, n: int, m: int, group_col: int, covariates_cols: list[int] | None):
         self.n = n
         self.m = m
         self.col = group_col
@@ -20,7 +20,7 @@ class RandomEffect:
         self.ZTZ = None
 
     @staticmethod
-    def design_Z(group: np.ndarray, covariates: np.ndarray = None):
+    def design_Z(group: np.ndarray, covariates: np.ndarray):
         """
         Construct random effects design matrix (Z) for a grouping variable.
             Intercept block: one-hot encoding for group membership

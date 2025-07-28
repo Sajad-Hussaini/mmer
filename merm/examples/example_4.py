@@ -3,6 +3,7 @@ import numpy as np
 import joblib
 from pathlib import Path
 from merm import MERM
+from sklearn.linear_model import LinearRegression
 # %%
 base_path = Path(r"C:\Users\Sajad\Work Folder\merm_example")
 
@@ -20,4 +21,4 @@ result = model.fit(X_train_processed, y_train_log, group_train, None)
 result.summary()
 # %%
 (base_path / 'fitted_model').mkdir(exist_ok=True)
-joblib.dump(result, base_path / 'fitted_model' / 'fitted_model.joblib')
+joblib.dump(result, base_path / 'fitted_model' / 'fitted_model_mlp_ste.joblib')
