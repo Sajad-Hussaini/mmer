@@ -10,18 +10,27 @@ import pandas as pd
 # %%
 base_path = Path(r"C:\Users\Sajad\Work Folder\merm_example")
 
-X_train_processed = np.load(base_path / 'preprocess' / 'X_train_processed.npy')
-X_test_processed = np.load(base_path / 'preprocess' / 'X_test_processed.npy')
+X_train_mlp = np.load(base_path / 'preprocess' / 'X_train_mlp.npy')
+X_test_mlp = np.load(base_path / 'preprocess' / 'X_test_mlp.npy')
 y_train_log = np.load(base_path / 'preprocess' / 'y_train_log.npy')
 y_test_log = np.load(base_path / 'preprocess' / 'y_test_log.npy')
 group_train = np.load(base_path / 'preprocess' / 'group_train.npy', allow_pickle=True)
 group_test = np.load(base_path / 'preprocess' / 'group_test.npy', allow_pickle=True)
-preprocessor = joblib.load(base_path / 'preprocess' / 'preprocessor.joblib')
+preprocessor_mlp = joblib.load(base_path / 'preprocess' / 'preprocessor_mlp.joblib')
 result = joblib.load(base_path / 'fitted_model' / 'fitted_model_mlp.joblib')
 
 result.summary()
-y_pred_train_log = result.predict(X_train_processed)
-y_pred_test_log = result.predict(X_test_processed)
+y_pred_train_log = result.predict(X_train_mlp)
+y_pred_test_log = result.predict(X_test_mlp)
+# %%
+periods = np.array([0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.1, 0.12, 0.15, 0.17, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
+                    0.6, 0.75, 0.9, 1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 7.5, 9.0, 10.0])
+sa_labels = [f"SA({T}s)" for T in periods]
+plt.figure(figsize=(12, 10))
+sns.heatmap(result.resid.to_corr(),  annot=False, cmap='coolwarm',
+            linewidths=.5, xticklabels=sa_labels, yticklabels=sa_labels)
+plt.title('Between-Station Correlation Matrix of SA')
+plt.show()
 # %%
 def evaluate_performance(y_true_log, y_pred_log):
     """Calculates and returns a DataFrame of performance metrics."""
@@ -114,9 +123,9 @@ y_pred_original = (y_pred_test_log)
 # --- Plot against Magnitude (Mw) ---
 plt.figure(figsize=(10, 6))
 # Plot the real data
-sns.scatterplot(x=X_test_processed[:, 0], y=y_test_original[:, period_index], alpha=0.3, label='Observed Data')
+sns.scatterplot(x=X_test_mlp[:, 0], y=y_test_original[:, period_index], alpha=0.3, label='Observed Data')
 # Plot the model's predictions
-sns.scatterplot(x=X_test_processed[:, 0], y=y_pred_original[:, period_index], alpha=0.3, color='red', label='Predicted Value')
+sns.scatterplot(x=X_test_mlp[:, 0], y=y_pred_original[:, period_index], alpha=0.3, color='red', label='Predicted Value')
 
 plt.title(f'{period_label} vs. Magnitude')
 plt.xlabel('Magnitude (Mw)')

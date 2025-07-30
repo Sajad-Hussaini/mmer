@@ -18,8 +18,8 @@ class MERM:
         tol: Log-likelihood convergence tolerance.
     """
     def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 20, tol: float = 1e-5,
-                 slq_steps: int = 5, slq_probes: int = 5, V_conditioner: bool = False, correction_method: str = 'ste',
-                 n_jobs: int = 1, backend: str = 'threading'):
+                 slq_steps: int = 25, slq_probes: int = 25, V_conditioner: bool = False, correction_method: str = 'bste',
+                 n_jobs: int = 1, backend: str = 'loky'):
         self.fe_model = fixed_effects_model
         self.max_iter = max_iter
         self.tol = tol
