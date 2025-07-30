@@ -29,10 +29,11 @@ def objective(trial):
         'hidden_layer_sizes': tuple(layers),
         'activation': trial.suggest_categorical('activation', ['logistic', 'relu', 'tanh']),
         'alpha': trial.suggest_float('alpha', 1e-5, 1e-1, log=True),
-        'solver': trial.suggest_categorical('solver', ['adam', 'sgd']),
-        'learning_rate_init': trial.suggest_float('learning_rate_init', 1e-4, 1e-2, log=True)}
+        'solver': trial.suggest_categorical('solver', ['adam', 'sgd'])}
 
-    if model_params['solver'] == 'sgd':
+    if model_params['solver'] == 'adam':
+        model_params['learning_rate_init'] = trial.suggest_float('learning_rate_init', 1e-4, 1e-2, log=True)
+    else:  # solver is 'sgd'
         model_params['learning_rate'] = trial.suggest_categorical('learning_rate', ['constant', 'adaptive'])
         model_params['momentum'] = trial.suggest_float('momentum', 0.8, 0.99)
 
@@ -43,8 +44,7 @@ def objective(trial):
         if not np.isfinite(score):
             return float('inf')
                  
-    except Exception as e:
-        print(f"Trial failed with error: {e}")
+    except Exception:
         return float('inf')
     
     return -score
