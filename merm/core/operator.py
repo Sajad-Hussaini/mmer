@@ -183,26 +183,23 @@ def _estimate_sigma_block(probes: np.ndarray, k: int, V_op: VLinearOperator, M_o
     o = re.o
     block_size = q * o
     num_blocks = m - col
-    C_blocks = np.empty((num_blocks * block_size, n_probes))
+    diag_C = np.zeros(num_blocks * block_size)
     vec = np.zeros(m * block_size)
     for p_idx in range(n_probes):
-        C_blocks[:, p_idx] = _estimate_C_block(p_idx, probes, vec, re, V_op, M_op, col, block_size)
+        diag_C += _estimate_C_diag(p_idx, probes, vec, re, V_op, M_op, col, block_size, num_blocks)
+    diag_C /= n_probes
+    diag_D = np.concatenate([np.repeat(np.diag(re.cov[r*q:(r+1)*q, col*q:(col+1)*q]), o) for r in range(col, m)])
+    sigma_diag = np.subtract(diag_D, diag_C, out=diag_C)
 
-    diag_C_blocks = np.mean(C_blocks * np.tile(probes, (num_blocks, 1)), axis=1)
-
-    diag_D_blocks = np.concatenate([np.repeat(np.diag(re.cov[r*q:(r+1)*q, col*q:(col+1)*q]), o) for r in range(col, m)])
-    sigma_diag = diag_D_blocks - diag_C_blocks
-
-    sigma_reshaped = sigma_diag.reshape(num_blocks, q * o)
+    sigma_mat  = sigma_diag.reshape(num_blocks, q * o)
     ZTZ_diag = re.ZTZ.diagonal()
-    T_traces = np.einsum('ij,j->i', sigma_reshaped, ZTZ_diag)
-
+    T_traces = sigma_mat.dot(ZTZ_diag)
     W_diag_blocks = sigma_diag.reshape(num_blocks, q, o).sum(axis=2)
 
     return col, T_traces, W_diag_blocks
 
-def _estimate_C_block(i: int, probes: np.ndarray, vec: np.ndarray, re: RandomEffect, V_op: VLinearOperator, M_op: ResidualPreconditioner,
-                         col: int, block_size: int):
+def _estimate_C_diag(i: int, probes: np.ndarray, vec: np.ndarray, re: RandomEffect, V_op: VLinearOperator, M_op: ResidualPreconditioner,
+                         col: int, block_size: int, num_blocks: int):
     """
     Computes the matrix vector product (C @ P), where C=D(Iₘ ⊗ Z)ᵀ V⁻¹(Iₘ ⊗ Z)D.
     It computes the lower triangular part of the block C.
@@ -212,7 +209,7 @@ def _estimate_C_block(i: int, probes: np.ndarray, vec: np.ndarray, re: RandomEff
     x_sol, _ = cg(A=V_op, b=rhs, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
     lower_c = re.kronZ_D_T_matvec(x_sol)[col * block_size:]
     vec[col * block_size : (col + 1) * block_size] = 0
-    return lower_c
+    return (lower_c.reshape(num_blocks, block_size) * probes[:, i]).ravel()
 
 # ====================== Deterministic for Correction ======================
 

@@ -49,8 +49,20 @@ def objective(trial):
     
     return -score
 
+params_to_try = {'n_layers': 3,
+                 'n_units_l0': 424,
+                 'n_units_l1': 215,
+                 'n_units_l2': 361,
+                 'activation': 'relu',
+                 'alpha': 0.007744534577213101,
+                 'solver': 'sgd',
+                 'learning_rate': 'adaptive',
+                 'momentum': 0.977606347871299}
+
 study = optuna.create_study(direction='minimize', sampler=optuna.samplers.TPESampler(seed=42),
                             pruner=optuna.pruners.MedianPruner(n_startup_trials=15))
+study.enqueue_trial(params_to_try)
+
 study.optimize(objective, n_trials=1000)
 # %%
 (base_path / 'tuned_model').mkdir(exist_ok=True)
@@ -65,6 +77,6 @@ for i in range(n_layers):
 best_params['hidden_layer_sizes'] = tuple(layers)
 
 tuned_model = MLPRegressor(random_state=42, max_iter=5000, early_stopping=True, **best_params)
-joblib.dump(tuned_model, base_path / 'tuned_model' / 'tuned_mlp_model2.joblib')
-joblib.dump(study, base_path / 'tuned_model' / 'optuna_study2.joblib')
+joblib.dump(tuned_model, base_path / 'tuned_model' / 'tuned_mlp_model.joblib')
+joblib.dump(study, base_path / 'tuned_model' / 'optuna_study.joblib')
 print("\nStudy and tuned model saved successfully! 🎉")
