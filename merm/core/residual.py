@@ -18,10 +18,10 @@ class Residual:
             ɸ = (S + T) / n
         """
         epsr = eps.reshape((self.m, self.n))
-        S = epsr @ epsr.T
-        np.add(S, T_sum, out=S)
-
-        phi = S / self.n + 1e-6 * np.eye(self.m)
+        phi = epsr @ epsr.T
+        phi += T_sum
+        phi /= self.n
+        phi[np.diag_indices_from(phi)] += 1e-6
         return phi
     
     def full_cov_matvec(self, x_vec: np.ndarray):

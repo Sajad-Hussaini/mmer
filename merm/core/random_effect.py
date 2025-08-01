@@ -93,13 +93,14 @@ class RandomEffect:
         Compute the random effect covariance matrix τ = (U + W) / o
         """
         mur = mu.reshape((self.m * self.q, self.o))
-        U = mur @ mur.T
-        np.add(U, W, out=U)
-        tau = U / self.o + 1e-6 * np.eye(self.m * self.q)
+        tau = mur @ mur.T
+        tau += W
+        tau /= self.o
+        tau[np.diag_indices_from(tau)] += 1e-6
         return tau
 
 # ====================== Matrix-Vector Operations ======================
-
+    
     def kronZ_D_matvec(self, x_vec: np.ndarray):
         """
         Computes the matrix-vector product W @ x_vec, where W = (Iₘ ⊗ Z) D maps a vector from
@@ -109,9 +110,9 @@ class RandomEffect:
         returns:
             1d array (mn,)
         """
-        A_k = self.cov @ x_vec.reshape((self.m * self.q, self.o))
-        B_k = A_k.reshape((self.m, self.q * self.o)) @ self.Z.T
-        return B_k.ravel()
+        A_k = self.D_matvec(x_vec)
+        B_k = self.kronZ_matvec(A_k)
+        return B_k
 
     def kronZ_D_T_matvec(self, x_vec: np.ndarray):
         """
@@ -122,9 +123,9 @@ class RandomEffect:
         returns:
             1d array (mqo,)
         """
-        A_k = x_vec.reshape((self.m, self.n)) @ self.Z
-        B_k = self.cov @ A_k.reshape((self.m * self.q, self.o))
-        return B_k.ravel()
+        A_k = self.kronZ_T_matvec(x_vec)
+        B_k = self.D_matvec(A_k)
+        return B_k
     
     def kronZ_T_matvec(self, x_vec: np.ndarray):
         """
@@ -135,9 +136,9 @@ class RandomEffect:
         returns:
             1d array (mqo,)
         """
-        A_k = x_vec.reshape((self.m, self.n)) @ self.Z
-        return A_k.ravel()
-
+        A_k = (x_vec.reshape((self.m, self.n)) @ self.Z).ravel()
+        return A_k
+    
     def kronZ_matvec(self, x_vec: np.ndarray):
         """
         Computes the matrix-vector product (Iₘ ⊗ Z) @ x_vec maps a vector from
@@ -147,8 +148,8 @@ class RandomEffect:
         returns:
             1d array (mn,)
         """
-        A_k = x_vec.reshape((self.m, self.q * self.o)) @ self.Z.T
-        return A_k.ravel()
+        A_k = (self.Z @ x_vec.reshape((self.m, self.q * self.o)).T).T.ravel()
+        return A_k
     
     def D_matvec(self, x_vec: np.ndarray):
         """
@@ -158,8 +159,8 @@ class RandomEffect:
         returns:
             1d array (mqo,)
         """
-        Dx =  self.cov @ x_vec.reshape((self.m * self.q, self.o))
-        return Dx.ravel()
+        Dx = (self.cov @ x_vec.reshape((self.m * self.q, self.o))).ravel()
+        return Dx
     
     def full_cov_matvec(self, x_vec: np.ndarray):
         """
@@ -171,8 +172,8 @@ class RandomEffect:
         returns:
             1d array (mn,)
         """
-        A_k = self.kronZ_T_matvec(x_vec)
-        B_k = self.kronZ_D_matvec(A_k)
+        A_k = self.kronZ_D_T_matvec(x_vec)
+        B_k = self.kronZ_matvec(A_k)
         return B_k
     
     def to_corr(self):
