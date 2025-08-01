@@ -25,7 +25,7 @@ class MERM:
     """
     def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 20, tol: float = 1e-5,
                  slq_steps: int = 25, slq_probes: int = 25, V_conditioner: bool = False, correction_method: str = 'bste',
-                 n_jobs: int = 1, backend: str = 'loky'):
+                 convergence_criterion: str = 'parameters', n_jobs: int = 1, backend: str = 'loky'):
         self.fe_model = fixed_effects_model
         self.max_iter = max_iter
         self.tol = tol
@@ -36,8 +36,14 @@ class MERM:
         existing_method = ['ste', 'bste', 'detr']
         if self.correction_method not in existing_method:
             raise ValueError(f"Unknown correction method: '{self.correction_method}'. Available methods are {existing_method}.")
+        
+        self.convergence_criterion = convergence_criterion
+        valid_criteria = ['parameters', 'log_likelihood']
+        if self.convergence_criterion not in valid_criteria:
+            raise ValueError(f"convergence_criterion must be one of {valid_criteria}")
 
         self.log_likelihood = []
+        self.track_change = []
         self._is_converged = False
         self.n_jobs = n_jobs
         self.backend = backend
@@ -105,8 +111,9 @@ class MERM:
         V_op = VLinearOperator(random_effects, residual)
         M_op = ResidualPreconditioner(residual) if self.V_conditioner else None
         prec_resid, _ = cg(A=V_op, b=resid_marginal, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
-        final_logL = self.compute_log_likelihood(resid_marginal, prec_resid, V_op)
-        self.log_likelihood.append(final_logL)
+        if self.convergence_criterion == 'log_likelihood':
+            final_logL = self.compute_log_likelihood(resid_marginal, prec_resid, V_op)
+            self.log_likelihood.append(final_logL)
         total_re, mu = self.aggregate_rand_effects(prec_resid, random_effects)
         return total_re, mu, V_op, M_op
 
@@ -119,7 +126,7 @@ class MERM:
         for k, re in enumerate(random_effects):
             T_k, W_k = compute_cov_correction(k, V_op, M_op, self.correction_method, self.n_jobs, self.backend)
             T_sum += T_k
-            new_tau[k] = re.compute_cov(mu[k], W_k)
+            new_tau.append(re.compute_cov(mu[k], W_k))
 
         residual.cov[...] = residual.compute_cov(eps, T_sum)
         for k, re in enumerate(random_effects):
@@ -127,10 +134,17 @@ class MERM:
 
         return self
 
-    def _check_convergence(self):
+    def _check_convergence(self, old_phi: np.ndarray, old_tau: tuple[np.ndarray], rand_effects: tuple[RandomEffect], resid: Residual):
         """Checks if the model parameters have converged."""
-        tol = np.abs((self.log_likelihood[-1] - self.log_likelihood[-2]) / self.log_likelihood[-2])
-        self._is_converged = tol < self.tol
+        if self.convergence_criterion == 'log_likelihood':
+            change = np.abs((self.log_likelihood[-1] - self.log_likelihood[-2]) / self.log_likelihood[-2])
+        elif self.convergence_criterion == 'parameters':
+            param_changes  = [np.linalg.norm(re.cov - tau_k) / np.linalg.norm(tau_k)
+                              for re, tau_k in zip(rand_effects, old_tau)]
+            param_changes.append(np.linalg.norm(resid.cov - old_phi) / np.linalg.norm(old_phi))
+            change = np.max(param_changes)
+        self.track_change.append(change)
+        self._is_converged = change < self.tol
         return self
 
     def _run_em_iteration(self, X: np.ndarray, y: np.ndarray, resid_marginal: np.ndarray, rand_effects: tuple[RandomEffect], resid: Residual):
@@ -163,10 +177,22 @@ class MERM:
         pbar = tqdm(range(1, self.max_iter + 1), desc="Fitting Model",
                     bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
         for iter_ in pbar:
+            if self.convergence_criterion == 'parameters':
+                old_tau = tuple(re.cov.copy() for re in rand_effects)
+                old_phi = resid.cov.copy()
+            else:
+                old_tau = None
+                old_phi = None
+
             self._run_em_iteration(X, y, resid_marginal, rand_effects, resid)
             if iter_ > 2:
-                self._check_convergence()
+                self._check_convergence(old_phi, old_tau, rand_effects, resid)
                 if self._is_converged:
                     pbar.set_description("Model Converged")
                     break
+        
+        V_op = VLinearOperator(rand_effects, resid)
+        M_op = ResidualPreconditioner(resid) if self.V_conditioner else None
+        prec_resid, _ = cg(A=V_op, b=resid_marginal, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
+        self.log_likelihood.append(self.compute_log_likelihood(resid_marginal, prec_resid, V_op))
         return MERMResult(self, rand_effects, resid)

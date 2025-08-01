@@ -15,6 +15,7 @@ class MERMResult:
         self.rand_effects = random_effects
         self.resid = residuals
         self.log_likelihood = MERM.log_likelihood
+        self.track_change = MERM.track_change
         self._is_converged = MERM._is_converged
 
     def predict(self, X: np.ndarray) -> np.ndarray:

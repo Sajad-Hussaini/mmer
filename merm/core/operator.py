@@ -11,7 +11,7 @@ class VLinearOperator(LinearOperator):
     A linear operator that represents the marginal covariance matrix V and its matrix-vector product.
     V = Σ(Iₘ ⊗ Zₖ) Dₖ (Iₘ ⊗ Zₖ)ᵀ + R
     """
-    def __init__(self, random_effects: dict[int, RandomEffect], residual: Residual):
+    def __init__(self, random_effects: tuple[RandomEffect], residual: Residual):
         self.random_effects = random_effects
         self.residual = residual
         super().__init__(dtype=np.float64, shape=(self.residual.m * self.residual.n, self.residual.m * self.residual.n))
@@ -24,8 +24,8 @@ class VLinearOperator(LinearOperator):
             1d array (Mn,)
         """
         Vx = self.residual.full_cov_matvec(x_vec)
-        for re in self.random_effects.values():
-            np.add(Vx, re.full_cov_matvec(x_vec), out=Vx)
+        for re in self.random_effects:
+            Vx += re.full_cov_matvec(x_vec)
         return Vx
 
     def _adjoint(self):
@@ -46,9 +46,9 @@ class ResidualPreconditioner(LinearOperator):
     """
     def __init__(self, residual: Residual | np.ndarray, n=None, m=None):
         if isinstance(residual, np.ndarray):
+            self.cov_inv = residual
             self.n = n
             self.m = m
-            self.cov_inv = residual
         else:
             self.n = residual.n
             self.m = residual.m
@@ -72,21 +72,17 @@ class ResidualPreconditioner(LinearOperator):
         """Enable pickling for multiprocessing."""
         return (self.__class__, (self.cov_inv, self.n, self.m))
     
-
 # ====================== Main Adaptive Correction Function ======================
 
 def compute_cov_correction(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, method: str, n_jobs: int, backend: str):
     """
     Adaptively computes the uncertainty correction matrices T and W.
-
-    - If the random effect block size (q*o) is smaller than ste_threshold, it uses the
-      exact, deterministic method for maximum accuracy.
-    - If the block size is large, it switches to the fast and stable Stochastic
-      Diagonal Estimation method to ensure performance.
+    The method can be 'detr' for deterministic, 'bste' for block stochastic trace estimation,
+    or 'ste' for stochastic trace estimation
     """
     re = V_op.random_effects[k]
     block_size = re.q * re.o
-    n_probes = min(max(20, block_size // 10), 50)
+    n_probes = min(max(20, block_size // 10), 100)
     if method == 'detr':
         # For small problems, the exact method is better and often faster.
         return compute_cov_correction_detr(k, V_op, M_op, n_jobs, backend)
@@ -100,7 +96,10 @@ def compute_cov_correction(k: int, V_op: VLinearOperator, M_op: ResidualPrecondi
 def _generate_rademacher_probes(n_rows, n_probes, seed=42):
     """Generates random probe vectors from a Rademacher distribution ({-1, 1})."""
     rng = np.random.default_rng(seed)
-    return (rng.integers(0, 2, size=(n_rows, n_probes)) * 2 - 1).astype(np.float64)
+    probes = rng.integers(0, 2, size=(n_rows, n_probes), dtype=np.int8)
+    probes *= 2
+    probes -= 1
+    return probes.astype(np.float64)
 
 # ====================== Stochastic Trace Estimation for Correction ======================
 
@@ -108,35 +107,39 @@ def compute_cov_correction_ste(k: int, V_op: VLinearOperator, M_op: ResidualPrec
     """
     Computes the uncertainty correction matrices T: (m, m) and W: (m * q, m * q)
     using the Hutchinson Stochastic Trace Estimation method.
-    It only computes diagonal elements (ignoring off-diagonal elements in T and W)
+    It only computes diagonal elements, ignoring off-diagonal elements in T and W (no issue for m=q=1).
     """
     m = V_op.residual.m
     re = V_op.random_effects[k]
     q, o = re.q, re.o
-    T_diag = np.empty(m)
-    W_diag = np.empty(m * q)
-    probes = _generate_rademacher_probes(m * q * o, n_probes)
+    diag_C = np.zeros(m * q * o)
+    with Parallel(n_jobs=n_jobs, backend=backend, return_as="generator") as parallel:
+        pcp_gen = parallel(delayed(_compute_C_probe)(i, k, V_op, M_op) for i in range(n_probes))
+        for diag_pcp in pcp_gen:
+            diag_C += diag_pcp
 
-    with Parallel(n_jobs=n_jobs, backend=backend) as parallel:
-        pcp = parallel(delayed(_compute_C_probe)(probes[:, i], k, V_op, M_op) for i in range(n_probes))
+    diag_C /= n_probes
+    diag_sigma = np.repeat(np.diag(re.cov), o)
+    diag_sigma -= diag_C
 
-    diag_C = np.column_stack(pcp).mean(axis=1)
-    diag_D = np.repeat(np.diag(re.cov), o)
-    diag_sigma = np.subtract(diag_D, diag_C, out=diag_C)
-
-    W_diag[:] = diag_sigma.reshape((m, q, o)).sum(axis=2).ravel()
+    W_diag = diag_sigma.reshape((m, q, o)).sum(axis=2).ravel()
+    sigma_mat  = diag_sigma.reshape(m, q * o)
     ZTZ_diag = re.ZTZ.diagonal()
-    T_diag[:] = np.einsum('ij,j->i', diag_sigma.reshape(m, q * o), ZTZ_diag)
+    T_diag = sigma_mat.dot(ZTZ_diag)
+
     return np.diag(T_diag), np.diag(W_diag)
 
-def _compute_C_probe(probe_vector: np.ndarray, k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner):
+def _compute_C_probe(probe_index: int, k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner):
     """
     Computes the product of probe vector and matrix vector product P(C @ P), where C=D(Iₘ ⊗ Z)ᵀ V⁻¹(Iₘ ⊗ Z)D.
     """
+    seed = 42 + probe_index
     re = V_op.random_effects[k]
+    probe_vector = _generate_rademacher_probes(re.m * re.q * re.o, 1, seed).ravel()
     v1 = re.kronZ_D_matvec(probe_vector)
     v2, _ = cg(A=V_op, b=v1, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
-    return re.kronZ_D_T_matvec(v2) * probe_vector
+    probe_vector *= re.kronZ_D_T_matvec(v2)
+    return probe_vector
 
 # ====================== Block Stochastic Trace Estimation for Correction ======================
 
@@ -149,14 +152,11 @@ def compute_cov_correction_bste(k: int, V_op: VLinearOperator, M_op: ResidualPre
     It uses the symmetry of the covariance matrix to reduce computations.
     """
     m = V_op.residual.m
-    re = V_op.random_effects[k]
-    q, o = re.q, re.o
-    block_size = q * o
+    q = V_op.random_effects[k].q
     T = np.zeros((m, m))
     W = np.zeros((m * q, m * q))
-    probes = _generate_rademacher_probes(block_size, n_probes)
     with Parallel(n_jobs=n_jobs, backend=backend, return_as="generator") as parallel:
-        results = parallel(delayed(_estimate_sigma_block)(probes, k, V_op, M_op, col) for col in range(m))
+        results = parallel(delayed(cov_correction_per_response_bste)(n_probes, k, V_op, M_op, col) for col in range(m))
 
         for col, T_lower_traces, W_lower_diags in results:
             for i, (trace, W_diag) in enumerate(zip(T_lower_traces, W_lower_diags)):
@@ -172,44 +172,42 @@ def compute_cov_correction_bste(k: int, V_op: VLinearOperator, M_op: ResidualPre
 
     return T, W
 
-def _estimate_sigma_block(probes: np.ndarray, k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, col: int):
+def cov_correction_per_response_bste(n_probes: int, k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, col: int):
     """
     Stochastic Block Trace Estimation method for Cᵢⱼ=Dᵢ(Iₘ ⊗ Z)ᵀ V⁻¹(Iₘ ⊗ Z)Dⱼ for i >= j.
     """
-    n_probes = probes.shape[1]
     m = V_op.residual.m
     re = V_op.random_effects[k]
-    q = re.q
-    o = re.o
+    q, o = re.q, re.o
     block_size = q * o
     num_blocks = m - col
-    diag_C = np.zeros(num_blocks * block_size)
-    vec = np.zeros(m * block_size)
-    for p_idx in range(n_probes):
-        diag_C += _estimate_C_diag(p_idx, probes, vec, re, V_op, M_op, col, block_size, num_blocks)
-    diag_C /= n_probes
-    diag_D = np.concatenate([np.repeat(np.diag(re.cov[r*q:(r+1)*q, col*q:(col+1)*q]), o) for r in range(col, m)])
-    sigma_diag = np.subtract(diag_D, diag_C, out=diag_C)
 
-    sigma_mat  = sigma_diag.reshape(num_blocks, q * o)
+    diag_C = np.zeros(num_blocks * block_size)
+    vec_cg = np.zeros(V_op.shape[0])
+    vec = np.zeros(m * block_size)
+    probe_vector = np.zeros(block_size)
+    for i in range(n_probes):
+        seed = 42 + i
+        probe_vector[...] = _generate_rademacher_probes(block_size, 1, seed).ravel()
+        vec[col * block_size : (col + 1) * block_size] = probe_vector
+        vec_cg[...] = re.kronZ_D_matvec(vec)
+        vec_cg[...], _ = cg(A=V_op, b=vec_cg, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
+        lower_c = re.kronZ_D_T_matvec(vec_cg)[col * block_size:]
+        vec[col * block_size : (col + 1) * block_size] = 0
+        diag_C += (lower_c.reshape(num_blocks, block_size) * probe_vector).ravel()
+
+    diag_C /= n_probes
+    sub_cov = re.cov[col*q:, col*q:(col+1)*q]
+    diags = sub_cov.reshape(num_blocks, q, q).diagonal(axis1=1, axis2=2)
+    diag_sigma = np.repeat(diags, o, axis=1).ravel()
+    diag_sigma -= diag_C
+
     ZTZ_diag = re.ZTZ.diagonal()
+    sigma_mat  = diag_sigma.reshape(num_blocks, q * o)
     T_traces = sigma_mat.dot(ZTZ_diag)
-    W_diag_blocks = sigma_diag.reshape(num_blocks, q, o).sum(axis=2)
+    W_diag_blocks = diag_sigma.reshape(num_blocks, q, o).sum(axis=2)
 
     return col, T_traces, W_diag_blocks
-
-def _estimate_C_diag(i: int, probes: np.ndarray, vec: np.ndarray, re: RandomEffect, V_op: VLinearOperator, M_op: ResidualPreconditioner,
-                         col: int, block_size: int, num_blocks: int):
-    """
-    Computes the matrix vector product (C @ P), where C=D(Iₘ ⊗ Z)ᵀ V⁻¹(Iₘ ⊗ Z)D.
-    It computes the lower triangular part of the block C.
-    """
-    vec[col * block_size : (col + 1) * block_size] = probes[:, i]
-    rhs = re.kronZ_D_matvec(vec)
-    x_sol, _ = cg(A=V_op, b=rhs, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
-    lower_c = re.kronZ_D_T_matvec(x_sol)[col * block_size:]
-    vec[col * block_size : (col + 1) * block_size] = 0
-    return (lower_c.reshape(num_blocks, block_size) * probes[:, i]).ravel()
 
 # ====================== Deterministic for Correction ======================
 
@@ -241,23 +239,6 @@ def compute_cov_correction_detr(k: int, V_op: VLinearOperator, M_op: ResidualPre
 
     return T, W
 
-def compute_sigma_column(i: int, base_idx: int, vec: np.ndarray, re: RandomEffect, V_op: VLinearOperator, M_op: ResidualPreconditioner,
-                         col: int, block_size: int):
-    """ Computes the i-th column of the conditional covariance matrix Σ for lower triangular part. """
-    vec[base_idx + i] = 1.0
-    rhs = re.kronZ_D_matvec(vec)
-    x_sol, _ = cg(A=V_op, b=rhs, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
-    lower_sigma = (re.D_matvec(vec) - re.kronZ_D_T_matvec(x_sol))[col * block_size:]
-    vec[base_idx + i] = 0
-    return lower_sigma
-
-def compute_T_traces(re: RandomEffect, lower_sigma: np.ndarray, num_blocks: int, block_size: int):
-    """
-    computes the traces of the blocks of the uncertainty correction matrix T for one response column
-    Tᵢⱼ = trace((Zₖᵀ Zₖ) Σᵢⱼ)
-    """
-    return [re.ZTZ.multiply(lower_sigma[i * block_size:(i + 1) * block_size, :]).sum() for i in range(num_blocks)]
-
 def cov_correction_per_response(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, col: int):
     """
     Computes the element of the uncertainty correction matrix T that is:
@@ -268,17 +249,23 @@ def cov_correction_per_response(k: int, V_op: VLinearOperator, M_op: ResidualPre
     """
     m = V_op.residual.m
     re = V_op.random_effects[k]
-    q = re.q
-    o = re.o
+    q, o = re.q, re.o
     block_size = q * o
     num_blocks = m - col
     lower_sigma = np.empty((num_blocks * block_size, block_size))
     base_idx = col * block_size
+    vec_cg = np.zeros(V_op.shape[0])
     vec = np.zeros(m * block_size)
     for i in range(block_size):
-        lower_sigma[:, i] = compute_sigma_column(i, base_idx, vec, re, V_op, M_op, col, block_size)
+        vec[base_idx + i] = 1.0
+        vec_cg[...] = re.kronZ_D_matvec(vec)
+        vec_cg[...], _ = cg(A=V_op, b=vec_cg, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
+        lower_sigma[:, i] = (re.D_matvec(vec) - re.kronZ_D_T_matvec(vec_cg))[col * block_size:]
+        vec[base_idx + i] = 0
 
-    T_traces = compute_T_traces(re, lower_sigma, num_blocks, block_size)
-    W_lower_blocks = lower_sigma.reshape(num_blocks, q, o, q, o).sum(axis=(2, 4))
+    sigma_blocks = lower_sigma.reshape(num_blocks, block_size, block_size)
+    elementwise_prod = re.ZTZ.multiply(sigma_blocks)
+    T_traces = elementwise_prod.sum(axis=(1, 2))
+    W_blocks = lower_sigma.reshape(num_blocks, q, o, q, o).sum(axis=(2, 4))
 
-    return col, T_traces, W_lower_blocks
+    return col, T_traces, W_blocks
