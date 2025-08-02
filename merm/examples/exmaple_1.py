@@ -6,7 +6,7 @@ import pandas as pd
 import joblib
 from sklearn.model_selection import GroupShuffleSplit
 from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import RobustScaler, OneHotEncoder, FunctionTransformer
+from sklearn.preprocessing import RobustScaler, OneHotEncoder, FunctionTransformer, StandardScaler
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 
@@ -52,52 +52,41 @@ print(f"Training set: {train_df.shape}, Test set: {test_df.shape}")
 categorical_pipeline = Pipeline(steps=[('imputer', SimpleImputer(strategy='constant', fill_value='Missing')),
                                        ('encoder', OneHotEncoder(drop='first', sparse_output=False, handle_unknown='ignore'))])
 
-linear_pipeline = Pipeline(steps=[('imputer', SimpleImputer(strategy='median'))])
-
 scale_pipeline = Pipeline(steps=[('imputer', SimpleImputer(strategy='median')),
                                  ('scaler', RobustScaler())])
-
-log_pipeline = Pipeline(steps=[('imputer', SimpleImputer(strategy='median')),
-                               ('transformer', FunctionTransformer(np.log, np.exp, validate=True))])
 
 log_scale_pipeline = Pipeline(steps=[('imputer', SimpleImputer(strategy='median')),
                                      ('transformer', FunctionTransformer(np.log, np.exp, validate=True)),
                                      ('scaler', RobustScaler())])
 
-preprocessor_lin = ColumnTransformer(transformers=[('linear', linear_pipeline, linear_vars),
-                                                   ('log_transform', log_pipeline, log_transform_vars),
-                                                   ('categorical', categorical_pipeline, categorical_vars)])
+preprocessor_x = ColumnTransformer(transformers=[('scaled_linear', scale_pipeline, linear_vars),
+                                                 ('log_and_scaled', log_scale_pipeline, log_transform_vars),
+                                                 ('categorical', categorical_pipeline, categorical_vars)])
 
-preprocessor_mlp = ColumnTransformer(transformers=[('scaled_linear', scale_pipeline, linear_vars),
-                                                   ('log_and_scaled', log_scale_pipeline, log_transform_vars),
-                                                   ('categorical', categorical_pipeline, categorical_vars)])
+preprocessor_y = Pipeline(steps=[('transformer', FunctionTransformer(np.log, np.exp, validate=True)),
+                                 ('scaler', StandardScaler())])
 
-X_train_lin = preprocessor_lin.fit_transform(train_df[x_vars])
-X_test_lin = preprocessor_lin.transform(test_df[x_vars])
+X_train = preprocessor_x.fit_transform(train_df[x_vars])
+X_test = preprocessor_x.transform(test_df[x_vars])
 
-X_train_mlp = preprocessor_mlp.fit_transform(train_df[x_vars])
-X_test_mlp = preprocessor_mlp.transform(test_df[x_vars])
-
-y_train = np.log(train_df[y_vars].to_numpy())
-y_test = np.log(test_df[y_vars].to_numpy())
+y_train = preprocessor_y.fit_transform(train_df[y_vars].to_numpy())
+y_test = preprocessor_y.transform(test_df[y_vars].to_numpy())
 
 group_train = train_df[group_vars].to_numpy()
 group_test = test_df[group_vars].to_numpy()
 # %% Saving the processed NumPy arrays and the fitted preprocessor
 (base_path / 'preprocess').mkdir(exist_ok=True)
 
-np.save(base_path / 'preprocess' / 'y_train_log.npy', y_train)
-np.save(base_path / 'preprocess' / 'y_test_log.npy', y_test)
+np.save(base_path / 'preprocess' / 'y_train.npy', y_train)
+np.save(base_path / 'preprocess' / 'y_test.npy', y_test)
+
 np.save(base_path / 'preprocess' / 'group_train.npy', group_train, allow_pickle=True)
 np.save(base_path / 'preprocess' / 'group_test.npy', group_test, allow_pickle=True)
 
-np.save(base_path / 'preprocess' / 'X_train_lin.npy', X_train_lin)
-np.save(base_path / 'preprocess' / 'X_test_lin.npy', X_test_lin)
+np.save(base_path / 'preprocess' / 'X_train.npy', X_train)
+np.save(base_path / 'preprocess' / 'X_test.npy', X_test)
 
-np.save(base_path / 'preprocess' / 'X_train_mlp.npy', X_train_mlp)
-np.save(base_path / 'preprocess' / 'X_test_mlp.npy', X_test_mlp)
-
-joblib.dump(preprocessor_lin, base_path / 'preprocess' / 'preprocessor_lin.joblib')
-joblib.dump(preprocessor_mlp, base_path / 'preprocess' / 'preprocessor_mlp.joblib')
+joblib.dump(preprocessor_x, base_path / 'preprocess' / 'preprocessor_x.joblib')
+joblib.dump(preprocessor_y, base_path / 'preprocess' / 'preprocessor_y.joblib')
 
 print("All processed data and preprocessors have been saved successfully! 🎉")

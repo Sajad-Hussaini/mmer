@@ -24,8 +24,8 @@ class MERM:
         backend: Backend for parallel processing, options are 'loky' or 'threading'.
     """
     def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 20, tol: float = 1e-5,
-                 slq_steps: int = 25, slq_probes: int = 25, V_conditioner: bool = False, correction_method: str = 'bste',
-                 convergence_criterion: str = 'parameters', n_jobs: int = 1, backend: str = 'loky'):
+                 slq_steps: int = 25, slq_probes: int = 25, V_conditioner: bool = True, correction_method: str = 'bste',
+                 convergence_criterion: str = 'norm', n_jobs: int = 1, backend: str = 'loky'):
         self.fe_model = fixed_effects_model
         self.max_iter = max_iter
         self.tol = tol
@@ -38,7 +38,7 @@ class MERM:
             raise ValueError(f"Unknown correction method: '{self.correction_method}'. Available methods are {existing_method}.")
         
         self.convergence_criterion = convergence_criterion
-        valid_criteria = ['parameters', 'log_likelihood']
+        valid_criteria = ['norm', 'log_lh']
         if self.convergence_criterion not in valid_criteria:
             raise ValueError(f"convergence_criterion must be one of {valid_criteria}")
 
@@ -111,7 +111,7 @@ class MERM:
         V_op = VLinearOperator(random_effects, residual)
         M_op = ResidualPreconditioner(residual) if self.V_conditioner else None
         prec_resid, _ = cg(A=V_op, b=resid_marginal, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
-        if self.convergence_criterion == 'log_likelihood':
+        if self.convergence_criterion == 'log_lh':
             final_logL = self.compute_log_likelihood(resid_marginal, prec_resid, V_op)
             self.log_likelihood.append(final_logL)
         total_re, mu = self.aggregate_rand_effects(prec_resid, random_effects)
@@ -136,9 +136,9 @@ class MERM:
 
     def _check_convergence(self, old_phi: np.ndarray, old_tau: tuple[np.ndarray], rand_effects: tuple[RandomEffect], resid: Residual):
         """Checks if the model parameters have converged."""
-        if self.convergence_criterion == 'log_likelihood':
+        if self.convergence_criterion == 'log_lh':
             change = np.abs((self.log_likelihood[-1] - self.log_likelihood[-2]) / self.log_likelihood[-2])
-        elif self.convergence_criterion == 'parameters':
+        elif self.convergence_criterion == 'norm':
             param_changes  = [np.linalg.norm(re.cov - tau_k) / np.linalg.norm(tau_k)
                               for re, tau_k in zip(rand_effects, old_tau)]
             param_changes.append(np.linalg.norm(resid.cov - old_phi) / np.linalg.norm(old_phi))
@@ -177,7 +177,7 @@ class MERM:
         pbar = tqdm(range(1, self.max_iter + 1), desc="Fitting Model",
                     bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
         for iter_ in pbar:
-            if self.convergence_criterion == 'parameters':
+            if self.convergence_criterion == 'norm':
                 old_tau = tuple(re.cov.copy() for re in rand_effects)
                 old_phi = resid.cov.copy()
             else:
