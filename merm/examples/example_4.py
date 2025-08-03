@@ -13,7 +13,7 @@ y_train = np.load(base_path / 'preprocess' / 'y_train.npy')
 group_train = np.load(base_path / 'preprocess' / 'group_train.npy', allow_pickle=True)
 # fe_model = joblib.load(base_path / 'tuned_model' / 'tuned_mlp_model.joblib')
 # %%
-model = MERM(LinearRegression(), 60, 1e-4, 50, 50, True, 'bste', 'parameters', 18, 'loky')
+model = MERM(LinearRegression(), 60, 1e-4, 50, 50, True, 'bste', 'norm', 18, 'loky')
 result = model.fit(X_train, y_train, group_train, None)
 result.summary()
 # %%

@@ -10,18 +10,19 @@ import pandas as pd
 # %%
 base_path = Path(r"C:\Users\Sajad\Work Folder\merm_example")
 
-X_train_mlp = np.load(base_path / 'preprocess' / 'X_train_mlp.npy')
-X_test_mlp = np.load(base_path / 'preprocess' / 'X_test_mlp.npy')
-y_train_log = np.load(base_path / 'preprocess' / 'y_train_log.npy')
-y_test_log = np.load(base_path / 'preprocess' / 'y_test_log.npy')
+X_train = np.load(base_path / 'preprocess' / 'X_train.npy')
+X_test = np.load(base_path / 'preprocess' / 'X_test.npy')
+y_train = np.load(base_path / 'preprocess' / 'y_train.npy')
+y_test = np.load(base_path / 'preprocess' / 'y_test.npy')
 group_train = np.load(base_path / 'preprocess' / 'group_train.npy', allow_pickle=True)
 group_test = np.load(base_path / 'preprocess' / 'group_test.npy', allow_pickle=True)
-preprocessor_mlp = joblib.load(base_path / 'preprocess' / 'preprocessor_mlp.joblib')
+preprocessor_x = joblib.load(base_path / 'preprocess' / 'preprocessor_x.joblib')
+preprocessor_y = joblib.load(base_path / 'preprocess' / 'preprocessor_y.joblib')
 result = joblib.load(base_path / 'fitted_model' / 'fitted_model_mlp.joblib')
 
 result.summary()
-y_pred_train_log = result.predict(X_train_mlp)
-y_pred_test_log = result.predict(X_test_mlp)
+y_pred_train_prc = result.predict(X_train)
+y_pred_test_prc = result.predict(X_test)
 # %%
 periods = np.array([0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.1, 0.12, 0.15, 0.17, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
                     0.6, 0.75, 0.9, 1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 7.5, 9.0, 10.0])
@@ -55,8 +56,8 @@ def evaluate_performance(y_true_log, y_pred_log):
     }
     return pd.Series(metrics)
 # %%
-train_metrics = evaluate_performance(y_train_log, y_pred_train_log)
-test_metrics = evaluate_performance(y_test_log, y_pred_test_log)
+train_metrics = evaluate_performance(y_train, y_pred_train_prc)
+test_metrics = evaluate_performance(y_test, y_pred_test_prc)
 
 # Display results side-by-side for easy comparison
 comparison_df = pd.DataFrame({'Train': train_metrics, 'Test': test_metrics})
@@ -68,8 +69,8 @@ fig, axes = plt.subplots(2, 2, figsize=(12, 10))
 axes = axes.flatten()
 
 for i, ax in zip(outputs_to_plot, axes):
-    actual = y_test_log[:, i]
-    predicted = y_pred_test_log[:, i]
+    actual = y_test[:, i]
+    predicted = y_pred_test_prc[:, i]
     
     sns.scatterplot(x=actual, y=predicted, alpha=0.5, ax=ax)
     ax.plot([actual.min(), actual.max()], [actual.min(), actual.max()], 'r--', lw=2)
@@ -90,8 +91,8 @@ fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 axes = axes.flatten()
 
 # Use the original scale for physical interpretation
-y_test_original = np.exp(y_test_log)
-y_pred_original = np.exp(y_pred_test_log)
+y_test_original = np.exp(y_test)
+y_pred_original = np.exp(y_pred_test_prc)
 
 for i, ax in zip(records_to_plot, axes):
     # Plot observed spectrum
@@ -117,15 +118,15 @@ period_index = 10
 period_label = 'SA (T=1.0s)'
 
 # Use data on the original scale for intuition
-y_test_original = (y_test_log)
-y_pred_original = (y_pred_test_log)
+y_test_original = (y_test)
+y_pred_original = (y_pred_test_prc)
 
 # --- Plot against Magnitude (Mw) ---
 plt.figure(figsize=(10, 6))
 # Plot the real data
-sns.scatterplot(x=X_test_mlp[:, 0], y=y_test_original[:, period_index], alpha=0.3, label='Observed Data')
+sns.scatterplot(x=X_test[:, 0], y=y_test_original[:, period_index], alpha=0.3, label='Observed Data')
 # Plot the model's predictions
-sns.scatterplot(x=X_test_mlp[:, 0], y=y_pred_original[:, period_index], alpha=0.3, color='red', label='Predicted Value')
+sns.scatterplot(x=X_test[:, 0], y=y_pred_original[:, period_index], alpha=0.3, color='red', label='Predicted Value')
 
 plt.title(f'{period_label} vs. Magnitude')
 plt.xlabel('Magnitude (Mw)')

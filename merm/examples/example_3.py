@@ -8,8 +8,8 @@ from pathlib import Path
 # %%
 base_path = Path(r"C:\Users\Sajad\Work Folder\merm_example")
 
-X_train_mlp = np.load(base_path / 'preprocess' / 'X_train_mlp.npy')
-y_train_log = np.load(base_path / 'preprocess' / 'y_train_log.npy')
+X_train = np.load(base_path / 'preprocess' / 'X_train.npy')
+y_train = np.load(base_path / 'preprocess' / 'y_train.npy')
 
 def objective(trial):
     """
@@ -19,10 +19,10 @@ def objective(trial):
     n_layers = trial.suggest_int('n_layers', 1, 4)
     layers = []
 
-    units = trial.suggest_int('n_units_l0', 10, 500, log=True)
+    units = trial.suggest_int('n_units_l0', 10, 500)
     layers.append(units)
     for i in range(1, n_layers):
-        units = trial.suggest_int(f'n_units_l{i}', max(10, int(units * 0.25)), min(500, int(units * 1.75)), log=True)
+        units = trial.suggest_int(f'n_units_l{i}', max(10, int(units * 0.2)), min(500, int(units * 1.8)))
         layers.append(units)
     
     model_params = {
@@ -40,7 +40,7 @@ def objective(trial):
     model = MLPRegressor(random_state=42, max_iter=5000, early_stopping=True, **model_params)
     kf = KFold(n_splits=5, shuffle=True, random_state=42)
     try:
-        score = cross_val_score(model, X_train_mlp, y_train_log, cv=kf, scoring='neg_mean_squared_error', n_jobs=-1).mean()
+        score = cross_val_score(model, X_train, y_train, cv=kf, scoring='neg_mean_squared_error', n_jobs=-1).mean()
         if not np.isfinite(score):
             return float('inf')
                  
@@ -49,21 +49,21 @@ def objective(trial):
     
     return -score
 
-params_to_try = {'n_layers': 3,
-                 'n_units_l0': 424,
-                 'n_units_l1': 215,
-                 'n_units_l2': 361,
-                 'activation': 'relu',
-                 'alpha': 0.007744534577213101,
-                 'solver': 'sgd',
-                 'learning_rate': 'adaptive',
-                 'momentum': 0.977606347871299}
+# params_to_try = {'n_layers': 3,
+#                  'n_units_l0': 424,
+#                  'n_units_l1': 215,
+#                  'n_units_l2': 361,
+#                  'activation': 'relu',
+#                  'alpha': 0.007744534577213101,
+#                  'solver': 'sgd',
+#                  'learning_rate': 'adaptive',
+#                  'momentum': 0.977606347871299}
 
 study = optuna.create_study(direction='minimize', sampler=optuna.samplers.TPESampler(seed=42),
                             pruner=optuna.pruners.MedianPruner(n_startup_trials=15))
-study.enqueue_trial(params_to_try)
+# study.enqueue_trial(params_to_try)
 
-study.optimize(objective, n_trials=1000)
+study.optimize(objective, n_trials=500)
 # %%
 (base_path / 'tuned_model').mkdir(exist_ok=True)
 
