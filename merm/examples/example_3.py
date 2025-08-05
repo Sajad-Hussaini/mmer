@@ -1,12 +1,13 @@
 # %%
 import optuna
 from sklearn.neural_network import MLPRegressor
+from sklearn.multioutput import MultiOutputRegressor
 from sklearn.model_selection import cross_val_score, KFold
 import numpy as np
 import joblib
 from pathlib import Path
 # %%
-base_path = Path(r"C:\Users\Sajad\Work Folder\merm_example")
+base_path = Path("/home/Sajad/WorkFolder/merm_example")
 
 X_train = np.load(base_path / 'preprocess' / 'X_train.npy')
 y_train = np.load(base_path / 'preprocess' / 'y_train.npy')
@@ -16,10 +17,10 @@ def objective(trial):
     Objective function for Optuna to optimize the MLPRegressor hyperparameters.
     This function defines the hyperparameters to be tuned and evaluates the model using cross-validation.
     """
-    n_layers = trial.suggest_int('n_layers', 1, 4)
+    n_layers = trial.suggest_int('n_layers', 1, 2)
     layers = []
 
-    units = trial.suggest_int('n_units_l0', 10, 500)
+    units = trial.suggest_int('n_units_l0', 10, 300)
     layers.append(units)
     for i in range(1, n_layers):
         units = trial.suggest_int(f'n_units_l{i}', max(10, int(units * 0.2)), min(500, int(units * 1.8)))
@@ -28,7 +29,7 @@ def objective(trial):
     model_params = {
         'hidden_layer_sizes': tuple(layers),
         'activation': trial.suggest_categorical('activation', ['logistic', 'relu', 'tanh']),
-        'alpha': trial.suggest_float('alpha', 1e-5, 1e-1, log=True),
+        'alpha': trial.suggest_float('alpha', 1e-3, 1.0, log=True),
         'solver': trial.suggest_categorical('solver', ['adam', 'sgd'])}
 
     if model_params['solver'] == 'adam':
@@ -37,10 +38,11 @@ def objective(trial):
         model_params['learning_rate'] = trial.suggest_categorical('learning_rate', ['constant', 'adaptive'])
         model_params['momentum'] = trial.suggest_float('momentum', 0.8, 0.99)
 
-    model = MLPRegressor(random_state=42, max_iter=5000, early_stopping=True, **model_params)
+    basemodel = MLPRegressor(random_state=42, max_iter=5000, early_stopping=True, warm_start=True, **model_params)
+    fullmodel = MultiOutputRegressor(basemodel, n_jobs=-1)
     kf = KFold(n_splits=5, shuffle=True, random_state=42)
     try:
-        score = cross_val_score(model, X_train, y_train, cv=kf, scoring='neg_mean_squared_error', n_jobs=-1).mean()
+        score = cross_val_score(fullmodel, X_train, y_train, cv=kf, scoring='neg_mean_squared_error', n_jobs=-1).mean()
         if not np.isfinite(score):
             return float('inf')
                  
@@ -49,19 +51,8 @@ def objective(trial):
     
     return -score
 
-# params_to_try = {'n_layers': 3,
-#                  'n_units_l0': 424,
-#                  'n_units_l1': 215,
-#                  'n_units_l2': 361,
-#                  'activation': 'relu',
-#                  'alpha': 0.007744534577213101,
-#                  'solver': 'sgd',
-#                  'learning_rate': 'adaptive',
-#                  'momentum': 0.977606347871299}
-
 study = optuna.create_study(direction='minimize', sampler=optuna.samplers.TPESampler(seed=42),
                             pruner=optuna.pruners.MedianPruner(n_startup_trials=15))
-# study.enqueue_trial(params_to_try)
 
 study.optimize(objective, n_trials=500)
 # %%
