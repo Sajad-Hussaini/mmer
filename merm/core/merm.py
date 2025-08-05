@@ -109,8 +109,19 @@ class MERM:
     def _e_step(self, resid_marginal: np.ndarray, random_effects: tuple[RandomEffect], residual: Residual):
         """Performs the E-step of the EM algorithm."""
         V_op = VLinearOperator(random_effects, residual)
-        M_op = ResidualPreconditioner(residual) if self.V_conditioner else None
+        if self.V_conditioner:
+            try:
+                M_op = ResidualPreconditioner(residual)
+            except Exception:
+                print("Warning: Residual covariance is singular. Reusing previous preconditioner.")
+                M_op = getattr(self, '_last_stable_M_op', None) 
+        else:
+            M_op = None
         prec_resid, _ = cg(A=V_op, b=resid_marginal, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
+        
+        if self.V_conditioner and M_op is not None:
+            self._last_stable_M_op = M_op
+
         if self.convergence_criterion == 'log_lh':
             final_logL = self.compute_log_likelihood(resid_marginal, prec_resid, V_op)
             self.log_likelihood.append(final_logL)
