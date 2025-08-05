@@ -67,7 +67,7 @@ for i in range(n_layers):
         layers.append(best_params.pop(layer_key))
 best_params['hidden_layer_sizes'] = tuple(layers)
 
-tuned_model = MLPRegressor(random_state=42, max_iter=5000, early_stopping=True, **best_params)
+tuned_model = MLPRegressor(random_state=42, max_iter=5000, early_stopping=True, warm_start=True, **best_params)
 joblib.dump(tuned_model, base_path / 'tuned_model' / 'tuned_mlp_model.joblib')
 joblib.dump(study, base_path / 'tuned_model' / 'optuna_study.joblib')
 print("\nStudy and tuned model saved successfully! 🎉")
