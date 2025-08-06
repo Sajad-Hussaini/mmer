@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.sparse.linalg import cg
 from scipy.linalg import solve
-from sklearn.multioutput import MultiOutputRegressor
+from sklearn.base import RegressorMixin
 from tqdm import tqdm
 from .operator import VLinearOperator, ResidualPreconditioner, compute_cov_correction
 from ..lanczos_algorithm import slq
@@ -19,20 +19,20 @@ class MERM:
         tol: Log-likelihood convergence tolerance.
         slq_steps: Number of steps for SLQ approximation.
         slq_probes: Number of probes for SLQ approximation.
-        V_conditioner: Whether to use a preconditioner for CG solver with marginal covariance.
+        preconditioner: Whether to use a preconditioner for CG solver with marginal covariance.
         correction_method: Method for covariance correction, options are 'ste', 'bste', or 'detr'.
         n_jobs: Number of parallel jobs for SLQ computation and covariance correction.
         backend: Backend for parallel processing, options are 'loky' or 'threading'.
     """
-    def __init__(self, fixed_effects_model: MultiOutputRegressor, max_iter: int = 20, tol: float = 1e-5,
-                 slq_steps: int = 25, slq_probes: int = 25, V_conditioner: bool = True, correction_method: str = 'bste',
+    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 20, tol: float = 1e-5,
+                 slq_steps: int = 25, slq_probes: int = 25, preconditioner: bool = True, correction_method: str = 'bste',
                  convergence_criterion: str = 'norm', n_jobs: int = 1, backend: str = 'loky'):
         self.fe_model = fixed_effects_model
         self.max_iter = max_iter
         self.tol = tol
         self.slq_steps = slq_steps
         self.slq_probes = slq_probes
-        self.V_conditioner = V_conditioner
+        self.preconditioner = preconditioner
         self.correction_method = correction_method
         existing_method = ['ste', 'bste', 'detr']
         if self.correction_method not in existing_method:
@@ -110,19 +110,16 @@ class MERM:
     def _e_step(self, resid_marginal: np.ndarray, random_effects: tuple[RandomEffect], residual: Residual):
         """Performs the E-step of the EM algorithm."""
         V_op = VLinearOperator(random_effects, residual)
-        if self.V_conditioner:
+        if self.preconditioner:
             try:
                 resid_cov_inv = solve(residual.cov, np.eye(self.m), assume_a='pos')
                 M_op = ResidualPreconditioner(resid_cov_inv, self.n, self.m)
             except Exception:
-                print("Warning: Residual covariance is singular. Reusing previous preconditioner.")
-                M_op = getattr(self, '_last_stable_M_op', None) 
+                print("Warning: Residual covariance is singular. Using None.")
+                M_op = None
         else:
             M_op = None
         prec_resid, _ = cg(A=V_op, b=resid_marginal, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
-        
-        if self.V_conditioner and M_op is not None:
-            self._last_stable_M_op = M_op
 
         if self.convergence_criterion == 'log_lh':
             final_logL = self.compute_log_likelihood(resid_marginal, prec_resid, V_op)
@@ -205,13 +202,13 @@ class MERM:
                     break
         
         V_op = VLinearOperator(rand_effects, resid)
-        if self.V_conditioner:
+        if self.preconditioner:
             try:
                 resid_cov_inv = solve(resid.cov, np.eye(self.m), assume_a='pos')
                 M_op = ResidualPreconditioner(resid_cov_inv, self.n, self.m)
             except Exception:
-                print("Warning: Residual covariance is singular. Reusing previous preconditioner.")
-                M_op = getattr(self, '_last_stable_M_op', None) 
+                print("Warning: Residual covariance is singular. Using None.")
+                M_op = None
         else:
             M_op = None
         prec_resid, _ = cg(A=V_op, b=resid_marginal, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)

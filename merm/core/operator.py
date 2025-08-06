@@ -35,7 +35,6 @@ class VLinearOperator(LinearOperator):
         """Enable pickling for multiprocessing."""
         return (self.__class__, (self.random_effects, self.residual))
 
-
 class ResidualPreconditioner(LinearOperator):
     """
     The Lightweight Preconditioner: P⁻¹ = R⁻¹ = φ⁻¹ ⊗ Iₙ
