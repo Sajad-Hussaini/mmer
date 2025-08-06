@@ -67,7 +67,7 @@ def logdet(V_op: VLinearOperator, lanczos_steps: int, num_probes: int, n_jobs: i
     # Parallel executes the tasks and returns a generator.
     # np.sum consumes the results from the generator as they become available.
     with parallel_config(backend=backend, n_jobs=n_jobs):
-        result = Parallel()(delayed(slq_probe)(V_op, lanczos_steps, int(s.generate_state(1)[0])) for s in seeds)
-    logdet_est = sum(result)
+        result = Parallel(return_as="generator")(delayed(slq_probe)(V_op, lanczos_steps, int(s.generate_state(1)[0])) for s in seeds)
+        logdet_est = sum(result)
     # The final estimate is the average of the probe results, scaled by the matrix dimension.
     return dim * logdet_est / num_probes

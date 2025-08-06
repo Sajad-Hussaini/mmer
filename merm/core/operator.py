@@ -106,8 +106,8 @@ def compute_cov_correction_ste(k: int, V_op: VLinearOperator, M_op: ResidualPrec
     re = V_op.random_effects[k]
     q, o = re.q, re.o
     diag_C = np.zeros(m * q * o)
-    with Parallel(n_jobs=n_jobs, backend=backend, return_as="generator") as parallel:
-        pcp_gen = parallel(delayed(_compute_C_probe)(i, k, V_op, M_op) for i in range(n_probes))
+    with parallel_config(backend=backend, n_jobs=n_jobs):
+        pcp_gen = Parallel(return_as="generator")(delayed(_compute_C_probe)(i, k, V_op, M_op) for i in range(n_probes))
         for diag_pcp in pcp_gen:
             diag_C += diag_pcp
 
@@ -149,19 +149,19 @@ def compute_cov_correction_bste(k: int, V_op: VLinearOperator, M_op: ResidualPre
     T = np.zeros((m, m))
     W = np.zeros((m * q, m * q))
     with parallel_config(backend=backend, n_jobs=n_jobs):
-        results = Parallel()(delayed(cov_correction_per_response_bste)(n_probes, k, V_op, M_op, col) for col in range(m))
+        results = Parallel(return_as="generator")(delayed(cov_correction_per_response_bste)(n_probes, k, V_op, M_op, col) for col in range(m))
 
-    for col, T_lower_traces, W_lower_diags in results:
-        for i, (trace, W_diag) in enumerate(zip(T_lower_traces, W_lower_diags)):
-            row = col + i
-            # --- Assemble T ---
-            T[col, row] = T[row, col] = trace
-            # --- Assemble W ---
-            r_slice = slice(row * q, (row + 1) * q)
-            c_slice = slice(col * q, (col + 1) * q)
-            np.fill_diagonal(W[r_slice, c_slice], W_diag)
-            if row != col:
-                np.fill_diagonal(W[c_slice, r_slice], W_diag)
+        for col, T_lower_traces, W_lower_diags in results:
+            for i, (trace, W_diag) in enumerate(zip(T_lower_traces, W_lower_diags)):
+                row = col + i
+                # --- Assemble T ---
+                T[col, row] = T[row, col] = trace
+                # --- Assemble W ---
+                r_slice = slice(row * q, (row + 1) * q)
+                c_slice = slice(col * q, (col + 1) * q)
+                np.fill_diagonal(W[r_slice, c_slice], W_diag)
+                if row != col:
+                    np.fill_diagonal(W[c_slice, r_slice], W_diag)
 
     return T, W
 
@@ -215,8 +215,8 @@ def compute_cov_correction_detr(k: int, V_op: VLinearOperator, M_op: ResidualPre
     q = V_op.random_effects[k].q
     T = np.zeros((m, m))
     W = np.zeros((m * q, m * q))
-    with Parallel(n_jobs=n_jobs, backend=backend, return_as="generator") as parallel:
-        results = parallel(delayed(cov_correction_per_response)(k, V_op, M_op, col) for col in range(m))
+    with parallel_config(backend=backend, n_jobs=n_jobs):
+        results = Parallel(return_as="generator")(delayed(cov_correction_per_response)(k, V_op, M_op, col) for col in range(m))
 
         for col, T_lower_traces, W_lower_blocks in results:
             for i, (trace, W_block) in enumerate(zip(T_lower_traces, W_lower_blocks)):
