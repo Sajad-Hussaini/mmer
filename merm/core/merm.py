@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.sparse.linalg import cg
+from scipy.linalg import solve
 from sklearn.multioutput import MultiOutputRegressor
 from tqdm import tqdm
 from .operator import VLinearOperator, ResidualPreconditioner, compute_cov_correction
@@ -111,7 +112,8 @@ class MERM:
         V_op = VLinearOperator(random_effects, residual)
         if self.V_conditioner:
             try:
-                M_op = ResidualPreconditioner(residual)
+                resid_cov_inv = solve(residual.cov, np.eye(self.m), assume_a='pos')
+                M_op = ResidualPreconditioner(resid_cov_inv, self.n, self.m)
             except Exception:
                 print("Warning: Residual covariance is singular. Reusing previous preconditioner.")
                 M_op = getattr(self, '_last_stable_M_op', None) 
@@ -203,7 +205,15 @@ class MERM:
                     break
         
         V_op = VLinearOperator(rand_effects, resid)
-        M_op = ResidualPreconditioner(resid) if self.V_conditioner else None
+        if self.V_conditioner:
+            try:
+                resid_cov_inv = solve(resid.cov, np.eye(self.m), assume_a='pos')
+                M_op = ResidualPreconditioner(resid_cov_inv, self.n, self.m)
+            except Exception:
+                print("Warning: Residual covariance is singular. Reusing previous preconditioner.")
+                M_op = getattr(self, '_last_stable_M_op', None) 
+        else:
+            M_op = None
         prec_resid, _ = cg(A=V_op, b=resid_marginal, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
         self.log_likelihood.append(self.compute_log_likelihood(resid_marginal, prec_resid, V_op))
         return MERMResult(self, rand_effects, resid)

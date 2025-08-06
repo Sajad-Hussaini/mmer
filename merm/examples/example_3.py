@@ -20,26 +20,23 @@ def objective(trial):
     n_layers = trial.suggest_int('n_layers', 1, 2)
     layers = []
 
-    units = trial.suggest_int('n_units_l0', 10, 300)
+    units = trial.suggest_int('n_units_l0', 10, 200)
     layers.append(units)
     for i in range(1, n_layers):
-        units = trial.suggest_int(f'n_units_l{i}', max(10, int(units * 0.2)), min(500, int(units * 1.8)))
+        units = trial.suggest_int(f'n_units_l{i}', max(10, int(units * 0.2)), min(200, int(units * 1.8)))
         layers.append(units)
     
     model_params = {
         'hidden_layer_sizes': tuple(layers),
         'activation': trial.suggest_categorical('activation', ['logistic', 'relu', 'tanh']),
-        'alpha': trial.suggest_float('alpha', 1e-3, 1.0, log=True),
-        'solver': trial.suggest_categorical('solver', ['adam', 'sgd'])}
+        'alpha': trial.suggest_float('alpha', 1e-3, 0.5, log=True),
+        'solver': trial.suggest_categorical('solver', ['adam'])}
 
     if model_params['solver'] == 'adam':
         model_params['learning_rate_init'] = trial.suggest_float('learning_rate_init', 1e-4, 1e-2, log=True)
-    else:  # solver is 'sgd'
-        model_params['learning_rate'] = trial.suggest_categorical('learning_rate', ['constant', 'adaptive'])
-        model_params['momentum'] = trial.suggest_float('momentum', 0.8, 0.99)
 
-    basemodel = MLPRegressor(random_state=42, max_iter=5000, early_stopping=True, warm_start=True, **model_params)
-    fullmodel = MultiOutputRegressor(basemodel, n_jobs=-1)
+    fullmodel = MLPRegressor(random_state=42, max_iter=5000, early_stopping=True, warm_start=True, **model_params)
+    # fullmodel = MultiOutputRegressor(basemodel, n_jobs=-1)
     kf = KFold(n_splits=5, shuffle=True, random_state=42)
     try:
         score = cross_val_score(fullmodel, X_train, y_train, cv=kf, scoring='neg_mean_squared_error', n_jobs=-1).mean()

@@ -1,7 +1,6 @@
 import numpy as np
 from scipy.sparse.linalg import LinearOperator
-from scipy.linalg import solve
-from joblib import Parallel, delayed
+from joblib import Parallel, delayed, parallel_config
 from scipy.sparse.linalg import cg
 from .residual import Residual
 from .random_effect import RandomEffect
@@ -44,16 +43,10 @@ class ResidualPreconditioner(LinearOperator):
     This is the simplest and cheapest preconditioner. It approximates the full
     covariance V with only its residual component R, ignoring all random effects.
     """
-    def __init__(self, residual: Residual | np.ndarray, n=None, m=None):
-        if isinstance(residual, np.ndarray):
-            self.cov_inv = residual
-            self.n = n
-            self.m = m
-        else:
-            self.n = residual.n
-            self.m = residual.m
-            self.cov_inv = solve(residual.cov, np.eye(self.m), assume_a='pos')
-
+    def __init__(self, resid_cov_inv: np.ndarray, n: int, m: int):
+        self.cov_inv = resid_cov_inv
+        self.n = n
+        self.m = m
         super().__init__(dtype=np.float64, shape=(self.m * self.n, self.m * self.n))
 
     def _matvec(self, x_vec: np.ndarray):
@@ -155,20 +148,20 @@ def compute_cov_correction_bste(k: int, V_op: VLinearOperator, M_op: ResidualPre
     q = V_op.random_effects[k].q
     T = np.zeros((m, m))
     W = np.zeros((m * q, m * q))
-    with Parallel(n_jobs=n_jobs, backend=backend, return_as="generator") as parallel:
-        results = parallel(delayed(cov_correction_per_response_bste)(n_probes, k, V_op, M_op, col) for col in range(m))
+    with parallel_config(backend=backend, n_jobs=n_jobs):
+        results = Parallel()(delayed(cov_correction_per_response_bste)(n_probes, k, V_op, M_op, col) for col in range(m))
 
-        for col, T_lower_traces, W_lower_diags in results:
-            for i, (trace, W_diag) in enumerate(zip(T_lower_traces, W_lower_diags)):
-                row = col + i
-                # --- Assemble T ---
-                T[col, row] = T[row, col] = trace
-                # --- Assemble W ---
-                r_slice = slice(row * q, (row + 1) * q)
-                c_slice = slice(col * q, (col + 1) * q)
-                np.fill_diagonal(W[r_slice, c_slice], W_diag)
-                if row != col:
-                    np.fill_diagonal(W[c_slice, r_slice], W_diag)
+    for col, T_lower_traces, W_lower_diags in results:
+        for i, (trace, W_diag) in enumerate(zip(T_lower_traces, W_lower_diags)):
+            row = col + i
+            # --- Assemble T ---
+            T[col, row] = T[row, col] = trace
+            # --- Assemble W ---
+            r_slice = slice(row * q, (row + 1) * q)
+            c_slice = slice(col * q, (col + 1) * q)
+            np.fill_diagonal(W[r_slice, c_slice], W_diag)
+            if row != col:
+                np.fill_diagonal(W[c_slice, r_slice], W_diag)
 
     return T, W
 
