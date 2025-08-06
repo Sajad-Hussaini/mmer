@@ -10,7 +10,7 @@ from sklearn.preprocessing import RobustScaler, OneHotEncoder, FunctionTransform
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 
-base_path = Path(r"C:\Users\Sajad\Work Folder\merm_example")
+base_path = Path("/home/Sajad/WorkFolder/merm_example")
 
 periods = np.array([0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.1, 0.12, 0.15, 0.17, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
                     0.6, 0.75, 0.9, 1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 7.5, 9.0, 10.0])
@@ -66,11 +66,16 @@ preprocessor_x = ColumnTransformer(transformers=[('scaled_linear', scale_pipelin
 preprocessor_y = Pipeline(steps=[('transformer', FunctionTransformer(np.log, np.exp, validate=True)),
                                  ('scaler', StandardScaler())])
 
+preprocessor_y_mlp = Pipeline(steps=[('transformer', FunctionTransformer(np.log, np.exp, validate=True))])
+
 X_train = preprocessor_x.fit_transform(train_df[x_vars])
 X_test = preprocessor_x.transform(test_df[x_vars])
 
 y_train = preprocessor_y.fit_transform(train_df[y_vars].to_numpy())
 y_test = preprocessor_y.transform(test_df[y_vars].to_numpy())
+
+y_train_mlp = preprocessor_y_mlp.fit_transform(train_df[y_vars].to_numpy())
+y_test_mlp = preprocessor_y_mlp.transform(test_df[y_vars].to_numpy())
 
 group_train = train_df[group_vars].to_numpy()
 group_test = test_df[group_vars].to_numpy()
@@ -79,6 +84,9 @@ group_test = test_df[group_vars].to_numpy()
 
 np.save(base_path / 'preprocess' / 'y_train.npy', y_train)
 np.save(base_path / 'preprocess' / 'y_test.npy', y_test)
+
+np.save(base_path / 'preprocess' / 'y_train_mlp.npy', y_train_mlp)
+np.save(base_path / 'preprocess' / 'y_test_mlp.npy', y_test_mlp)
 
 np.save(base_path / 'preprocess' / 'group_train.npy', group_train, allow_pickle=True)
 np.save(base_path / 'preprocess' / 'group_test.npy', group_test, allow_pickle=True)
