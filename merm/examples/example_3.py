@@ -5,10 +5,7 @@ from sklearn.model_selection import cross_val_score, KFold
 import numpy as np
 import joblib
 from pathlib import Path
-from dask.distributed import Client
-from joblib import parallel_config
 # %%
-client = Client('tcp://192.168.219.33:8786')
 base_path = Path("/home/Sajad/WorkFolder/merm_example")
 
 X_train = np.load(base_path / 'preprocess' / 'X_train.npy')
@@ -22,22 +19,20 @@ def objective(trial):
     n_layers = trial.suggest_int('n_layers', 1, 3)
     layers = []
 
-    units = trial.suggest_int('n_units_l0', 10, 300)
+    units = trial.suggest_int('n_units_l0', 10, 200)
     layers.append(units)
     for i in range(1, n_layers):
-        units = trial.suggest_int(f'n_units_l{i}', max(10, int(units * 0.2)), min(300, int(units * 1.8)))
+        units = trial.suggest_int(f'n_units_l{i}', max(10, int(units * 0.2)), min(200, int(units * 1.8)))
         layers.append(units)
     
     model_params = {
         'hidden_layer_sizes': tuple(layers),
-        'activation': trial.suggest_categorical('activation', ['logistic', 'relu', 'tanh']),
-        'alpha': trial.suggest_float('alpha', 1e-3, 0.1, log=True),
-        'solver': trial.suggest_categorical('solver', ['adam'])}
+        'activation': trial.suggest_categorical('activation', ['relu', 'logistic', 'tanh']),
+        'alpha': trial.suggest_float('alpha', 1e-3, 1.0, log=True),
+        'learning_rate_init': trial.suggest_float('learning_rate_init', 1e-3, 1e-2, log=True)
+        }
 
-    if model_params['solver'] == 'adam':
-        model_params['learning_rate_init'] = trial.suggest_float('learning_rate_init', 1e-4, 1e-2, log=True)
-
-    fullmodel = MLPRegressor(random_state=42, max_iter=5000, early_stopping=True, warm_start=True, **model_params)
+    fullmodel = MLPRegressor(random_state=42, max_iter=5000, early_stopping=True, warm_start=True, solver='adam', **model_params)
     kf = KFold(n_splits=20, shuffle=True, random_state=42)
     try:
         score = cross_val_score(fullmodel, X_train, y_train, cv=kf, scoring='neg_mean_squared_error', n_jobs=-1).mean()
@@ -50,11 +45,9 @@ def objective(trial):
     return -score
 
 study = optuna.create_study(direction='minimize', sampler=optuna.samplers.TPESampler(seed=42),
-                            pruner=optuna.pruners.MedianPruner(n_startup_trials=15))
+                            pruner=optuna.pruners.MedianPruner(n_startup_trials=10))
 
-with parallel_config(backend='dask', scatter=[X_train, y_train]):
-    study.optimize(objective, n_trials=500)
-
+study.optimize(objective, n_trials=500)
 # %%
 (base_path / 'tuned_model').mkdir(exist_ok=True)
 
@@ -71,5 +64,3 @@ tuned_model = MLPRegressor(random_state=42, max_iter=5000, early_stopping=True, 
 joblib.dump(tuned_model, base_path / 'tuned_model' / 'tuned_mlp_model.joblib')
 joblib.dump(study, base_path / 'tuned_model' / 'optuna_study.joblib')
 print("\nStudy and tuned model saved successfully! 🎉")
-
-client.close()
