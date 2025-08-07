@@ -9,30 +9,30 @@ from pathlib import Path
 base_path = Path("/home/Sajad/WorkFolder/merm_example")
 
 X_train = np.load(base_path / 'preprocess' / 'X_train.npy')
-y_train = np.load(base_path / 'preprocess' / 'y_train_mlp.npy')
+y_train = np.load(base_path / 'preprocess' / 'y_train.npy')
 
 def objective(trial):
     """
     Objective function for Optuna to optimize the MLPRegressor hyperparameters.
     This function defines the hyperparameters to be tuned and evaluates the model using cross-validation.
     """
-    n_layers = trial.suggest_int('n_layers', 1, 3)
+    n_layers = trial.suggest_int('n_layers', 1, 2)
     layers = []
 
-    units = trial.suggest_int('n_units_l0', 10, 200)
+    units = trial.suggest_int('n_units_l0', 10, 100)
     layers.append(units)
     for i in range(1, n_layers):
-        units = trial.suggest_int(f'n_units_l{i}', max(10, int(units * 0.2)), min(200, int(units * 1.8)))
+        units = trial.suggest_int(f'n_units_l{i}', max(10, int(units * 0.2)), min(100, int(units * 1.8)))
         layers.append(units)
     
     model_params = {
         'hidden_layer_sizes': tuple(layers),
-        'activation': trial.suggest_categorical('activation', ['relu', 'logistic', 'tanh']),
-        'alpha': trial.suggest_float('alpha', 1e-3, 1.0, log=True),
-        'learning_rate_init': trial.suggest_float('learning_rate_init', 1e-3, 1e-2, log=True)
+        'activation': trial.suggest_categorical('activation', ['logistic', 'tanh']),
+        'alpha': trial.suggest_float('alpha', 1e-3, 10.0, log=True),
+        'learning_rate_init': trial.suggest_float('learning_rate_init', 1e-4, 1e-2, log=True)
         }
 
-    fullmodel = MLPRegressor(random_state=42, max_iter=5000, early_stopping=True, warm_start=True, solver='adam', **model_params)
+    fullmodel = MLPRegressor(random_state=42, max_iter=5000, early_stopping=True, solver='adam', **model_params)
     kf = KFold(n_splits=20, shuffle=True, random_state=42)
     try:
         score = cross_val_score(fullmodel, X_train, y_train, cv=kf, scoring='neg_mean_squared_error', n_jobs=-1).mean()
@@ -60,7 +60,7 @@ for i in range(n_layers):
         layers.append(best_params.pop(layer_key))
 best_params['hidden_layer_sizes'] = tuple(layers)
 
-tuned_model = MLPRegressor(random_state=42, max_iter=5000, early_stopping=True, warm_start=True, **best_params)
+tuned_model = MLPRegressor(random_state=42, max_iter=5000, early_stopping=True, warm_start=True, solver='adam', **best_params)
 joblib.dump(tuned_model, base_path / 'tuned_model' / 'tuned_mlp_model.joblib')
 joblib.dump(study, base_path / 'tuned_model' / 'optuna_study.joblib')
 print("\nStudy and tuned model saved successfully! 🎉")
