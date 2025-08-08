@@ -21,7 +21,7 @@ class Residual:
         phi = epsr @ epsr.T
         phi += T_sum
         phi /= self.n
-        phi[np.diag_indices_from(phi)] += 1e-6
+        phi[np.diag_indices_from(phi)] += 1e-5
         return phi
     
     def full_cov_matvec(self, x_vec: np.ndarray):

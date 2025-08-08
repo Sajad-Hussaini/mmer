@@ -1,7 +1,8 @@
 import numpy as np
 from scipy.sparse.linalg import cg
-from scipy.linalg import solve
+from scipy.linalg import solve, pinv
 from sklearn.base import RegressorMixin
+from sklearn.linear_model import LinearRegression
 from tqdm import tqdm
 from .operator import VLinearOperator, ResidualPreconditioner, compute_cov_correction
 from ..lanczos_algorithm import slq
@@ -67,7 +68,13 @@ class MERM:
         for re in rand_effects:
             re.design_rand_effect(X, groups)
         resid = Residual(self.n, self.m)
-        resid_marginal = self.compute_marginal_residual(X, y, 0.0)
+
+        # Use linear regression estimate of fx for a gentle start,
+        y_adj = y.ravel() if self.m == 1 else y
+        fx = LinearRegression().fit(X, y_adj).predict(X)
+        fx = fx[:, None] if self.m == 1 else fx
+        resid_marginal = (y - fx).T.ravel()
+
         return resid_marginal, rand_effects, resid
     
     def compute_marginal_residual(self, X: np.ndarray, y: np.ndarray, total_rand_effect: np.ndarray):
@@ -112,11 +119,12 @@ class MERM:
         V_op = VLinearOperator(random_effects, residual)
         if self.preconditioner:
             try:
-                resid_cov_inv = solve(residual.cov, np.eye(self.m), assume_a='pos')
+                resid_cov_inv = solve(residual.cov, np.eye(self.m))
                 M_op = ResidualPreconditioner(resid_cov_inv, self.n, self.m)
             except Exception:
-                print("Warning: Residual covariance is singular. Using None.")
-                M_op = None
+                print("Warning: Residual covariance is singular. Using pseudo-inverse.")
+                resid_cov_inv, _ = pinv(residual.cov, np.eye(self.m))
+                M_op = ResidualPreconditioner(resid_cov_inv, self.n, self.m)
         else:
             M_op = None
         prec_resid, _ = cg(A=V_op, b=resid_marginal, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
@@ -204,7 +212,7 @@ class MERM:
         V_op = VLinearOperator(rand_effects, resid)
         if self.preconditioner:
             try:
-                resid_cov_inv = solve(resid.cov, np.eye(self.m), assume_a='pos')
+                resid_cov_inv = solve(resid.cov, np.eye(self.m))
                 M_op = ResidualPreconditioner(resid_cov_inv, self.n, self.m)
             except Exception:
                 print("Warning: Residual covariance is singular. Using None.")

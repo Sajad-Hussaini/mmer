@@ -5,10 +5,10 @@ from pathlib import Path
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, mean_absolute_percentage_error
 from IPython.display import display
 import matplotlib.pyplot as plt
-import seaborn as sns
+# import seaborn as sns
 import pandas as pd
 # %%
-base_path = Path(r"C:\Users\Sajad\Work Folder\merm_example")
+base_path = Path("/home/Sajad/WorkFolder/merm_example")
 
 X_train = np.load(base_path / 'preprocess' / 'X_train.npy')
 X_test = np.load(base_path / 'preprocess' / 'X_test.npy')
@@ -17,8 +17,7 @@ y_test = np.load(base_path / 'preprocess' / 'y_test.npy')
 group_train = np.load(base_path / 'preprocess' / 'group_train.npy', allow_pickle=True)
 group_test = np.load(base_path / 'preprocess' / 'group_test.npy', allow_pickle=True)
 preprocessor_x = joblib.load(base_path / 'preprocess' / 'preprocessor_x.joblib')
-preprocessor_y = joblib.load(base_path / 'preprocess' / 'preprocessor_y.joblib')
-result = joblib.load(base_path / 'fitted_model' / 'fitted_model_mlp.joblib')
+result = joblib.load(base_path / 'fitted_model' / 'fitted_model_linear.joblib')
 
 result.summary()
 y_pred_train_prc = result.predict(X_train)

@@ -19,10 +19,10 @@ def objective(trial):
     n_layers = trial.suggest_int('n_layers', 1, 2)
     layers = []
 
-    units = trial.suggest_int('n_units_l0', 10, 100)
+    units = trial.suggest_int('n_units_l0', 5, 100)
     layers.append(units)
     for i in range(1, n_layers):
-        units = trial.suggest_int(f'n_units_l{i}', max(10, int(units * 0.2)), min(100, int(units * 1.8)))
+        units = trial.suggest_int(f'n_units_l{i}', max(5, int(units * 0.2)), min(100, int(units * 1.8)))
         layers.append(units)
     
     model_params = {
@@ -32,7 +32,7 @@ def objective(trial):
         'learning_rate_init': trial.suggest_float('learning_rate_init', 1e-4, 1e-2, log=True)
         }
 
-    fullmodel = MLPRegressor(random_state=42, max_iter=5000, early_stopping=True, solver='adam', **model_params)
+    fullmodel = MLPRegressor(random_state=42, max_iter=2000, early_stopping=True, solver='adam', **model_params)
     kf = KFold(n_splits=20, shuffle=True, random_state=42)
     try:
         score = cross_val_score(fullmodel, X_train, y_train, cv=kf, scoring='neg_mean_squared_error', n_jobs=-1).mean()
@@ -60,7 +60,7 @@ for i in range(n_layers):
         layers.append(best_params.pop(layer_key))
 best_params['hidden_layer_sizes'] = tuple(layers)
 
-tuned_model = MLPRegressor(random_state=42, max_iter=5000, early_stopping=True, warm_start=True, solver='adam', **best_params)
+tuned_model = MLPRegressor(random_state=42, max_iter=2000, early_stopping=True, warm_start=True, solver='adam', **best_params)
 joblib.dump(tuned_model, base_path / 'tuned_model' / 'tuned_mlp_model.joblib')
 joblib.dump(study, base_path / 'tuned_model' / 'optuna_study.joblib')
 print("\nStudy and tuned model saved successfully! 🎉")

@@ -96,7 +96,7 @@ class RandomEffect:
         tau = mur @ mur.T
         tau += W
         tau /= self.o
-        tau[np.diag_indices_from(tau)] += 1e-6
+        tau[np.diag_indices_from(tau)] += 1e-5
         return tau
 
 # ====================== Matrix-Vector Operations ======================
