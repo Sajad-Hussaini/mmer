@@ -121,9 +121,9 @@ class MERM:
             except Exception:
                 print("Warning: Singular residual covariance. If the fixed-effects model absorbs nearly all degrees of freedom, residual variance may vanish, leading to singularity.")
             
-        prec_resid, info = cg(A=V_op, b=resid_marginal, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
+        prec_resid, info = cg(A=V_op, b=resid_marginal, rtol=1e-5, atol=1e-8, maxiter=300, M=M_op)
         if info != 0:
-            print(f"Warning: CG solver did not converge. Info={info}")
+            print(f"Warning: CG solver (V⁻¹(y-fx)) did not converge. Info={info}")
 
         if self.convergence_criterion == 'log_lh':
             final_logL = self.compute_log_likelihood(resid_marginal, prec_resid, V_op)
@@ -217,7 +217,7 @@ class MERM:
 
         prec_resid, info = cg(A=V_op, b=resid_marginal, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
         if info != 0:
-            print(f"Warning: CG solver did not converge. Info={info}")
+            print(f"Warning: CG solver (V⁻¹(y-fx)) did not converge. Info={info}")
 
         self.log_likelihood.append(self.compute_log_likelihood(resid_marginal, prec_resid, V_op))
 

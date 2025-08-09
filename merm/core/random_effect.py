@@ -64,7 +64,7 @@ class RandomEffect:
         """
         slope_covariates = X[:, self.covariates_cols] if self.covariates_cols is not None else None
         self.Z, self.q, self.o = self.design_Z(groups[:, self.col], slope_covariates)
-        self.cov = np.eye(self.m * self.q)
+        self.cov = np.eye(self.m * self.q) * 0.2
         self.ZTZ = self.Z.T @ self.Z
         return self
     

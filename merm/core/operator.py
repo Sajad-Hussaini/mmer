@@ -129,7 +129,9 @@ def _compute_C_probe(probe_index: int, k: int, V_op: VLinearOperator, M_op: Resi
     re = V_op.random_effects[k]
     probe_vector = _generate_rademacher_probes(re.m * re.q * re.o, 1, seed).ravel()
     v1 = re.kronZ_D_matvec(probe_vector)
-    v2, _ = cg(A=V_op, b=v1, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
+    v2, info = cg(A=V_op, b=v1, rtol=1e-5, atol=1e-8, maxiter=300, M=M_op)
+    if info != 0:
+        print(f"Warning: CG solver (V⁻¹(Iₘ ⊗ Z)D) did not converge. Info={info}")
     probe_vector *= re.kronZ_D_T_matvec(v2)
     return probe_vector
 
@@ -183,7 +185,9 @@ def cov_correction_per_response_bste(n_probes: int, k: int, V_op: VLinearOperato
         probe_vector[...] = _generate_rademacher_probes(block_size, 1, seed).ravel()
         vec[col * block_size : (col + 1) * block_size] = probe_vector
         vec_cg[...] = re.kronZ_D_matvec(vec)
-        vec_cg[...], _ = cg(A=V_op, b=vec_cg, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
+        vec_cg[...], info = cg(A=V_op, b=vec_cg, rtol=1e-5, atol=1e-8, maxiter=300, M=M_op)
+        if info != 0:
+            print(f"Warning: CG solver (V⁻¹(Iₘ ⊗ Z)D) did not converge. Info={info}")
         lower_c = re.kronZ_D_T_matvec(vec_cg)[col * block_size:]
         vec[col * block_size : (col + 1) * block_size] = 0
         diag_C += (lower_c.reshape(num_blocks, block_size) * probe_vector).ravel()
@@ -251,7 +255,9 @@ def cov_correction_per_response(k: int, V_op: VLinearOperator, M_op: ResidualPre
     for i in range(block_size):
         vec[base_idx + i] = 1.0
         vec_cg[...] = re.kronZ_D_matvec(vec)
-        vec_cg[...], _ = cg(A=V_op, b=vec_cg, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
+        vec_cg[...], info = cg(A=V_op, b=vec_cg, rtol=1e-5, atol=1e-8, maxiter=300, M=M_op)
+        if info != 0:
+            print(f"Warning: CG solver (V⁻¹(Iₘ ⊗ Z)D) did not converge. Info={info}")
         lower_sigma[:, i] = (re.D_matvec(vec) - re.kronZ_D_T_matvec(vec_cg))[col * block_size:]
         vec[base_idx + i] = 0
 

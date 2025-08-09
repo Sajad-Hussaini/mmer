@@ -10,7 +10,7 @@ class Residual:
     def __init__(self, n: int, m: int):
         self.n = n
         self.m = m
-        self.cov = np.eye(m)
+        self.cov = np.eye(m) * 0.4
 
     def compute_cov(self, eps: np.ndarray, T_sum: np.ndarray):
         """
