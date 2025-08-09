@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.sparse.linalg import cg
-from scipy.linalg import solve, pinv
+from scipy.linalg import solve
 from sklearn.base import RegressorMixin
 from sklearn.linear_model import LinearRegression
 from tqdm import tqdm
@@ -69,11 +69,7 @@ class MERM:
             re.design_rand_effect(X, groups)
         resid = Residual(self.n, self.m)
 
-        # Use linear regression estimate of fx for a gentle start,
-        y_adj = y.ravel() if self.m == 1 else y
-        fx = LinearRegression().fit(X, y_adj).predict(X)
-        fx = fx[:, None] if self.m == 1 else fx
-        resid_marginal = (y - fx).T.ravel()
+        resid_marginal = self.compute_marginal_residual(X, y, 0.)
 
         return resid_marginal, rand_effects, resid
     
@@ -117,22 +113,23 @@ class MERM:
     def _e_step(self, resid_marginal: np.ndarray, random_effects: tuple[RandomEffect], residual: Residual):
         """Performs the E-step of the EM algorithm."""
         V_op = VLinearOperator(random_effects, residual)
+        M_op = None
         if self.preconditioner:
             try:
-                resid_cov_inv = solve(residual.cov, np.eye(self.m))
+                resid_cov_inv = solve(a=residual.cov, b=np.eye(self.m), assume_a='pos')
                 M_op = ResidualPreconditioner(resid_cov_inv, self.n, self.m)
             except Exception:
-                print("Warning: Residual covariance is singular. Using pseudo-inverse.")
-                resid_cov_inv, _ = pinv(residual.cov, np.eye(self.m))
-                M_op = ResidualPreconditioner(resid_cov_inv, self.n, self.m)
-        else:
-            M_op = None
-        prec_resid, _ = cg(A=V_op, b=resid_marginal, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
+                print("Warning: Singular residual covariance. If the fixed-effects model absorbs nearly all degrees of freedom, residual variance may vanish, leading to singularity.")
+            
+        prec_resid, info = cg(A=V_op, b=resid_marginal, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
+        if info != 0:
+            print(f"Warning: CG solver did not converge. Info={info}")
 
         if self.convergence_criterion == 'log_lh':
             final_logL = self.compute_log_likelihood(resid_marginal, prec_resid, V_op)
             self.log_likelihood.append(final_logL)
         total_re, mu = self.aggregate_rand_effects(prec_resid, random_effects)
+
         return total_re, mu, V_op, M_op
 
     def _m_step(self, resid_marginal: np.ndarray, total_re: np.ndarray, mu: tuple[np.ndarray],
@@ -208,17 +205,20 @@ class MERM:
                 if self._is_converged:
                     pbar.set_description("Model Converged")
                     break
-        
+        # Final log-likelihood calculation
         V_op = VLinearOperator(rand_effects, resid)
+        M_op = None
         if self.preconditioner:
             try:
-                resid_cov_inv = solve(resid.cov, np.eye(self.m))
+                resid_cov_inv = solve(a=resid.cov, b=np.eye(self.m), assume_a='pos')
                 M_op = ResidualPreconditioner(resid_cov_inv, self.n, self.m)
             except Exception:
-                print("Warning: Residual covariance is singular. Using None.")
-                M_op = None
-        else:
-            M_op = None
-        prec_resid, _ = cg(A=V_op, b=resid_marginal, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
+                print("Warning: Singular residual covariance. If the fixed-effects model absorbs nearly all degrees of freedom, residual variance may vanish, leading to singularity.")
+
+        prec_resid, info = cg(A=V_op, b=resid_marginal, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
+        if info != 0:
+            print(f"Warning: CG solver did not converge. Info={info}")
+
         self.log_likelihood.append(self.compute_log_likelihood(resid_marginal, prec_resid, V_op))
+
         return MERMResult(self, rand_effects, resid)
