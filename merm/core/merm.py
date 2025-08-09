@@ -121,7 +121,7 @@ class MERM:
             except Exception:
                 print("Warning: Singular residual covariance. If the fixed-effects model absorbs nearly all degrees of freedom, residual variance may vanish, leading to singularity.")
             
-        prec_resid, info = cg(A=V_op, b=resid_marginal, rtol=1e-5, atol=1e-8, maxiter=300, M=M_op)
+        prec_resid, info = cg(A=V_op, b=resid_marginal, M=M_op)
         if info != 0:
             print(f"Warning: CG solver (V⁻¹(y-fx)) did not converge. Info={info}")
 
@@ -215,7 +215,7 @@ class MERM:
             except Exception:
                 print("Warning: Singular residual covariance. If the fixed-effects model absorbs nearly all degrees of freedom, residual variance may vanish, leading to singularity.")
 
-        prec_resid, info = cg(A=V_op, b=resid_marginal, rtol=1e-5, atol=1e-8, maxiter=100, M=M_op)
+        prec_resid, info = cg(A=V_op, b=resid_marginal, M=M_op)
         if info != 0:
             print(f"Warning: CG solver (V⁻¹(y-fx)) did not converge. Info={info}")
 
