@@ -2,7 +2,6 @@ import numpy as np
 from scipy.sparse.linalg import cg
 from scipy.linalg import solve
 from sklearn.base import RegressorMixin
-from sklearn.linear_model import LinearRegression
 from tqdm import tqdm
 from .operator import VLinearOperator, ResidualPreconditioner, compute_cov_correction
 from ..lanczos_algorithm import slq
@@ -25,8 +24,8 @@ class MERM:
         n_jobs: Number of parallel jobs for SLQ computation and covariance correction.
         backend: Backend for parallel processing, options are 'loky' or 'threading'.
     """
-    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 20, tol: float = 1e-5,
-                 slq_steps: int = 25, slq_probes: int = 25, preconditioner: bool = True, correction_method: str = 'bste',
+    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 50, tol: float = 1e-4,
+                 slq_steps: int = 30, slq_probes: int = 30, preconditioner: bool = True, correction_method: str = 'bste',
                  convergence_criterion: str = 'norm', n_jobs: int = 1, backend: str = 'loky'):
         self.fe_model = fixed_effects_model
         self.max_iter = max_iter

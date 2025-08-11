@@ -20,7 +20,6 @@
 
 ✅ **Multivariate responses**: Handle multiple dependent variables simultaneously  
 ✅ **Flexible random effects**: Support for random intercepts and slopes across multiple grouping factors  
-✅ **Scalable computation**: Uses Stochastic Lanczos Quadrature (SLQ) for efficient log-determinant estimation  
 ✅ **Scikit-learn integration**: Use ML models compatible with any scikit-learn regressor, or your own custom models for fixed effects  
 ✅ **Parallel processing**: Memory-efficient computation leveraging multi-core processing for large datasets  
 
@@ -40,7 +39,7 @@ pip install .
 
 ## User Guide
 
-For step-by-step examples and tutorials on using **MERM**, explore [Examples](merm/examples/).
+For step-by-step examples and tutorials on using **MERM**, explore [Examples]().
 
 > 📚 **Note**: The User Guide will be updated with more detailed instructions.
 
