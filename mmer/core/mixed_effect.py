@@ -7,11 +7,11 @@ from .operator import VLinearOperator, ResidualPreconditioner, compute_cov_corre
 from ..lanczos_algorithm import slq
 from .random_effect import RandomEffect
 from .residual import Residual
-from .merm_result import MERMResult
+from .mixed_result import MixedEffectResults
 
-class MERM:
+class MixedEffectRegressor:
     """
-    Multivariate Mixed Effects Regression Model.
+    Multivariate Mixed Effects Regression.
     It supports multiple responses, any fixed effects model, multiple random effects, and multiple grouping factors.
     Parameters:
         fixed_effects_model: A regressor with fit and predict methods that supports multi-output regression.
@@ -24,6 +24,9 @@ class MERM:
         n_jobs: Number of parallel jobs for SLQ computation and covariance correction.
         backend: Backend for parallel processing, options are 'loky' or 'threading'.
     """
+    _VALID_CORRECTION_METHODS = ['ste', 'bste', 'detr']
+    _VALID_CONVERGENCE_CRITERIA = ['norm', 'log_lh']
+
     def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 50, tol: float = 1e-4,
                  slq_steps: int = 30, slq_probes: int = 30, preconditioner: bool = True, correction_method: str = 'bste',
                  convergence_criterion: str = 'norm', n_jobs: int = 1, backend: str = 'loky'):
@@ -33,15 +36,14 @@ class MERM:
         self.slq_steps = slq_steps
         self.slq_probes = slq_probes
         self.preconditioner = preconditioner
+
         self.correction_method = correction_method
-        existing_method = ['ste', 'bste', 'detr']
-        if self.correction_method not in existing_method:
-            raise ValueError(f"Unknown correction method: '{self.correction_method}'. Available methods are {existing_method}.")
+        if self.correction_method not in self._VALID_CORRECTION_METHODS:
+            raise ValueError(f"Unknown correction method: '{self.correction_method}'. Available methods are {self._VALID_CORRECTION_METHODS}.")
         
         self.convergence_criterion = convergence_criterion
-        valid_criteria = ['norm', 'log_lh']
-        if self.convergence_criterion not in valid_criteria:
-            raise ValueError(f"convergence_criterion must be one of {valid_criteria}")
+        if self.convergence_criterion not in self._VALID_CONVERGENCE_CRITERIA:
+            raise ValueError(f"convergence_criterion must be one of {self._VALID_CONVERGENCE_CRITERIA}")
 
         self.log_likelihood = []
         self.track_change = []
@@ -185,7 +187,7 @@ class MERM:
             random_slopes: tuple[list[int]] dictionary mapping group indices to lists of random slope indices (optional).
 
         Returns:
-            MERMResult: Contains fitted model and results.
+            MixedEffectResults: Contains fitted model and results.
         """
         resid_marginal, rand_effects, resid = self.prepare_data(X, y, groups, random_slopes)
         pbar = tqdm(range(1, self.max_iter + 1), desc="Fitting Model",
@@ -220,4 +222,4 @@ class MERM:
 
         self.log_likelihood.append(self.compute_log_likelihood(resid_marginal, prec_resid, V_op))
 
-        return MERMResult(self, rand_effects, resid)
+        return MixedEffectResults(self, rand_effects, resid)

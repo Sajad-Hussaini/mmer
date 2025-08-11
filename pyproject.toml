@@ -3,14 +3,14 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "merm"
+name = "mmer"
 version = "0.1.0"
 authors = [{name = "Sajad Hussaini", email = "hussaini.smsajad@gmail.com"}]
-description = "MERM: Multivariate Mixed Effects Regression Model."
+description = "MMER: Multivariate Mixed Effects Regression."
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.8"
-keywords = ["MERM", "regression", "mixed-effects", "machine-learning", "statistics", "multivariate"]
+keywords = ["mmer", "regression", "mixed-effects", "machine-learning", "statistics", "multivariate"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
@@ -21,12 +21,12 @@ classifiers = [
 dependencies = [
     "numpy",
     "scipy",
-    "matplotlib",
     "joblib",
+    "matplotlib",
     "scikit-learn",
     "tqdm",]
 
 [project.urls]
-Homepage = "https://github.com/Sajad-Hussaini/merm"
-Repository = "https://github.com/Sajad-Hussaini/merm"
-Issues = "https://github.com/Sajad-Hussaini/merm/issues"
+Homepage = "https://github.com/Sajad-Hussaini/mmer"
+Repository = "https://github.com/Sajad-Hussaini/mmer"
+Issues = "https://github.com/Sajad-Hussaini/mmer/issues"

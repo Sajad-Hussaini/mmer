@@ -1,10 +1,10 @@
-# MERM - Multivariate Mixed Effects Regression Model
+# MMER - Multivariate Mixed Effects Regression
 
 [![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![PyPI](https://img.shields.io/pypi/v/merm.svg)](https://pypi.org/project/merm/)
+[![PyPI](https://img.shields.io/pypi/v/mmer.svg)](https://pypi.org/project/mmer/)
 
-**MERM** is a Python package for performing multivariate mixed-effects regression. Its key innovation is allowing fixed effects to be modeled by a variety of machine learning regressors (e.g., Artificial Neural Networks, Random Forest, XGBoost) in addition to standard parametric models. It supports multiple responses (multivariate), multiple grouping variables, and multiple random effects (i.e., intercept, slopes) with flexible random effects structures.
+**MMER** is a Python package for performing multivariate mixed-effects regression. Its key innovation is allowing fixed effects to be modeled by a variety of machine learning regressors (e.g., Artificial Neural Networks, Random Forest, XGBoost) in addition to standard parametric models (e.g., Linear regression). It supports multiple responses (multivariate), multiple grouping variables, and multiple random effects (i.e., intercept, slopes) with flexible random effects structures.
 
 > 💡 **Tip**: To ensure compatibility with the user guide, it's recommended to use the latest **release** available on **GitHub**, **PyPI**, or **Zenodo**.
 
@@ -27,25 +27,25 @@
 
 ### Install from PyPI (Recommended)
 ```bash
-pip install merm
+pip install mmer
 ```
 
 ### Install from Source
 ```bash
-git clone https://github.com/Sajad-Hussaini/merm.git
-cd merm
+git clone https://github.com/Sajad-Hussaini/mmer.git
+cd mmer
 pip install .
 ```
 
 ## User Guide
 
-For step-by-step examples and tutorials on using **MERM**, explore [Examples]().
+For step-by-step examples and tutorials on using **MMER**, explore [Examples]().
 
 > 📚 **Note**: The User Guide will be updated with more detailed instructions.
 
 ## License
 
-MERM is released under the [MIT License](https://opensource.org/licenses/MIT).  
+MMER is released under the [MIT License](https://opensource.org/licenses/MIT).  
 See the [LICENSE](LICENSE) file for the full text.
 
 ## Contact
@@ -55,7 +55,7 @@ For questions or assistance, please contact:
 **S.M. Sajad Hussaini**  
 📧 [hussaini.smsajad@gmail.com](mailto:hussaini.smsajad@gmail.com)
 
-> Please include "MERM" in the subject line for faster response.
+> Please include "MMER" in the subject line for faster response.
 
 ### Support the Project
 
@@ -71,6 +71,6 @@ Please cite the following references for any formal study:
 *Title of the paper*  
 DOI: [To be added] (Journal of Earthquake Engineering and Structural Dynamics)
 
-**[2] MERM Package**  
-*MERM: Multivariate Mixed Effects Regression Model*  
+**[2] MMER Package**  
+*MMER: Multivariate Mixed Effects Regression Model*  
 DOI: [To be added]

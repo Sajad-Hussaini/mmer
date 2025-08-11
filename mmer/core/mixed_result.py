@@ -1,22 +1,22 @@
 import numpy as np
 
-class MERMResult:
+class MixedEffectResults:
     """
-    Result class for the Multivariate Mixed Effects Regression Model (MERM).
+    Result class for the Multivariate Mixed Effects Regression.
     """
-    def __init__(self, MERM, random_effects, residuals):
-        self.fe_model = MERM.fe_model
+    def __init__(self, mixed_model, random_effects, residuals):
+        self.fe_model = mixed_model.fe_model
 
-        self.m = MERM.m
-        self.n = MERM.n
-        self.k = MERM.k
-        self.random_slopes = MERM.random_slopes
+        self.m = mixed_model.m
+        self.n = mixed_model.n
+        self.k = mixed_model.k
+        self.random_slopes = mixed_model.random_slopes
         
-        self.rand_effects = random_effects
-        self.resid = residuals
-        self.log_likelihood = MERM.log_likelihood
-        self.track_change = MERM.track_change
-        self._is_converged = MERM._is_converged
+        self.random_effects = random_effects
+        self.residual = residuals
+        self.log_likelihood = mixed_model.log_likelihood
+        self.track_change = mixed_model.track_change
+        self._is_converged = mixed_model._is_converged
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         """
@@ -71,15 +71,15 @@ class MERMResult:
         print(indent1 + f"Residual (Unexplained) Variances")
         print(indent2 + "{:<10} {:>10}".format("Response", "Variance"))
         for m in range(self.m):
-            print(indent2 + "{:<10} {:>10.4f}".format(m + 1, self.resid.cov[m, m]))
+            print(indent2 + "{:<10} {:>10.4f}".format(m + 1, self.residual.cov[m, m]))
         print("-" * 50)
         print(indent1 + f"Random Effects Variances")
         print(indent2 + "{:<8} {:<10} {:<15} {:>10}".format("Group", "Response", "Random Effect", "Variance"))
         for k in range(self.k):
             for i in range(self.m):
-                for j in range(self.rand_effects[k].q):
-                    idx = i * self.rand_effects[k].q + j
+                for j in range(self.random_effects[k].q):
+                    idx = i * self.random_effects[k].q + j
                     effect_name = "Intercept" if j == 0 else f"Slope {j}"
-                    var = self.rand_effects[k].cov[idx, idx]
+                    var = self.random_effects[k].cov[idx, idx]
                     print(indent2 + "{:<8} {:<10} {:<15} {:>10.4f}".format(k + 1, i + 1, effect_name, var))
         print("\n")
