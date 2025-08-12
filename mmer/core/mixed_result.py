@@ -1,19 +1,19 @@
 import numpy as np
+from .random_effect import RandomEffect
+from .residual import Residual
 
 class MixedEffectResults:
     """
     Result class for the Multivariate Mixed Effects Regression.
     """
-    def __init__(self, mixed_model, random_effects, residuals):
+    def __init__(self, mixed_model, random_effects: tuple[RandomEffect], residual: Residual):
         self.fe_model = mixed_model.fe_model
-
         self.m = mixed_model.m
         self.n = mixed_model.n
         self.k = mixed_model.k
         self.random_slopes = mixed_model.random_slopes
-        
         self.random_effects = random_effects
-        self.residual = residuals
+        self.residual = residual
         self.log_likelihood = mixed_model.log_likelihood
         self.track_change = mixed_model.track_change
         self._is_converged = mixed_model._is_converged
@@ -43,9 +43,9 @@ class MixedEffectResults:
         """
         pass
     
-    def compute_random_effects_and_residuals(self):
+    def compute_random_effects_and_residual(self):
         """
-        Compute residuals (n x m) and random effects (m x q x o).
+        Compute residual (n x m) and random effects (m x q x o).
         """
         pass
 

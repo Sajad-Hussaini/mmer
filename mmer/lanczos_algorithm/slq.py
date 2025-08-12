@@ -54,20 +54,14 @@ def logdet(V_op: VLinearOperator, lanczos_steps: int, num_probes: int, n_jobs: i
     Estimates the log-determinant of a symmetric positive-definite operator V
     using a parallelized Stochastic Lanczos Quadrature method.
 
-    Tune for Stability and Convergence
-    The general advice is to tune num_probes first to control the variance,
-    then tune lanczos_steps to control the accuracy (bias).
-
     Returns an estimate of log(det(V)).
     """
     dim = V_op.shape[0]
     # Create a sequence of independent random seeds for each parallel job
     # This ensures reproducibility while maintaining statistical independence.
     seeds = np.random.SeedSequence(random_seed).spawn(num_probes)
-    # Parallel executes the tasks and returns a generator.
-    # np.sum consumes the results from the generator as they become available.
     with parallel_config(backend=backend, n_jobs=n_jobs):
         result = Parallel(return_as="generator")(delayed(slq_probe)(V_op, lanczos_steps, int(s.generate_state(1)[0])) for s in seeds)
         logdet_est = sum(result)
-    # The final estimate is the average of the probe results, scaled by the matrix dimension.
+
     return dim * logdet_est / num_probes
