@@ -1,6 +1,9 @@
 import numpy as np
+from scipy.sparse.linalg import cg
+from scipy.linalg import solve
 from .random_effect import RandomEffect
 from .residual import Residual
+from .operator import VLinearOperator, ResidualPreconditioner
 
 class MixedEffectResults:
     """
@@ -43,11 +46,32 @@ class MixedEffectResults:
         """
         pass
     
-    def compute_random_effects_and_residual(self):
+    def compute_random_effects_and_residual(self,  X: np.ndarray, y: np.ndarray):
         """
         Compute residual (n x m) and random effects (m x q x o).
         """
-        pass
+        resid = (y - self.predict(X)).T.ravel()  # marginal residual
+        V_op = VLinearOperator(self.random_effects, self.residual)
+        try:
+            resid_cov_inv = solve(a=self.residual.cov, b=np.eye(self.m), assume_a='pos')
+            M_op = ResidualPreconditioner(resid_cov_inv, self.n, self.m)
+        except Exception:
+            print("Warning: Singular residual covariance. If the fixed-effects model absorbs nearly all degrees of freedom, residual variance may vanish, leading to singularity.")
+            M_op = None
+
+        prec_resid, info = cg(A=V_op, b=resid, M=M_op)
+        if info != 0:
+            print(f"Warning: CG solver (V⁻¹(y-fx)) did not converge. Info={info}")
+
+        total_re = np.zeros(self.m * self.n)
+        mu = []
+        for re in self.random_effects:
+            mu.append(re.compute_mu(prec_resid))
+            total_re += re.map_mu(mu[-1])
+
+        resid -= total_re  # unexplained residual
+
+        return mu, resid
 
     def summary(self):
         """
