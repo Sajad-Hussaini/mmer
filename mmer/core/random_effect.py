@@ -57,7 +57,7 @@ class RandomEffect:
         Z = sparse.csr_array((final_data, (final_rows, final_cols)), shape=(n, q * o))
         return Z, q, o
 
-    def design_rand_effect(self, X: np.ndarray, groups: np.ndarray):
+    def design_random_effect(self, X: np.ndarray, groups: np.ndarray):
         """
         Constructs the random effect design matrix, number of effect type and levels,
         covariance matrix, and symmetric Gram matrix (G = Zᵀ Z).

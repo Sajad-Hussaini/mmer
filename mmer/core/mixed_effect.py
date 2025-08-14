@@ -24,10 +24,10 @@ class MixedEffectRegressor:
         n_jobs: Number of parallel jobs for SLQ computation and covariance correction.
         backend: Backend for parallel processing, options are 'loky' or 'threading'.
     """
-    _VALID_CORRECTION_METHODS = ['ste', 'bste', 'detr', 'woodbury']
+    _VALID_CORRECTION_METHODS = ['ste', 'bste', 'detr']
     _VALID_CONVERGENCE_CRITERIA = ['norm', 'log_lh']
 
-    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 50, tol: float = 1e-4,
+    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 10, tol: float = 1e-3,
                  slq_steps: int = 30, slq_probes: int = 30, preconditioner: bool = True, correction_method: str = 'bste',
                  convergence_criterion: str = 'norm', n_jobs: int = 1, backend: str = 'loky'):
         self.fe_model = fixed_effects_model
@@ -64,54 +64,54 @@ class MixedEffectRegressor:
         else:
             self.random_slopes = random_slopes
 
-        rand_effects = tuple(RandomEffect(self.n, self.m, k, slope_col) for k, slope_col in enumerate(self.random_slopes))
+        random_effects = tuple(RandomEffect(self.n, self.m, k, slope_col) for k, slope_col in enumerate(self.random_slopes))
 
-        for re in rand_effects:
-            re.design_rand_effect(X, groups)
-        resid = Residual(self.n, self.m)
+        for re in random_effects:
+            re.design_random_effect(X, groups)
+        residual = Residual(self.n, self.m)
 
-        resid_marginal = self.compute_marginal_residual(X, y, 0.)
+        marginal_residual = self.compute_marginal_residual(X, y, 0.0)
 
-        return resid_marginal, rand_effects, resid
+        return marginal_residual, random_effects, residual
     
-    def compute_marginal_residual(self, X: np.ndarray, y: np.ndarray, total_rand_effect: np.ndarray):
+    def compute_marginal_residual(self, X: np.ndarray, y: np.ndarray, total_random_effect: np.ndarray):
         """
         Compute marginal residuals by fitting the fixed effects models to the adjusted response variables.
         returns:
             1d array (mn,)
         """
-        y_adj = y - total_rand_effect
+        y_adj = y - total_random_effect
         y_adj = y_adj.ravel() if self.m == 1 else y_adj
         fx = self.fe_model.fit(X, y_adj).predict(X)
         fx = fx[:, None] if self.m == 1 else fx
         return (y - fx).T.ravel()
 
-    def compute_log_likelihood(self, resid_marginal: np.ndarray, prec_resid: np.ndarray, V_op: VLinearOperator):
+    def compute_log_likelihood(self, marginal_residual: np.ndarray, prec_resid: np.ndarray, V_op: VLinearOperator):
         """
         Compute the log-likelihood of the marginal distribution of the residuals.
         aka the marginal log-likelihood
-            resid_marginal: marginal residuals y-fx
+            marginal_residual: marginal residuals y-fx
             prec_resid: precision-weighted residuals V⁻¹(y-fx)
         """
         log_det_V = slq.logdet(V_op, self.slq_steps, self.slq_probes, self.n_jobs, self.backend)
-        log_likelihood = -(self.m * self.n * np.log(2 * np.pi) + log_det_V + resid_marginal.T @ prec_resid) / 2
+        log_likelihood = -(self.m * self.n * np.log(2 * np.pi) + log_det_V + marginal_residual.T @ prec_resid) / 2
         return log_likelihood
 
-    def aggregate_rand_effects(self, prec_resid: np.ndarray, random_effects: tuple[RandomEffect]):
+    def aggregate_rand_effects(self, prec_resid: np.ndarray, random_effects: tuple[RandomEffect, ...]):
         """
         Computes sum of all random effects in observation space.
             Σₖ(Iₘ ⊗ Zₖ)μₖ
         returns:
             1d array (mn,) and tuple of mu
         """
-        total_re = np.zeros(self.m * self.n)
+        total_random_effect = np.zeros(self.m * self.n)
         mu = []
         for re in random_effects:
             mu.append(re.compute_mu(prec_resid))
-            total_re += re.map_mu(mu[-1])
-        return total_re, tuple(mu)
+            total_random_effect += re.map_mu(mu[-1])
+        return total_random_effect, tuple(mu)
 
-    def _e_step(self, resid_marginal: np.ndarray, random_effects: tuple[RandomEffect], residual: Residual):
+    def _e_step(self, marginal_residual: np.ndarray, random_effects: tuple[RandomEffect, ...], residual: Residual):
         """Performs the E-step of the EM algorithm."""
         V_op = VLinearOperator(random_effects, residual)
         M_op = None
@@ -122,21 +122,21 @@ class MixedEffectRegressor:
             except Exception:
                 print("Warning: Singular residual covariance. If the fixed-effects model absorbs nearly all degrees of freedom, residual variance may vanish, leading to singularity.")
             
-        prec_resid, info = cg(A=V_op, b=resid_marginal, M=M_op)
+        prec_resid, info = cg(A=V_op, b=marginal_residual, M=M_op)
         if info != 0:
             print(f"Warning: CG solver (V⁻¹(y-fx)) did not converge. Info={info}")
 
         if self.convergence_criterion == 'log_lh':
-            final_logL = self.compute_log_likelihood(resid_marginal, prec_resid, V_op)
+            final_logL = self.compute_log_likelihood(marginal_residual, prec_resid, V_op)
             self.log_likelihood.append(final_logL)
-        total_re, mu = self.aggregate_rand_effects(prec_resid, random_effects)
+        total_random_effect, mu = self.aggregate_rand_effects(prec_resid, random_effects)
 
-        return total_re, mu, V_op, M_op
+        return total_random_effect, mu, V_op, M_op
 
-    def _m_step(self, resid_marginal: np.ndarray, total_re: np.ndarray, mu: tuple[np.ndarray],
-                random_effects: tuple[RandomEffect], residual: Residual, V_op: VLinearOperator, M_op: ResidualPreconditioner):
+    def _m_step(self, marginal_residual: np.ndarray, total_random_effect: np.ndarray, mu: tuple[np.ndarray],
+                random_effects: tuple[RandomEffect, ...], residual: Residual, V_op: VLinearOperator, M_op: ResidualPreconditioner):
         """Performs the M-step of the EM algorithm."""
-        eps = resid_marginal - total_re
+        eps = marginal_residual - total_random_effect
         T_sum = np.zeros((self.m, self.m))
         new_tau = []
         for k, re in enumerate(random_effects):
@@ -150,33 +150,40 @@ class MixedEffectRegressor:
 
         return self
 
-    def _check_convergence(self, old_phi: np.ndarray, old_tau: tuple[np.ndarray], rand_effects: tuple[RandomEffect], resid: Residual):
+    def _check_convergence(self, old_phi: np.ndarray, old_tau: tuple[np.ndarray], random_effects: tuple[RandomEffect, ...], residual: Residual):
         """Checks if the model parameters have converged."""
         if self.convergence_criterion == 'log_lh':
             change = np.abs((self.log_likelihood[-1] - self.log_likelihood[-2]) / self.log_likelihood[-2])
         elif self.convergence_criterion == 'norm':
             param_changes  = [np.linalg.norm(re.cov - tau_k) / np.linalg.norm(tau_k)
-                              for re, tau_k in zip(rand_effects, old_tau)]
-            param_changes.append(np.linalg.norm(resid.cov - old_phi) / np.linalg.norm(old_phi))
+                              for re, tau_k in zip(random_effects, old_tau)]
+            param_changes.append(np.linalg.norm(residual.cov - old_phi) / np.linalg.norm(old_phi))
             change = np.max(param_changes)
         self.track_change.append(change)
         self._is_converged = change < self.tol
         return self
 
-    def _run_em_iteration(self, X: np.ndarray, y: np.ndarray, resid_marginal: np.ndarray, rand_effects: tuple[RandomEffect], resid: Residual):
+    def _run_em_iteration(self, X: np.ndarray, y: np.ndarray, marginal_residual: np.ndarray, random_effects: tuple[RandomEffect, ...], residual: Residual):
         """ Run the EM algorithm for fitting the model. """
         # --- E-Step ---
-        total_re, mu, V_op, M_op = self._e_step(resid_marginal, rand_effects, resid)
+        total_random_effect, mu, V_op, M_op = self._e_step(marginal_residual, random_effects, residual)
 
         # --- Update marginal residual for M-step ---
-        resid_marginal[...] = self.compute_marginal_residual(X, y, total_re.reshape((self.m, self.n)).T)
+        marginal_residual[...] = self.compute_marginal_residual(X, y, total_random_effect.reshape((self.m, self.n)).T)
 
         # --- M-Step ---
-        self._m_step(resid_marginal, total_re, mu, rand_effects, resid, V_op, M_op)
+        self._m_step(marginal_residual, total_random_effect, mu, random_effects, residual, V_op, M_op)
 
         return self
-    
+
     def fit(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, random_slopes: None | tuple[list[int]] = None):
+        return self._fit(X=X, y=y, groups=groups, random_slopes=random_slopes)
+    
+    def partial_fit(self, marginal_residual: np.ndarray, random_effects: tuple[RandomEffect, ...], residual: Residual):
+        return self._fit(marginal_residual=marginal_residual, random_effects=random_effects, residual=residual)
+
+    def _fit(self, X: np.ndarray = None, y: np.ndarray = None, groups: np.ndarray = None, random_slopes: None | tuple[list[int]] = None,
+             marginal_residual: np.ndarray = None, random_effects: tuple[RandomEffect, ...] = None, residual: Residual = None):
         """
         Fit the multivariate mixed effects model using EM algorithm.
 
@@ -189,37 +196,38 @@ class MixedEffectRegressor:
         Returns:
             MixedEffectResults: Contains fitted model and results.
         """
-        resid_marginal, rand_effects, resid = self.prepare_data(X, y, groups, random_slopes)
+        if marginal_residual is None:
+            marginal_residual, random_effects, residual = self.prepare_data(X, y, groups, random_slopes)
         pbar = tqdm(range(1, self.max_iter + 1), desc="Fitting Model",
                     bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
         for iter_ in pbar:
             if self.convergence_criterion == 'norm':
-                old_tau = tuple(re.cov.copy() for re in rand_effects)
-                old_phi = resid.cov.copy()
+                old_tau = tuple(re.cov.copy() for re in random_effects)
+                old_phi = residual.cov.copy()
             else:
                 old_tau = None
                 old_phi = None
 
-            self._run_em_iteration(X, y, resid_marginal, rand_effects, resid)
+            self._run_em_iteration(X, y, marginal_residual, random_effects, residual)
             if iter_ > 2:
-                self._check_convergence(old_phi, old_tau, rand_effects, resid)
+                self._check_convergence(old_phi, old_tau, random_effects, residual)
                 if self._is_converged:
                     pbar.set_description("Model Converged")
                     break
         # Final log-likelihood calculation
-        V_op = VLinearOperator(rand_effects, resid)
+        V_op = VLinearOperator(random_effects, residual)
         M_op = None
         if self.preconditioner:
             try:
-                resid_cov_inv = solve(a=resid.cov, b=np.eye(self.m), assume_a='pos')
+                resid_cov_inv = solve(a=residual.cov, b=np.eye(self.m), assume_a='pos')
                 M_op = ResidualPreconditioner(resid_cov_inv, self.n, self.m)
             except Exception:
                 print("Warning: Singular residual covariance. If the fixed-effects model absorbs nearly all degrees of freedom, residual variance may vanish, leading to singularity.")
 
-        prec_resid, info = cg(A=V_op, b=resid_marginal, M=M_op)
+        prec_resid, info = cg(A=V_op, b=marginal_residual, M=M_op)
         if info != 0:
             print(f"Warning: CG solver (V⁻¹(y-fx)) did not converge. Info={info}")
 
-        self.log_likelihood.append(self.compute_log_likelihood(resid_marginal, prec_resid, V_op))
+        self.log_likelihood.append(self.compute_log_likelihood(marginal_residual, prec_resid, V_op))
 
-        return MixedEffectResults(self, rand_effects, resid)
+        return MixedEffectResults(self, random_effects, residual)
