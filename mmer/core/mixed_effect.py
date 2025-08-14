@@ -24,7 +24,7 @@ class MixedEffectRegressor:
         n_jobs: Number of parallel jobs for SLQ computation and covariance correction.
         backend: Backend for parallel processing, options are 'loky' or 'threading'.
     """
-    _VALID_CORRECTION_METHODS = ['ste', 'bste', 'detr']
+    _VALID_CORRECTION_METHODS = ['ste', 'bste', 'detr', 'woodbury']
     _VALID_CONVERGENCE_CRITERIA = ['norm', 'log_lh']
 
     def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 50, tol: float = 1e-4,

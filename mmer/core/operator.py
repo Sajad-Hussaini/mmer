@@ -1,7 +1,11 @@
 import numpy as np
+from scipy import sparse
 from scipy.sparse.linalg import LinearOperator
 from joblib import Parallel, delayed, parallel_config
 from scipy.sparse.linalg import cg
+from scipy.linalg import cho_factor, cho_solve, block_diag
+from scipy.linalg import cho_factor, cho_solve, cholesky, eigh
+from scipy.sparse.linalg import spsolve
 from .residual import Residual
 from .random_effect import RandomEffect
 
@@ -84,6 +88,8 @@ def compute_cov_correction(k: int, V_op: VLinearOperator, M_op: ResidualPrecondi
     elif method == 'ste':
         # For very large problems, the stochastic trace method is efficient.
         return compute_cov_correction_ste(k, V_op, M_op, n_probes, n_jobs, backend)
+    elif method == 'woodbury': # Add this new option
+        return compute_cov_correction_woodbury(k, V_op, n_jobs, backend)
 
 def _generate_rademacher_probes(n_rows, n_probes, seed=42):
     """Generates random probe vectors from a Rademacher distribution ({-1, 1})."""
@@ -267,3 +273,91 @@ def cov_correction_per_response(k: int, V_op: VLinearOperator, M_op: ResidualPre
     W_blocks = lower_sigma.reshape(num_blocks, q, o, q, o).sum(axis=(2, 4))
 
     return col, T_traces, W_blocks
+
+# ====================== Woodbury for Correction ======================
+
+def compute_cov_correction_woodbury(k: int, V_op: VLinearOperator, n_jobs: int, backend: str):
+    """
+    Computes T and W using the Woodbury identity, implemented by building the
+    required sparse matrices and using a robust sparse linear solver. This approach
+    is mathematically sound and avoids the flawed assumptions of previous versions.
+    """
+    # === Step 1: Extract Model Components ===
+    target_re = V_op.random_effects[k]
+    residual = V_op.residual
+    m, q_k, o_k = residual.m, target_re.q, target_re.o
+    M_q_o = m * q_k * o_k
+
+    phi_inv = np.linalg.inv(residual.cov)
+
+    tau_k = target_re.cov
+    L_tau_k = cholesky(tau_k, lower=True)
+
+    # === Step 2: Build the Large Sparse Matrices Correctly ===
+
+    # D_k = τ_k ⊗ I_{o_k}
+    D_k_sparse = sparse.kron(tau_k, sparse.eye(o_k), format='csc')
+
+    # D_k^½ = τ_k^½ ⊗ I_{o_k}
+    D_k_half_sparse = sparse.kron(L_tau_k, sparse.eye(o_k), format='csc')
+
+    # Z_kᵀZ_k
+    ZkTZk_sparse = target_re.ZTZ.tocsc()
+
+    # The middle term: ϕ⁻¹ ⊗ (Z_kᵀZ_k)
+    middle_term_sparse = sparse.kron(phi_inv, ZkTZk_sparse, format='csc')
+
+    # Assemble A_kk = (D_k^½)ᵀ [ ϕ⁻¹ ⊗ (Z_kᵀZ_k) ] D_k^½
+    # This involves sparse matrix multiplications.
+    term1 = middle_term_sparse @ D_k_half_sparse
+    A_kk_sparse = D_k_half_sparse.T @ term1
+
+    # === Step 3: Solve the Sparse Linear System ===
+    # We need to solve (I + A_kk) X = B for the correction term C_k.
+    # The full conditional covariance is Σ_k = D_k - C_k, where C_k = D_k (I+A_kk)⁻¹ A_kk.
+    # It's more direct to solve for Σ_k = D_k (I + A_kk)⁻¹.
+    
+    I_plus_A_kk = sparse.eye(M_q_o, format='csc') + A_kk_sparse
+
+    # We solve (I + A_kk) Σ_k = D_k using a sparse solver.
+    # This gives us Σ_k = (I + A_kk)⁻¹ D_k.
+    # The RHS D_k is sparse, so we can solve efficiently.
+    Sigma_k_sparse = spsolve(I_plus_A_kk, D_k_sparse, use_umfpack=True)
+    Sigma_k_sparse = sparse.csc_matrix(Sigma_k_sparse)
+
+    # === Step 4: Calculate W_k and T_k from Σ_k ===
+
+    # W_k is the sum of the (m*q_k, m*q_k) diagonal blocks of Σ_k
+    W_k = np.zeros_like(tau_k)
+    for i in range(o_k):
+        start = i * m * q_k
+        end = (i + 1) * m * q_k
+        W_k += Sigma_k_sparse[start:end, start:end].toarray()
+
+    # T_k requires the trace of products with Σ_k's blocks.
+    T_k = np.zeros((m, m))
+    for i in range(m):
+        for j in range(i, m): # Exploit symmetry
+            # We need the (i,j)-th block of Σ_k, which is a (q_k*o_k, q_k*o_k) matrix.
+            # This requires careful slicing.
+            rows = np.array([row for r_idx in range(o_k) for row in range(r_idx*m*q_k + i*q_k, r_idx*m*q_k + (i+1)*q_k)])
+            cols = np.array([col for c_idx in range(o_k) for col in range(c_idx*m*q_k + j*q_k, c_idx*m*q_k + (j+1)*q_k)])
+            
+            sigma_ij_block = Sigma_k_sparse[rows, :][:, cols]
+            
+            # T_ij = trace(ZkTZk * sigma_ji)
+            # Note the index swap to (j,i) due to linear algebra conventions.
+            if i == j:
+                 trace_val = ZkTZk_sparse.multiply(sigma_ij_block).sum()
+            else:
+                 # For off-diagonal, need to get sigma_ji_block
+                 rows_ji = np.array([row for r_idx in range(o_k) for row in range(r_idx*m*q_k + j*q_k, r_idx*m*q_k + (j+1)*q_k)])
+                 cols_ji = np.array([col for c_idx in range(o_k) for col in range(c_idx*m*q_k + i*q_k, c_idx*m*q_k + (i+1)*q_k)])
+                 sigma_ji_block = Sigma_k_sparse[rows_ji, :][:, cols_ji]
+                 trace_val = ZkTZk_sparse.multiply(sigma_ji_block).sum()
+
+            T_k[i, j] = trace_val
+            if i != j:
+                T_k[j, i] = trace_val
+
+    return T_k, W_k
