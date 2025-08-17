@@ -166,13 +166,17 @@ class MixedEffectRegressor:
         """
         if self.convergence_criterion == 'log_lh':
             change = np.abs((self.log_likelihood[-1] - self.log_likelihood[-2]) / self.log_likelihood[-2])
+            self.track_change.append(change)
+            self._is_converged = change < self.tol
+            if self.log_likelihood[-1] <= self.log_likelihood[-2]:
+                self._is_converged = True
         elif self.convergence_criterion == 'norm':
             param_changes  = [np.linalg.norm(re.cov - tau_k) / np.linalg.norm(tau_k)
                               for re, tau_k in zip(random_effects, old_tau)]
             param_changes.append(np.linalg.norm(residual.cov - old_phi) / np.linalg.norm(old_phi))
             change = np.max(param_changes)
-        self.track_change.append(change)
-        self._is_converged = change < self.tol
+            self.track_change.append(change)
+            self._is_converged = change < self.tol
         return self
 
     def _run_em_iteration(self, X: np.ndarray, y: np.ndarray, marginal_residual: np.ndarray, random_effects: tuple[RandomEffect, ...], residual: Residual):
