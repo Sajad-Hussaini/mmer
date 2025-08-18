@@ -25,11 +25,10 @@ class MixedEffectRegressor:
         backend: Backend for parallel processing, options are 'loky' or 'threading'.
     """
     _VALID_CORRECTION_METHODS = ['ste', 'bste', 'detr', 'xbste']
-    _VALID_CONVERGENCE_CRITERIA = ['norm', 'log_lh']
 
     def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 10, tol: float = 1e-3,
                  slq_steps: int = 30, slq_probes: int = 30, preconditioner: bool = True, correction_method: str = 'bste',
-                 convergence_criterion: str = 'norm', n_jobs: int = 1, backend: str = 'loky'):
+                 n_jobs: int = 1, backend: str = 'loky'):
         self.fe_model = fixed_effects_model
         self.max_iter = max_iter
         self.tol = tol
@@ -40,10 +39,6 @@ class MixedEffectRegressor:
         self.correction_method = correction_method
         if self.correction_method not in self._VALID_CORRECTION_METHODS:
             raise ValueError(f"Unknown correction method: '{self.correction_method}'. Available methods are {self._VALID_CORRECTION_METHODS}.")
-        
-        self.convergence_criterion = convergence_criterion
-        if self.convergence_criterion not in self._VALID_CONVERGENCE_CRITERIA:
-            raise ValueError(f"convergence_criterion must be one of {self._VALID_CONVERGENCE_CRITERIA}")
 
         self.log_likelihood = []
         self.track_change = []
@@ -134,9 +129,14 @@ class MixedEffectRegressor:
         Performs the E-step of the EM algorithm.
         """
         prec_resid, V_op, M_op = self._solver(marginal_residual, random_effects, residual)
-        if self.convergence_criterion == 'log_lh':
-            final_logL = self.compute_log_likelihood(marginal_residual, prec_resid, V_op)
-            self.log_likelihood.append(final_logL)
+        current_log_lh = self.compute_log_likelihood(marginal_residual, prec_resid, V_op)
+        self.log_likelihood.append(current_log_lh)
+        if len(self.log_likelihood) >= 2:
+            self._check_convergence()
+
+        if self._is_converged:
+            return None, None, None, None
+        
         total_random_effect, mu = self.aggregate_random_effects(prec_resid, random_effects)
 
         return total_random_effect, mu, V_op, M_op
@@ -160,23 +160,15 @@ class MixedEffectRegressor:
 
         return self
 
-    def _check_convergence(self, old_phi: np.ndarray, old_tau: tuple[np.ndarray], random_effects: tuple[RandomEffect, ...], residual: Residual):
+    def _check_convergence(self):
         """
         Checks if the model parameters have converged.
         """
-        if self.convergence_criterion == 'log_lh':
-            change = np.abs((self.log_likelihood[-1] - self.log_likelihood[-2]) / self.log_likelihood[-2])
-            self.track_change.append(change)
-            self._is_converged = change < self.tol
-            if self.log_likelihood[-1] <= self.log_likelihood[-2]:
-                self._is_converged = True
-        elif self.convergence_criterion == 'norm':
-            param_changes  = [np.linalg.norm(re.cov - tau_k) / np.linalg.norm(tau_k)
-                              for re, tau_k in zip(random_effects, old_tau)]
-            param_changes.append(np.linalg.norm(residual.cov - old_phi) / np.linalg.norm(old_phi))
-            change = np.max(param_changes)
-            self.track_change.append(change)
-            self._is_converged = change < self.tol
+        change = np.abs((self.log_likelihood[-1] - self.log_likelihood[-2]) / self.log_likelihood[-2])
+        self.track_change.append(change)
+        self._is_converged = change <= self.tol
+        if self.log_likelihood[-1] <= self.log_likelihood[-2]:
+            self._is_converged = True
         return self
 
     def _run_em_iteration(self, X: np.ndarray, y: np.ndarray, marginal_residual: np.ndarray, random_effects: tuple[RandomEffect, ...], residual: Residual):
@@ -184,6 +176,8 @@ class MixedEffectRegressor:
         Run the EM algorithm for fitting the model.
         """
         total_random_effect, mu, V_op, M_op = self._e_step(marginal_residual, random_effects, residual)
+        if self._is_converged:
+            return self
 
         marginal_residual[...] = self.compute_marginal_residual(X, y, total_random_effect.reshape((self.m, self.n)).T)
 
@@ -226,22 +220,10 @@ class MixedEffectRegressor:
             marginal_residual, random_effects, residual = self.prepare_data(X, y, groups, random_slopes)
         pbar = tqdm(range(1, self.max_iter + 1), desc="Fitting Model",
                     bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
-        for iter_ in pbar:
-            if self.convergence_criterion == 'norm':
-                old_tau = tuple(re.cov.copy() for re in random_effects)
-                old_phi = residual.cov.copy()
-            else:
-                old_tau = None
-                old_phi = None
-
+        for _ in pbar:
             self._run_em_iteration(X, y, marginal_residual, random_effects, residual)
-            if iter_ > 2:
-                self._check_convergence(old_phi, old_tau, random_effects, residual)
-                if self._is_converged:
-                    pbar.set_description("Model Converged")
-                    break
-        # Final log-likelihood calculation
-        prec_resid, V_op, M_op = self._solver(marginal_residual, random_effects, residual)
-        self.log_likelihood.append(self.compute_log_likelihood(marginal_residual, prec_resid, V_op))
+            if self._is_converged:
+                pbar.set_description("Model Converged")
+                break
 
         return MixedEffectResults(self, random_effects, residual)
