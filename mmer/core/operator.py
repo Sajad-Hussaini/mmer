@@ -1,11 +1,7 @@
 import numpy as np
-from scipy import sparse
 from scipy.sparse.linalg import LinearOperator
 from joblib import Parallel, delayed, parallel_config
 from scipy.sparse.linalg import cg
-from scipy.linalg import cho_factor, cho_solve, block_diag
-from scipy.linalg import cho_factor, cho_solve, cholesky, eigh
-from scipy.sparse.linalg import spsolve
 from .residual import Residual
 from .random_effect import RandomEffect
 
@@ -82,12 +78,12 @@ def compute_cov_correction(k: int, V_op: VLinearOperator, M_op: ResidualPrecondi
     if method == 'detr':
         # For small problems, the exact method is better and often faster.
         return compute_cov_correction_detr(k, V_op, M_op, n_jobs, backend)
+    elif method == 'hyb':
+        # For small problems, the exact method is better and often faster.
+        return compute_cov_correction_hybrid(k, V_op, M_op, n_jobs, backend)
     elif method == 'bste':
         # For medium-sized to large problems, the stochastic block trace method is necessary for performance.
         return compute_cov_correction_bste(k, V_op, M_op, n_probes, n_jobs, backend)
-    elif method == 'xbste':
-        # For medium-sized to large problems, the stochastic block trace method is necessary for performance.
-        return compute_cov_correction_xbste(k, V_op, M_op, n_probes, n_jobs, backend)
     elif method == 'ste':
         # For very large problems, the stochastic trace method is efficient.
         return compute_cov_correction_ste(k, V_op, M_op, n_probes, n_jobs, backend)
@@ -279,94 +275,3 @@ def cov_correction_per_response(k: int, V_op: VLinearOperator, M_op: ResidualPre
     W_blocks = lower_sigma.reshape(num_blocks, q, o, q, o).sum(axis=(2, 4))
 
     return col, T_traces, W_blocks
-
-# ====================== Block Stochastic Trace Estimation for Correction ======================
-
-def compute_cov_correction_xbste(k: int, V_op, M_op, n_probes: int, n_jobs: int, backend: str):
-    """
-    Computes the uncertainty correction matrices T: (m, m) and W: (m * q, m * q)
-    using the Hutchinson Stochastic Trace Estimation method.
-    It computes diagonal and off-diagonal elements of T and W.
-    However, only diagonals of each response block are considered (No issue for q=1).
-    It uses the symmetry of the covariance matrix to reduce computations.
-
-    Computes T and W using a fine-grained parallelization strategy.
-    Each parallel job handles a single (column, probe_vector) pair.
-    """
-    m = V_op.residual.m
-    re = V_op.random_effects[k]
-    q, o = re.q, re.o
-    
-    T = np.zeros((m, m))
-    W = np.zeros((m * q, m * q))
-
-    ZTZ_diag = re.ZTZ.diagonal()
-
-    num_blocks_per_col = {col: m - col for col in range(m)}
-    diag_C_accumulator = {col: np.zeros(num_blocks_per_col[col] * q * o) for col in range(m)}
-
-    tasks = (delayed(single_probe_computation)(k, V_op, M_op, col, i)
-             for col in range(m)
-             for i in range(n_probes))
-
-    with parallel_config(backend=backend, n_jobs=n_jobs):
-        results_generator = Parallel(return_as="generator")(tasks)
-
-        for col, diag_C_contribution in results_generator:
-            diag_C_accumulator[col] += diag_C_contribution
-
-    
-    for col, diag_C_sum in diag_C_accumulator.items():
-        diag_C = diag_C_sum / n_probes
-        
-        num_blocks = num_blocks_per_col[col]
-        
-        sub_cov = re.cov[col*q:, col*q:(col+1)*q]
-        diags = sub_cov.reshape(num_blocks, q, q).diagonal(axis1=1, axis2=2)
-        diag_sigma = np.repeat(diags, o, axis=1).ravel()
-        diag_sigma -= diag_C
-
-        
-        sigma_mat = diag_sigma.reshape(num_blocks, q * o)
-        T_traces = sigma_mat.dot(ZTZ_diag)
-        W_diag_blocks = diag_sigma.reshape(num_blocks, q, o).sum(axis=2)
-
-        for i, (trace, W_diag) in enumerate(zip(T_traces, W_diag_blocks)):
-            row = col + i
-            # Assemble T
-            T[col, row] = T[row, col] = trace
-            # Assemble W
-            r_slice = slice(row * q, (row + 1) * q)
-            c_slice = slice(col * q, (col + 1) * q)
-            np.fill_diagonal(W[r_slice, c_slice], W_diag)
-            if row != col:
-                np.fill_diagonal(W[c_slice, r_slice], W_diag)
-
-    return T, W
-
-def single_probe_computation(k: int, V_op, M_op, col: int, probe_idx: int):
-    """
-    Worker function: computes the result for a single column and a single probe vector.
-    This is the core task that will be parallelized.
-    """
-    m = V_op.residual.m
-    re = V_op.random_effects[k]
-    q, o = re.q, re.o
-    block_size = q * o
-    num_blocks = m - col
-
-    seed = 42 + probe_idx
-    probe_vector = _generate_rademacher_probes(block_size, 1, seed).ravel()
-
-    vec = np.zeros(m * block_size)
-    vec[col * block_size : (col + 1) * block_size] = probe_vector
-
-    vec_cg = re.kronZ_D_matvec(vec)
-    vec_cg[...], info = cg(A=V_op, b=vec_cg, M=M_op)
-    if info != 0:
-        print(f"Warning: CG solver for col={col}, probe={probe_idx} did not converge. Info={info}")
-
-    lower_c = re.kronZ_D_T_matvec(vec_cg)[col * block_size:]
-    diag_C_contribution = (lower_c.reshape(num_blocks, block_size) * probe_vector).ravel()
-
-    return col, diag_C_contribution
