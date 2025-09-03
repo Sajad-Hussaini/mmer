@@ -18,8 +18,9 @@ class MixedEffectResults:
         self.random_effects = random_effects
         self.residual = residual
         self.log_likelihood = mixed_model.log_likelihood
-        self.track_change = mixed_model.track_change
         self._is_converged = mixed_model._is_converged
+        self._no_improvement_count = mixed_model._no_improvement_count
+        self._best_log_likelihood = mixed_model._best_log_likelihood
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         """
@@ -85,12 +86,12 @@ class MixedEffectResults:
         print("\n" + indent0 + "Multivariate Mixed Effects Model Summary")
         print("=" * 50)
         print(indent1 + f"FE Model: {type(self.fe_model).__name__}")
-        print(indent1 + f"Iterations: {len(self.log_likelihood)}")
+        print(indent1 + f"Iterations: {len(self.log_likelihood) - self._no_improvement_count}")
         print(indent1 + f"Converged: {self._is_converged}")
-        print(indent1 + f"Log-Likelihood: {self.log_likelihood[-1]:.2f}")
+        print(indent1 + f"Log-Likelihood: {self._best_log_likelihood:.2f}")
         print(indent1 + f"No. Observations: {self.n}")
         print(indent1 + f"No. Response Variables: {self.m}")
-        print(indent1 + f"No. Grouping Variables: {self.k}")
+        print(indent1 + f"No. Grouping Factors: {self.k}")
         print("-" * 50)
         print(indent1 + f"Residual (Unexplained) Variances")
         print(indent2 + "{:<10} {:>10}".format("Response", "Variance"))

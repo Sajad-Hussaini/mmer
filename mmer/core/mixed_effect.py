@@ -26,12 +26,13 @@ class MixedEffectRegressor:
     """
     _VALID_CORRECTION_METHODS = ['ste', 'bste', 'detr']
 
-    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 10, tol: float = 1e-3,
+    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 10, tol: float = 1e-3, patience: int = 3,
                  slq_steps: int = 30, slq_probes: int = 30, preconditioner: bool = True, correction_method: str = 'bste',
-                 n_jobs: int = 1, backend: str = 'loky'):
+                 n_jobs: int = -1, backend: str = 'loky'):
         self.fe_model = fixed_effects_model
         self.max_iter = max_iter
         self.tol = tol
+        self.patience = patience
         self.slq_steps = slq_steps
         self.slq_probes = slq_probes
         self.preconditioner = preconditioner
@@ -41,8 +42,11 @@ class MixedEffectRegressor:
             raise ValueError(f"Unknown correction method: '{self.correction_method}'. Available methods are {self._VALID_CORRECTION_METHODS}.")
 
         self.log_likelihood = []
-        self.track_change = []
         self._is_converged = False
+        self._no_improvement_count = 0
+        self._best_log_likelihood = -np.inf
+        self._best_re_covs = None
+        self._best_resid_cov = None
         self.n_jobs = n_jobs
         self.backend = backend
 
@@ -165,10 +169,7 @@ class MixedEffectRegressor:
         Checks if the model parameters have converged.
         """
         change = np.abs((self.log_likelihood[-1] - self.log_likelihood[-2]) / self.log_likelihood[-2])
-        self.track_change.append(change)
         self._is_converged = change <= self.tol
-        if self.log_likelihood[-1] <= self.log_likelihood[-2]:
-            self._is_converged = True
         return self
 
     def _run_em_iteration(self, X: np.ndarray, y: np.ndarray, marginal_residual: np.ndarray, random_effects: tuple[RandomEffect, ...], residual: Residual):
@@ -224,6 +225,24 @@ class MixedEffectRegressor:
             self._run_em_iteration(X, y, marginal_residual, random_effects, residual)
             if self._is_converged:
                 pbar.set_description("Model Converged")
+                break
+            current_log_lh = self.log_likelihood[-1]
+            if current_log_lh > self._best_log_likelihood:
+                self._best_log_likelihood = current_log_lh
+                self._no_improvement_count = 0
+
+                self._best_re_covs = [re.cov.copy() for re in random_effects]
+                self._best_resid_cov = residual.cov.copy()
+            else:
+                self._no_improvement_count += 1
+
+            if self._no_improvement_count >= self.patience:
+                pbar.set_description(f"Early stopping after {self._no_improvement_count} iterations")
+
+                for k, re in enumerate(random_effects):
+                    re.cov[...] = self._best_re_covs[k]
+                residual.cov[...] = self._best_resid_cov
+                self._is_converged = True
                 break
 
         return MixedEffectResults(self, random_effects, residual)
