@@ -78,9 +78,6 @@ def compute_cov_correction(k: int, V_op: VLinearOperator, M_op: ResidualPrecondi
     if method == 'detr':
         # For small problems, the exact method is better and often faster.
         return compute_cov_correction_detr(k, V_op, M_op, n_jobs, backend)
-    elif method == 'hyb':
-        # For small problems, the exact method is better and often faster.
-        return compute_cov_correction_hybrid(k, V_op, M_op, n_jobs, backend)
     elif method == 'bste':
         # For medium-sized to large problems, the stochastic block trace method is necessary for performance.
         return compute_cov_correction_bste(k, V_op, M_op, n_probes, n_jobs, backend)

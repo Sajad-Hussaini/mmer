@@ -3,6 +3,7 @@ from scipy.sparse.linalg import cg
 from scipy.linalg import solve
 from sklearn.base import RegressorMixin
 from tqdm import tqdm
+from copy import deepcopy
 from .operator import VLinearOperator, ResidualPreconditioner, compute_cov_correction
 from ..lanczos_algorithm import slq
 from .random_effect import RandomEffect
@@ -32,7 +33,7 @@ class MixedEffectRegressor:
         self.fe_model = fixed_effects_model
         self.max_iter = max_iter
         self.tol = tol
-        self.patience = patience
+        self.patience = patience if patience >= 1 else 1
         self.slq_steps = slq_steps
         self.slq_probes = slq_probes
         self.preconditioner = preconditioner
@@ -40,6 +41,9 @@ class MixedEffectRegressor:
         self.correction_method = correction_method
         if self.correction_method not in self._VALID_CORRECTION_METHODS:
             raise ValueError(f"Unknown correction method: '{self.correction_method}'. Available methods are {self._VALID_CORRECTION_METHODS}.")
+        
+        self.n_jobs = n_jobs
+        self.backend = backend
 
         self.log_likelihood = []
         self._is_converged = False
@@ -47,8 +51,7 @@ class MixedEffectRegressor:
         self._best_log_likelihood = -np.inf
         self._best_re_covs = None
         self._best_resid_cov = None
-        self.n_jobs = n_jobs
-        self.backend = backend
+        self._best_fe_model = None
 
     def prepare_data(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, random_slopes: None | tuple[list[int] | None]):
         """
@@ -233,15 +236,17 @@ class MixedEffectRegressor:
 
                 self._best_re_covs = [re.cov.copy() for re in random_effects]
                 self._best_resid_cov = residual.cov.copy()
+                self._best_fe_model = deepcopy(self.fe_model)
             else:
                 self._no_improvement_count += 1
 
             if self._no_improvement_count >= self.patience:
-                pbar.set_description(f"Early stopping after {self._no_improvement_count} iterations")
+                pbar.set_description(f"Early stopping after {self._no_improvement_count} iterations without improvement.")
 
                 for k, re in enumerate(random_effects):
                     re.cov[...] = self._best_re_covs[k]
                 residual.cov[...] = self._best_resid_cov
+                self.fe_model = self._best_fe_model
                 self._is_converged = True
                 break
 
