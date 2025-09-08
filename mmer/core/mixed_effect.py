@@ -3,7 +3,7 @@ from scipy.sparse.linalg import cg
 from scipy.linalg import solve
 from sklearn.base import RegressorMixin
 from tqdm import tqdm
-import joblib
+import pickle
 from .operator import VLinearOperator, ResidualPreconditioner, compute_cov_correction
 from ..lanczos_algorithm import slq
 from .random_effect import RandomEffect
@@ -181,7 +181,7 @@ class MixedEffectRegressor:
 
             self._best_re_covs = [re.cov.copy() for re in random_effects]
             self._best_resid_cov = residual.cov.copy()
-            self._best_fe_model = joblib.loads(joblib.dumps(self.fe_model))
+            self._best_fe_model = pickle.loads(pickle.dumps(self.fe_model))
         else:
             self._no_improvement_count += 1
         
