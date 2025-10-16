@@ -1,22 +1,37 @@
 import numpy as np
-from sklearn.base import BaseEstimator, RegressorMixin
 
-class MultiOutputRegressor(BaseEstimator, RegressorMixin):
+class MultiOutputRegressor:
     """
     A custom multi-output regressor that fits a separate model for each target column.
+
+    Parameters
+    ----------
+    estimators : list
+        List of estimator objects for each target output.
+
+    Attributes
+    ----------
+    estimators : list
+        The fitted estimators for each output.
     """
     def __init__(self, estimators: list):
-        """
-        Initializes the multi-output regressor with a list of estimators.
-        """
         self.estimators = estimators
 
     def fit(self, X: np.ndarray, y: np.ndarray):
         """
-        Fits each estimator to its corresponding column in the target array.
-        Parameters:
-            X : shape (n_samples, n_features)
-            y : shape (n_samples, n_outputs)
+        Fit each estimator to its corresponding column in the target array.
+
+        Parameters
+        ----------
+        X : np.ndarray, shape (n_samples, n_features)
+            Training input samples.
+        y : np.ndarray, shape (n_samples, n_outputs)
+            Target values for each output.
+
+        Returns
+        -------
+        self : MultiOutputRegressor
+            Fitted estimator.
         """
         if y.ndim == 1:
             raise ValueError("y must be a 2D array with shape (n_samples, n_outputs)")
@@ -33,11 +48,17 @@ class MultiOutputRegressor(BaseEstimator, RegressorMixin):
 
     def predict(self, X):
         """
-        Predicts outputs by aggregating predictions from each individual model.
-        Parameters:
-            X : shape (n_samples, n_features)
-        Returns:
-            y : shape (n_samples, n_outputs)
+        Predict outputs by aggregating predictions from each individual model.
+
+        Parameters
+        ----------
+        X : np.ndarray, shape (n_samples, n_features)
+            Input samples.
+
+        Returns
+        -------
+        y : np.ndarray, shape (n_samples, n_outputs)
+            Predicted values for each output.
         """
         n_samples = X.shape[0]
         n_outputs = len(self.estimators)

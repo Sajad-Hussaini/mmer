@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.sparse.linalg import cg
 from scipy.linalg import solve
+from .mixed_effect import MixedEffectRegressor
 from .random_effect import RandomEffect
 from .residual import Residual
 from .operator import VLinearOperator, ResidualPreconditioner
@@ -8,8 +9,32 @@ from .operator import VLinearOperator, ResidualPreconditioner
 class MixedEffectResults:
     """
     Result class for the Multivariate Mixed Effects Regression.
+
+    Parameters
+    ----------
+    mixed_model : MixedEffectRegressor
+        Fitted mixed effect regressor containing fixed and random effects.
+    random_effects : tuple[RandomEffect]
+        Tuple of fitted random effect objects for each grouping factor.
+    residual : Residual
+        Fitted residual object containing unexplained variance.
+
+    Attributes
+    ----------
+    fe_model : object
+        Fitted fixed effects model.
+    m : int
+        Number of response variables.
+    n : int
+        Number of observations.
+    k : int
+        Number of grouping factors.
+    random_slopes : list
+        List of random slopes per grouping factor.
+    log_likelihood : list
+        Log-likelihood values per iteration.
     """
-    def __init__(self, mixed_model, random_effects: tuple[RandomEffect], residual: Residual):
+    def __init__(self, mixed_model: MixedEffectRegressor, random_effects: tuple[RandomEffect], residual: Residual):
         self.fe_model = mixed_model.fe_model
         self.m = mixed_model.m
         self.n = mixed_model.n
@@ -67,8 +92,8 @@ class MixedEffectResults:
         total_re = np.zeros(self.m * self.n)
         mu = []
         for re in self.random_effects:
-            mu.append(re.compute_mu(prec_resid))
-            total_re += re.map_mu(mu[-1])
+            mu.append(re._compute_mu(prec_resid))
+            total_re += re._map_mu(mu[-1])
 
         resid -= total_re  # unexplained residual
 

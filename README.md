@@ -1,47 +1,26 @@
 # MMER - Multivariate Mixed Effects Regression
 
-[![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![PyPI](https://img.shields.io/pypi/v/mmer.svg)](https://pypi.org/project/mmer/)
+[![PyPI](https://img.shields.io/pypi/v/mmer.svg)](https://pypi.org/project/mmer)
+[![Documentation Status](https://readthedocs.org/projects/mmer/badge/?version=latest)](https://mmer.readthedocs.io/en/latest/?badge=latest)  
 
-**MMER** is a Python package for performing multivariate mixed-effects regression. Its key innovation is allowing fixed effects to be modeled by a variety of machine learning regressors (e.g., Artificial Neural Networks, Random Forest, XGBoost) in addition to standard parametric models (e.g., Linear regression). It supports multiple responses (multivariate), multiple grouping variables, and multiple random effects (i.e., intercept, slopes) with flexible random effects structures.
-
-> 💡 **Tip**: To ensure compatibility with the user guide, it's recommended to use the latest **release** available on **GitHub**, **PyPI**, or **Zenodo**.
+**MMER** is a Python package for multivariate mixed-effects regression. It uniquely supports modeling fixed effects with machine learning regressors (e.g., neural networks, random forests, XGBoost) as well as standard parametric models. MMER handles multiple responses, grouping variables, and flexible random effects structures [[1]](#references).
 
 ## Table of Contents
-- [Features](#features)
-- [Installation](#installation)
+- [Features and Installation](#features-and-installation)
 - [User Guide](#user-guide)
 - [License](#license)
 - [Contact](#contact)
 - [References](#references)
 
-## Features
+## Features and Installation
 
-✅ **Multivariate responses**: Handle multiple dependent variables simultaneously  
-✅ **Flexible random effects**: Support for random intercepts and slopes across multiple grouping factors  
-✅ **Scikit-learn integration**: Use ML models compatible with any scikit-learn regressor, or your own custom models for fixed effects  
-✅ **Parallel processing**: Memory-efficient computation leveraging multi-core processing for large datasets  
-
-## Installation
-
-### Install from PyPI (Recommended)
-```bash
-pip install mmer
-```
-
-### Install from Source
-```bash
-git clone https://github.com/Sajad-Hussaini/mmer.git
-cd mmer
-pip install .
-```
+See the [Documentation](https://mmer.readthedocs.io/en/latest/?badge=latest).
 
 ## User Guide
 
-For step-by-step examples and tutorials on using **MMER**, explore [Examples]().
-
-> 📚 **Note**: The User Guide will be updated with more detailed instructions.
+The full documentation, including examples and the complete API reference, is available at [mmer.readthedocs.io](https://mmer.readthedocs.io/en/latest/?badge=latest).
 
 ## License
 
@@ -50,27 +29,28 @@ See the [LICENSE](LICENSE) file for the full text.
 
 ## Contact
 
-For questions or assistance, please contact:
+For questions or assistance, please feelfree to contact:
 
 **S.M. Sajad Hussaini**  
 📧 [hussaini.smsajad@gmail.com](mailto:hussaini.smsajad@gmail.com)
 
-> Please include "MMER" in the subject line for faster response.
+> Please include "MMER" in the subject line for a quicker response.
 
-### Support the Project
+## Support the Project
 
-If you find this package useful, contributions to help maintain and improve it are always appreciated.
+If you find this package useful, contributions to help maintain and improve it, are always appreciated.
 
 [![PayPal](https://img.shields.io/badge/PayPal-Donate-blue.svg)](https://www.paypal.com/paypalme/sajadhussaini)
 
 ## References
 
-Please cite the following references for any formal study:
+Please cite the following references for any formal study:  
 
 **[1] Primary Reference**  
 *Title of the paper*  
-DOI: [To be added] (Journal of Earthquake Engineering and Structural Dynamics)
+*DOI: [To be added]*  
+(Journal of Earthquake Engineering and Structural Dynamics)
 
 **[2] MMER Package**  
-*MMER: Multivariate Mixed Effects Regression Model*  
-DOI: [To be added]
+*MMER: Multivariate Mixed Effects Regression*  
+*DOI: [To be added]*  

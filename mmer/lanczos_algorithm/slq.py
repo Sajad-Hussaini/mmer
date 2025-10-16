@@ -5,7 +5,25 @@ from ..core.operator import VLinearOperator
 
 def slq_probe(V_op: VLinearOperator, lanczos_steps: int, seed: int):
     """
-    Single probe for SLQ logdet estimation with optimized error handling.
+    Single probe for SLQ logdet estimation.
+    
+    Performs Lanczos iteration to estimate log(det(V)) using a single probe vector.
+    Uses Rademacher distribution for probe vector v ~ {-1, 1}^n.
+    
+    Parameters
+    ----------
+    V_op : VLinearOperator
+        Symmetric positive-definite linear operator V.
+    lanczos_steps : int
+        Number of Lanczos iterations.
+    seed : int
+        Random seed for probe vector generation.
+    
+    Returns
+    -------
+    float
+        Probe estimate: sum(log(λ_i) * (e_i[0])^2) where λ_i are eigenvalues
+        of tridiagonal matrix T and e_i are corresponding eigenvectors.
     """
     rng = np.random.default_rng(seed)
     dim = V_op.shape[0]
@@ -51,10 +69,31 @@ def slq_probe(V_op: VLinearOperator, lanczos_steps: int, seed: int):
 
 def logdet(V_op: VLinearOperator, lanczos_steps: int, num_probes: int, n_jobs: int, backend: str, random_seed: int = 42):
     """
-    Estimates the log-determinant of a symmetric positive-definite operator V
-    using a parallelized Stochastic Lanczos Quadrature method.
-
-    Returns an estimate of log(det(V)).
+    Estimate log-determinant using Stochastic Lanczos Quadrature (SLQ).
+    
+    Computes log(det(V)) using parallelized SLQ with multiple probe vectors.
+    Estimate: log(det(V)) ≈ (n/m) * sum_{i=1}^m probe_i where n is dimension
+    and m is number of probes.
+    
+    Parameters
+    ----------
+    V_op : VLinearOperator
+        Symmetric positive-definite linear operator V.
+    lanczos_steps : int
+        Number of Lanczos iterations per probe.
+    num_probes : int
+        Number of probe vectors m.
+    n_jobs : int
+        Number of parallel jobs.
+    backend : str
+        Joblib parallel backend (e.g., 'loky', 'threading').
+    random_seed : int, optional
+        Random seed for reproducibility. Default is 42.
+    
+    Returns
+    -------
+    float
+        Estimated log-determinant: log(det(V)).
     """
     dim = V_op.shape[0]
     # Create a sequence of independent random seeds for each parallel job

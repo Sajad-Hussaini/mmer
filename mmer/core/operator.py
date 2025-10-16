@@ -1,7 +1,6 @@
 import numpy as np
-from scipy.sparse.linalg import LinearOperator
+from scipy.sparse.linalg import LinearOperator, cg
 from joblib import Parallel, delayed, parallel_config
-from scipy.sparse.linalg import cg
 from .residual import Residual
 from .random_effect import RandomEffect
 
@@ -11,36 +10,78 @@ class VLinearOperator(LinearOperator):
     V = Σ(Iₘ ⊗ Zₖ) Dₖ (Iₘ ⊗ Zₖ)ᵀ + R
     """
     def __init__(self, random_effects: tuple[RandomEffect], residual: Residual):
+        """
+        Initialize the VLinearOperator.
+
+        Parameters
+        ----------
+        random_effects : tuple[RandomEffect]
+            Tuple of random effect components.
+        residual : Residual
+            Residual covariance component.
+        """
         self.random_effects = random_effects
         self.residual = residual
         super().__init__(dtype=np.float64, shape=(self.residual.m * self.residual.n, self.residual.m * self.residual.n))
 
     def _matvec(self, x_vec: np.ndarray):
         """
-        Computes the marginal covariance matrix-vector product V @ x_vec,
-        where V = Σ(Iₘ ⊗ Zₖ) Dₖ (Iₘ ⊗ Zₖ)ᵀ + R.
-        returns:
-            1d array (Mn,)
+        Compute the marginal covariance matrix-vector product V @ x_vec.
+        
+        V = Σ(Iₘ ⊗ Zₖ) Dₖ (Iₘ ⊗ Zₖ)ᵀ + R
+
+        Parameters
+        ----------
+        x_vec : np.ndarray
+            Input vector of shape (Mn,).
+
+        Returns
+        -------
+        np.ndarray
+            Result of V @ x_vec, shape (Mn,).
         """
-        Vx = self.residual.full_cov_matvec(x_vec)
+        Vx = self.residual._full_cov_matvec(x_vec)
         for re in self.random_effects:
-            Vx += re.full_cov_matvec(x_vec)
+            Vx += re._full_cov_matvec(x_vec)
         return Vx
 
     def _adjoint(self):
-        """Implements the adjoint operator Vᵀ. Since V is symmetric, return self."""
+        """
+        Implement the adjoint operator Vᵀ.
+
+        Returns
+        -------
+        VLinearOperator
+            Self, since V is symmetric.
+        """
         return self
     
     def __reduce__(self):
-        """Enable pickling for multiprocessing."""
+        """
+        Enable pickling for multiprocessing.
+
+        Returns
+        -------
+        tuple
+            Class and arguments for unpickling.
+        """
         return (self.__class__, (self.random_effects, self.residual))
 
 class ResidualPreconditioner(LinearOperator):
     """
-    The Lightweight Preconditioner: P⁻¹ = R⁻¹ = φ⁻¹ ⊗ Iₙ
+    The Lightweight Preconditioner: P⁻¹ = R⁻¹ = φ⁻¹ ⊗ Iₙ.
 
     This is the simplest and cheapest preconditioner. It approximates the full
     covariance V with only its residual component R, ignoring all random effects.
+
+    Parameters
+    ----------
+    resid_cov_inv : np.ndarray
+        Inverse of residual covariance matrix φ⁻¹.
+    n : int
+        Number of observations.
+    m : int
+        Number of responses.
     """
     def __init__(self, resid_cov_inv: np.ndarray, n: int, m: int):
         self.cov_inv = resid_cov_inv
@@ -50,27 +91,69 @@ class ResidualPreconditioner(LinearOperator):
 
     def _matvec(self, x_vec: np.ndarray):
         """
-        Computes (φ⁻¹ ⊗ Iₙ) @ x_vec.
-        knowing that (XᵀC)ᵀ = CᵀX = CX
+        Compute (φ⁻¹ ⊗ Iₙ) @ x_vec.
+
+        Parameters
+        ----------
+        x_vec : np.ndarray
+            Input vector.
+
+        Returns
+        -------
+        np.ndarray
+            Result of preconditioner applied to x_vec.
         """
         Px = self.cov_inv @ x_vec.reshape((self.m, self.n))
         return Px.ravel()
     
     def _adjoint(self):
-        """ Since P is symmetric, return self."""
+        """
+        Implement the adjoint operator.
+
+        Returns
+        -------
+        ResidualPreconditioner
+            Self, since P is symmetric.
+        """
         return self
     
     def __reduce__(self):
-        """Enable pickling for multiprocessing."""
+        """
+        Enable pickling for multiprocessing.
+
+        Returns
+        -------
+        tuple
+            Class and arguments for unpickling.
+        """
         return (self.__class__, (self.cov_inv, self.n, self.m))
     
 # ====================== Main Adaptive Correction Function ======================
 
 def compute_cov_correction(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, method: str, n_jobs: int, backend: str):
     """
-    Adaptively computes the uncertainty correction matrices T and W.
-    The method can be 'detr' for deterministic, 'bste' for block stochastic trace estimation,
-    or 'ste' for stochastic trace estimation
+    Adaptively compute the uncertainty correction matrices T and W.
+
+    Parameters
+    ----------
+    k : int
+        Index of the random effect.
+    V_op : VLinearOperator
+        Marginal covariance linear operator.
+    M_op : ResidualPreconditioner
+        Preconditioner operator.
+    method : str
+        Correction method: 'detr' for deterministic, 'bste' for block stochastic
+        trace estimation, or 'ste' for stochastic trace estimation.
+    n_jobs : int
+        Number of parallel jobs.
+    backend : str
+        Joblib backend for parallelization.
+
+    Returns
+    -------
+    tuple
+        Correction matrices (T, W).
     """
     re = V_op.random_effects[k]
     block_size = re.q * re.o
@@ -87,7 +170,21 @@ def compute_cov_correction(k: int, V_op: VLinearOperator, M_op: ResidualPrecondi
 
 def _generate_rademacher_probes(n_rows, n_probes, seed=42):
     """
-    Generates random probe vectors from a Rademacher distribution ({-1, 1}).
+    Generate random probe vectors from a Rademacher distribution ({-1, 1}).
+
+    Parameters
+    ----------
+    n_rows : int
+        Number of rows in each probe vector.
+    n_probes : int
+        Number of probe vectors to generate.
+    seed : int, optional
+        Random seed. Default is 42.
+
+    Returns
+    -------
+    np.ndarray
+        Array of shape (n_rows, n_probes) with values in {-1, 1}.
     """
     rng = np.random.default_rng(seed)
     probes = rng.integers(0, 2, size=(n_rows, n_probes), dtype=np.int8)
@@ -99,9 +196,29 @@ def _generate_rademacher_probes(n_rows, n_probes, seed=42):
 
 def compute_cov_correction_ste(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, n_probes: int, n_jobs: int, backend: str):
     """
-    Computes the uncertainty correction matrices T: (m, m) and W: (m * q, m * q)
-    using the Hutchinson Stochastic Trace Estimation method.
-    It only computes diagonal elements, ignoring off-diagonal elements in T and W (no issue for m=q=1).
+    Compute uncertainty correction matrices T and W using Hutchinson STE.
+
+    Computes diagonal elements only, ignoring off-diagonal elements in T and W.
+
+    Parameters
+    ----------
+    k : int
+        Index of the random effect.
+    V_op : VLinearOperator
+        Marginal covariance linear operator.
+    M_op : ResidualPreconditioner
+        Preconditioner operator.
+    n_probes : int
+        Number of probe vectors for stochastic estimation.
+    n_jobs : int
+        Number of parallel jobs.
+    backend : str
+        Joblib backend for parallelization.
+
+    Returns
+    -------
+    tuple
+        Diagonal correction matrices (T: (m, m), W: (m*q, m*q)).
     """
     m = V_op.residual.m
     re = V_op.random_effects[k]
@@ -125,34 +242,69 @@ def compute_cov_correction_ste(k: int, V_op: VLinearOperator, M_op: ResidualPrec
 
 def _compute_C_probe(probe_index: int, k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner):
     """
-    Computes the product of probe vector and matrix vector product P(C @ P), where C=D(Iₘ ⊗ Z)ᵀ V⁻¹(Iₘ ⊗ Z)D.
+    Compute the probe-based C matrix element for C = D(Iₘ ⊗ Z)ᵀ V⁻¹(Iₘ ⊗ Z)D.
+
+    Parameters
+    ----------
+    probe_index : int
+        Index of the probe vector.
+    k : int
+        Index of the random effect.
+    V_op : VLinearOperator
+        Marginal covariance linear operator.
+    M_op : ResidualPreconditioner
+        Preconditioner operator.
+
+    Returns
+    -------
+    np.ndarray
+        Element-wise product of probe vector and matrix-vector product.
     """
     seed = 42 + probe_index
     re = V_op.random_effects[k]
     probe_vector = _generate_rademacher_probes(re.m * re.q * re.o, 1, seed).ravel()
-    v1 = re.kronZ_D_matvec(probe_vector)
+    v1 = re._kronZ_D_matvec(probe_vector)
     v2, info = cg(A=V_op, b=v1, M=M_op)
     if info != 0:
         print(f"Warning: CG solver (V⁻¹(Iₘ ⊗ Z)D) did not converge. Info={info}")
-    probe_vector *= re.kronZ_D_T_matvec(v2)
+    probe_vector *= re._kronZ_D_T_matvec(v2)
     return probe_vector
 
 # ====================== Block Stochastic Trace Estimation for Correction ======================
 
 def compute_cov_correction_bste(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, n_probes: int, n_jobs: int, backend: str):
     """
-    Computes the uncertainty correction matrices T: (m, m) and W: (m * q, m * q)
-    using the Hutchinson Stochastic Trace Estimation method.
-    It computes diagonal and off-diagonal elements of T and W.
-    However, only diagonals of each response block are considered (No issue for q=1).
-    It uses the symmetry of the covariance matrix to reduce computations.
+    Compute uncertainty correction matrices T and W using block STE.
+
+    Computes diagonal and off-diagonal elements of T and W. Only diagonals of each
+    response block are considered. Uses symmetry to reduce computations.
+
+    Parameters
+    ----------
+    k : int
+        Index of the random effect.
+    V_op : VLinearOperator
+        Marginal covariance linear operator.
+    M_op : ResidualPreconditioner
+        Preconditioner operator.
+    n_probes : int
+        Number of probe vectors for stochastic estimation.
+    n_jobs : int
+        Number of parallel jobs.
+    backend : str
+        Joblib backend for parallelization.
+
+    Returns
+    -------
+    tuple
+        Correction matrices (T: (m, m), W: (m*q, m*q)).
     """
     m = V_op.residual.m
     q = V_op.random_effects[k].q
     T = np.zeros((m, m))
     W = np.zeros((m * q, m * q))
     with parallel_config(backend=backend, n_jobs=n_jobs):
-        results = Parallel(return_as="generator")(delayed(cov_correction_per_response_bste)(n_probes, k, V_op, M_op, col) for col in range(m))
+        results = Parallel(return_as="generator")(delayed(_cov_correction_per_response_bste)(n_probes, k, V_op, M_op, col) for col in range(m))
 
         for col, T_lower_traces, W_lower_diags in results:
             for i, (trace, W_diag) in enumerate(zip(T_lower_traces, W_lower_diags)):
@@ -168,12 +320,29 @@ def compute_cov_correction_bste(k: int, V_op: VLinearOperator, M_op: ResidualPre
 
     return T, W
 
-def cov_correction_per_response_bste(n_probes: int, k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, col: int):
+def _cov_correction_per_response_bste(n_probes: int, k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, col: int):
     """
-    Stochastic Block Trace Estimation method for
-        Σ = D - D (Iₘ ⊗ Z)ᵀ V⁻¹ (Iₘ ⊗ Z) D
-        where
-        Cᵢⱼ=Dᵢ(Iₘ ⊗ Z)ᵀ V⁻¹(Iₘ ⊗ Z)Dⱼ for i >= j.
+    Compute block STE for Σ = D - D(Iₘ ⊗ Z)ᵀ V⁻¹(Iₘ ⊗ Z)D.
+
+    Computes Cᵢⱼ = Dᵢ(Iₘ ⊗ Z)ᵀ V⁻¹(Iₘ ⊗ Z)Dⱼ for i >= j.
+
+    Parameters
+    ----------
+    n_probes : int
+        Number of probe vectors for stochastic estimation.
+    k : int
+        Index of the random effect.
+    V_op : VLinearOperator
+        Marginal covariance linear operator.
+    M_op : ResidualPreconditioner
+        Preconditioner operator.
+    col : int
+        Column index for block processing.
+
+    Returns
+    -------
+    tuple
+        (col, T_traces, W_diag_blocks) for assembly.
     """
     m = V_op.residual.m
     re = V_op.random_effects[k]
@@ -182,18 +351,16 @@ def cov_correction_per_response_bste(n_probes: int, k: int, V_op: VLinearOperato
     num_blocks = m - col
 
     diag_C = np.zeros(num_blocks * block_size)
-    vec_cg = np.zeros(V_op.shape[0])
     vec = np.zeros(m * block_size)
-    probe_vector = np.zeros(block_size)
     for i in range(n_probes):
         seed = 42 + i
-        probe_vector[...] = _generate_rademacher_probes(block_size, 1, seed).ravel()
+        probe_vector = _generate_rademacher_probes(block_size, 1, seed).ravel()
         vec[col * block_size : (col + 1) * block_size] = probe_vector
-        vec_cg[...] = re.kronZ_D_matvec(vec)
-        vec_cg[...], info = cg(A=V_op, b=vec_cg, M=M_op)
+        vec_cg = re._kronZ_D_matvec(vec)
+        vec_cg, info = cg(A=V_op, b=vec_cg, M=M_op)
         if info != 0:
             print(f"Warning: CG solver (V⁻¹(Iₘ ⊗ Z)D) did not converge. Info={info}")
-        lower_c = re.kronZ_D_T_matvec(vec_cg)[col * block_size:]
+        lower_c = re._kronZ_D_T_matvec(vec_cg)[col * block_size:]
         vec[col * block_size : (col + 1) * block_size] = 0
         diag_C += (lower_c.reshape(num_blocks, block_size) * probe_vector).ravel()
 
@@ -214,17 +381,35 @@ def cov_correction_per_response_bste(n_probes: int, k: int, V_op: VLinearOperato
 
 def compute_cov_correction_detr(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, n_jobs: int, backend: str):
     """
-    Computes the uncertainty correction matrices T: (m, m) and W: (m * q, m * q)
-    using the deterministic method.
-    It computes full diagonal and off-diagonal elements of T and W.
-    It uses the symmetry of the covariance matrix to reduce computations.
+    Compute uncertainty correction matrices T and W using deterministic method.
+
+    Computes full diagonal and off-diagonal elements of T and W.
+    Uses symmetry to reduce computations.
+
+    Parameters
+    ----------
+    k : int
+        Index of the random effect.
+    V_op : VLinearOperator
+        Marginal covariance linear operator.
+    M_op : ResidualPreconditioner
+        Preconditioner operator.
+    n_jobs : int
+        Number of parallel jobs.
+    backend : str
+        Joblib backend for parallelization.
+
+    Returns
+    -------
+    tuple
+        Correction matrices (T: (m, m), W: (m*q, m*q)).
     """
     m = V_op.residual.m
     q = V_op.random_effects[k].q
     T = np.zeros((m, m))
     W = np.zeros((m * q, m * q))
     with parallel_config(backend=backend, n_jobs=n_jobs):
-        results = Parallel(return_as="generator")(delayed(cov_correction_per_response)(k, V_op, M_op, col) for col in range(m))
+        results = Parallel(return_as="generator")(delayed(_cov_correction_per_response)(k, V_op, M_op, col) for col in range(m))
 
         for col, T_lower_traces, W_lower_blocks in results:
             for i, (trace, W_block) in enumerate(zip(T_lower_traces, W_lower_blocks)):
@@ -240,13 +425,28 @@ def compute_cov_correction_detr(k: int, V_op: VLinearOperator, M_op: ResidualPre
 
     return T, W
 
-def cov_correction_per_response(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, col: int):
+def _cov_correction_per_response(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, col: int):
     """
-    Computes the element of the uncertainty correction matrix T that is:
-        Tᵢⱼ = trace((Zₖᵀ Zₖ) Σᵢⱼ)
-    using the random effect conditional covariance
-        Σ = D - D (Iₘ ⊗ Z)ᵀ V⁻¹ (Iₘ ⊗ Z) D
-    as well as the correction matrix W per response.
+    Compute uncertainty correction elements Tᵢⱼ = trace((Zₖᵀ Zₖ) Σᵢⱼ).
+
+    Uses conditional covariance Σ = D - D(Iₘ ⊗ Z)ᵀ V⁻¹(Iₘ ⊗ Z)D and
+    computes correction matrix W per response.
+
+    Parameters
+    ----------
+    k : int
+        Index of the random effect.
+    V_op : VLinearOperator
+        Marginal covariance linear operator.
+    M_op : ResidualPreconditioner
+        Preconditioner operator.
+    col : int
+        Column index for processing.
+
+    Returns
+    -------
+    tuple
+        (col, T_traces, W_blocks) for assembly.
     """
     m = V_op.residual.m
     re = V_op.random_effects[k]
@@ -255,15 +455,14 @@ def cov_correction_per_response(k: int, V_op: VLinearOperator, M_op: ResidualPre
     num_blocks = m - col
     lower_sigma = np.empty((num_blocks * block_size, block_size))
     base_idx = col * block_size
-    vec_cg = np.zeros(V_op.shape[0])
     vec = np.zeros(m * block_size)
     for i in range(block_size):
         vec[base_idx + i] = 1.0
-        vec_cg[...] = re.kronZ_D_matvec(vec)
-        vec_cg[...], info = cg(A=V_op, b=vec_cg, M=M_op)
+        vec_cg = re._kronZ_D_matvec(vec)
+        vec_cg, info = cg(A=V_op, b=vec_cg, M=M_op)
         if info != 0:
             print(f"Warning: CG solver (V⁻¹(Iₘ ⊗ Z)D) did not converge. Info={info}")
-        lower_sigma[:, i] = (re.D_matvec(vec) - re.kronZ_D_T_matvec(vec_cg))[col * block_size:]
+        lower_sigma[:, i] = (re._D_matvec(vec) - re._kronZ_D_T_matvec(vec_cg))[col * block_size:]
         vec[base_idx + i] = 0
 
     sigma_blocks = lower_sigma.reshape(num_blocks, block_size, block_size)
