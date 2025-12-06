@@ -471,3 +471,41 @@ def _cov_correction_per_response(k: int, V_op: VLinearOperator, M_op: ResidualPr
     W_blocks = lower_sigma.reshape(num_blocks, q, o, q, o).sum(axis=(2, 4))
 
     return col, T_traces, W_blocks
+
+def _cond_covariance_per_response(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, col: int):
+    """
+    Compute conditional covariance Σ = D - D(Iₘ ⊗ Z)ᵀ V⁻¹(Iₘ ⊗ Z)D per response.
+
+    Parameters
+    ----------
+    k : int
+        Index of the random effect.
+    V_op : VLinearOperator
+        Marginal covariance linear operator.
+    M_op : ResidualPreconditioner
+        Preconditioner operator.
+    col : int
+        Column index for processing.
+
+    Returns
+    -------
+    tuple
+        (col, T_traces, W_blocks) for assembly.
+    """
+    m = V_op.residual.m
+    re = V_op.random_effects[k]
+    q, o = re.q, re.o
+    block_size = q * o
+    num_blocks = m - col
+    sigma_col = np.empty((block_size, block_size))
+    base_idx = col * block_size
+    vec = np.zeros(m * block_size)
+    for i in range(block_size):
+        vec[base_idx + i] = 1.0
+        vec_cg = re._kronZ_D_matvec(vec)
+        vec_cg, info = cg(A=V_op, b=vec_cg, M=M_op)
+        if info != 0:
+            print(f"Warning: CG solver (V⁻¹(Iₘ ⊗ Z)D) did not converge. Info={info}")
+        sigma_col[:, i] = (re._D_matvec(vec) - re._kronZ_D_T_matvec(vec_cg))[col * block_size: (col+1) * block_size]
+        vec[base_idx + i] = 0
+    return col, sigma_col

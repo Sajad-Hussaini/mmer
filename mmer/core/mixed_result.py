@@ -98,6 +98,35 @@ class MixedEffectResults:
         resid -= total_re  # unexplained residual
 
         return mu, resid
+    
+    def compute_conditional_covariance(self, k: int, col: int):
+        """
+        Compute conditional covariance Σ = D - D(Iₘ ⊗ Z)ᵀ V⁻¹(Iₘ ⊗ Z)D per response.
+        """
+        V_op = VLinearOperator(self.random_effects, self.residual)
+        try:
+            resid_cov_inv = solve(a=self.residual.cov, b=np.eye(self.m), assume_a='pos')
+            M_op = ResidualPreconditioner(resid_cov_inv, self.n, self.m)
+        except Exception:
+            print("Warning: Singular residual covariance. If the fixed-effects model absorbs nearly all degrees of freedom, residual variance may vanish, leading to singularity.")
+            M_op = None
+
+        m = V_op.residual.m
+        re = V_op.random_effects[k]
+        q, o = re.q, re.o
+        block_size = q * o
+        sigma_col = np.empty((block_size, block_size))
+        base_idx = col * block_size
+        vec = np.zeros(m * block_size)
+        for i in range(block_size):
+            vec[base_idx + i] = 1.0
+            vec_cg = re._kronZ_D_matvec(vec)
+            vec_cg, info = cg(A=V_op, b=vec_cg, M=M_op)
+            if info != 0:
+                print(f"Warning: CG solver (V⁻¹(Iₘ ⊗ Z)D) did not converge. Info={info}")
+            sigma_col[:, i] = (re._D_matvec(vec) - re._kronZ_D_T_matvec(vec_cg))[col * block_size: (col+1) * block_size]
+            vec[base_idx + i] = 0
+        return sigma_col
 
     def summary(self):
         """
