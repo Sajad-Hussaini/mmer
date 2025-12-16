@@ -20,7 +20,8 @@ class MixedEffectRegressor:
     Parameters
     ----------
     fixed_effects_model : RegressorMixin
-        A regressor with fit and predict methods that supports multi-output regression.
+        A regressor with fit and predict methods that supports multi-output
+        regression.
     max_iter : int, default=10
         Maximum number of EM iterations.
     tol : float, default=1e-3
@@ -34,16 +35,18 @@ class MixedEffectRegressor:
     preconditioner : bool, default=True
         Whether to use a preconditioner for CG solver with marginal covariance.
     correction_method : str, default='bste'
-        Method for covariance correction, options are 'ste', 'bste', or 'detr'.
+        Method for covariance correction. Options: 'ste' (stochastic trace
+        estimation), 'bste' (block stochastic trace estimation), 'detr'
+        (deterministic estimation).
     n_jobs : int, default=-1
         Number of parallel jobs for SLQ computation and covariance correction.
     backend : str, default='loky'
-        Backend for parallel processing, options are 'loky' or 'threading'.
+        Backend for parallel processing. Options: 'loky', 'threading'.
     """
     _VALID_CORRECTION_METHODS = ['ste', 'bste', 'detr']
 
-    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 10, tol: float = 1e-3, patience: int = 3,
-                 slq_steps: int = 30, slq_probes: int = 30, preconditioner: bool = True, correction_method: str = 'bste',
+    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 20, tol: float = 1e-6, patience: int = 3,
+                 slq_steps: int = 50, slq_probes: int = 50, preconditioner: bool = True, correction_method: str = 'bste',
                  n_jobs: int = -1, backend: str = 'loky'):
         self.fe_model = fixed_effects_model
         self.max_iter = max_iter
@@ -80,15 +83,17 @@ class MixedEffectRegressor:
             Response variables of shape (n_samples, n_outputs).
         groups : np.ndarray
             Grouping factors of shape (n_samples, n_groups).
-        random_slopes : None or tuple of list of int
+        random_slopes : None or tuple of (list of int or None)
             Random slope column indices for each grouping factor.
+            Example: ([0, 2], None) means group 1 has random slopes for columns 0 and 2,
+            while group 2 has random intercept only.
 
         Returns
         -------
         marginal_residual : np.ndarray
-            Initial marginal residuals.
+            Initial marginal residuals of shape (n_outputs * n_samples).
         random_effects : tuple of RandomEffect
-            Random effect objects for each grouping factor.
+            Tuple of random effect objects for each grouping factor, e.g., (RE1, RE2, ...).
         residual : Residual
             Residual object.
         """
@@ -413,20 +418,30 @@ class MixedEffectRegressor:
              marginal_residual: np.ndarray = None, random_effects: tuple[RandomEffect, ...] = None, residual: Residual = None):
         """
         Fit the multivariate mixed effects model using EM algorithm.
-        It can also be used for partial fitting to continue training for more iterations.
 
-        Parameters:
-            X: (n_samples, n_features) array of fixed effect covariates.
-            y: (n_samples, M) array of M response variables.
-            groups: (n_samples, K) array of K grouping factors.
-            random_slopes: tuple[list[int]] dictionary mapping group indices to lists of random slope indices (optional).
+        Can be used for partial fitting to continue training.
 
-            marginal_residual: (n_samples, M) array of M marginal residuals (optional).
-            random_effects: tuple[RandomEffect, ...] random effects (optional).
-            residual: Residual object containing residual information (optional).
+        Parameters
+        ----------
+        X : np.ndarray, optional
+            Fixed effect covariates of shape (n_samples, n_features).
+        y : np.ndarray, optional
+            Response variables of shape (n_samples, n_outputs).
+        groups : np.ndarray, optional
+            Grouping factors of shape (n_samples, n_groups).
+        random_slopes : tuple of list of int, optional
+            Random slope column indices for each grouping factor.
+        marginal_residual : np.ndarray, optional
+            Marginal residuals from previous fit.
+        random_effects : tuple of RandomEffect, optional
+            Random effect objects from previous fit.
+        residual : Residual, optional
+            Residual object from previous fit.
 
-        Returns:
-            MixedEffectResults: Contains fitted model and results.
+        Returns
+        -------
+        MixedEffectResults
+            Fitted model results.
         """
         if marginal_residual is None:
             marginal_residual, random_effects, residual = self.prepare_data(X, y, groups, random_slopes)
