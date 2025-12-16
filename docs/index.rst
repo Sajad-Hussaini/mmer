@@ -6,7 +6,10 @@ Welcome to MMER's Documentation!
 MMER is a Python package for Multivariate Mixed-Effects Regression.
 
 * Supports flexible fixed effects (parametric or machine learning)
-* Handles linear random effects
+* Supports multiple responses
+* Supports multiple grouping factors
+* Supports linear random effects
+* provides covariance matrices of random effects and residuals
 
 
 This documentation provides installation, examples, and a practical public API reference.

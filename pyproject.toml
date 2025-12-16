@@ -10,7 +10,7 @@ description = "MMER: Multivariate Mixed Effects Regression."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
-keywords = ["mmer", "multivariate regression", "mixed-effects", "machine-learning", "statistics", "multivariate", "GMM"]
+keywords = ["mmer", "multivariate regression", "mixed-effects", "machine-learning", "uncertainty quantification", "ground motion models", "earthquake engineering"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
