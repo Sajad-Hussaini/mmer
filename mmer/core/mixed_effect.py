@@ -9,41 +9,36 @@ from ..lanczos_algorithm import slq
 from .random_effect import RandomEffect
 from .residual import Residual
 
-
 class MixedEffectRegressor:
     """
     Multivariate Mixed Effects Regression.
 
-    Supports multiple responses, any fixed effects model, multiple random effects,
-    and multiple grouping factors.
+    Supports multiple responses, custom fixed-effects regressor, multiple grouping factors with linear random effects structure.
 
     Parameters
     ----------
     fixed_effects_model : RegressorMixin
-        A regressor with fit and predict methods that supports multi-output
-        regression.
-    max_iter : int, default=10
-        Maximum number of EM iterations.
-    tol : float, default=1e-3
+        A regressor with fit and predict methods that supports multi-output regression.
+    max_iter : int, default=20
+        Maximum number of Expectation-Maximization (EM) iterations.
+    tol : float, default=1e-6
         Log-likelihood convergence tolerance.
-    patience : int, default=3
-        Number of iterations to wait for improvement before early stopping.
-    slq_steps : int, default=30
-        Number of steps for SLQ approximation.
-    slq_probes : int, default=30
-        Number of probes for SLQ approximation.
+    patience : int, default=5
+        Number of iterations to wait for improvement in log-likelihood before early stopping.
+    slq_steps : int, default=50
+        Number of steps for SLQ (Stochastic Lanczos Quadrature) approximation in log-likelihood computation.
+    slq_probes : int, default=50
+        Number of probes for SLQ (Stochastic Lanczos Quadrature) approximation in log-likelihood computation.
     preconditioner : bool, default=True
-        Whether to use a preconditioner for CG solver with marginal covariance.
+        Whether to use a preconditioner for CG (Conjugate Gradient) solver for marginal covariance inversion (V⁻¹).
     correction_method : str, default='bste'
-        Method for covariance correction. Options: 'ste' (stochastic trace
-        estimation), 'bste' (block stochastic trace estimation), 'detr'
-        (deterministic estimation).
+        Method for covariance correction. Options: 'ste' (Stochastic Trace Estimation), 'bste' (Block Stochastic Trace Estimation), 'de' (Deterministic Estimation).
     n_jobs : int, default=-1
-        Number of parallel jobs for SLQ computation and covariance correction.
+        Number of parallel jobs for SLQ (Stochastic Lanczos Quadrature) computation and covariance correction.
     backend : str, default='loky'
         Backend for parallel processing. Options: 'loky', 'threading'.
     """
-    _VALID_CORRECTION_METHODS = ['ste', 'bste', 'detr']
+    _VALID_CORRECTION_METHODS = ['ste', 'bste', 'de']
 
     def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 20, tol: float = 1e-6, patience: int = 3,
                  slq_steps: int = 50, slq_probes: int = 50, preconditioner: bool = True, correction_method: str = 'bste',
@@ -71,7 +66,7 @@ class MixedEffectRegressor:
         self._best_resid_cov = None
         self._best_fe_model = None
 
-    def prepare_data(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, random_slopes: None | tuple[list[int] | None]):
+    def prepare_data(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, random_slopes: None | tuple[list[int] | None] = None):
         """
         Prepare initial parameters, instances of random effects and residuals.
 
@@ -83,9 +78,9 @@ class MixedEffectRegressor:
             Response variables of shape (n_samples, n_outputs).
         groups : np.ndarray
             Grouping factors of shape (n_samples, n_groups).
-        random_slopes : None or tuple of (list of int or None)
-            Random slope column indices for each grouping factor.
-            Example: ([0, 2], None) means group 1 has random slopes for columns 0 and 2,
+        random_slopes : None or tuple of (list of int or None), default=None
+            Tuple containing lists of column indices from `X` to be used as random slopes for each grouping factor.
+            Example: ([0, 2], None) means group 1 has random slopes for columns 0 and 2 from `X`,
             while group 2 has random intercept only.
 
         Returns
@@ -93,14 +88,14 @@ class MixedEffectRegressor:
         marginal_residual : np.ndarray
             Initial marginal residuals of shape (n_outputs * n_samples).
         random_effects : tuple of RandomEffect
-            Tuple of random effect objects for each grouping factor, e.g., (RE1, RE2, ...).
+            Tuple of random effect objects for each grouping factor, e.g., (RandomEffect, RandomEffect, ...).
         residual : Residual
             Residual object.
         """
         self.n, self.m = y.shape
         self.k = groups.shape[1]
         if random_slopes is None:
-            self.random_slopes = tuple(None for _ in range(self.k))
+            self.random_slopes = tuple([None] * self.k)
         elif len(random_slopes) != self.k:
             raise ValueError(f"Length of random_slopes tuple ({len(random_slopes)}) " f"must match the number of groups ({self.k}).")
         else:
@@ -147,9 +142,9 @@ class MixedEffectRegressor:
         Parameters
         ----------
         marginal_residual : np.ndarray
-            Marginal residuals (y - fx).
+            Marginal residuals (y - f(X)).
         prec_resid : np.ndarray
-            Precision-weighted residuals V⁻¹(y - fx).
+            Precision-weighted residuals V⁻¹(y - f(X)).
         V_op : VLinearOperator
             Linear operator representing the marginal covariance V.
 
@@ -169,7 +164,7 @@ class MixedEffectRegressor:
         Parameters
         ----------
         prec_resid : np.ndarray
-            Precision-weighted residuals V⁻¹(y - fx).
+            Precision-weighted residuals V⁻¹(y - f(X)).
         random_effects : tuple of RandomEffect
             Random effect objects for each grouping factor.
 
@@ -189,7 +184,7 @@ class MixedEffectRegressor:
     
     def _solver(self, marginal_residual: np.ndarray, random_effects: tuple[RandomEffect, ...], residual: Residual):
         """
-        Solve the system of equations to obtain precision-weighted residuals.
+        Solve the system of equations to obtain precision-weighted residuals V⁻¹(y - f(X)).
 
         Parameters
         ----------
@@ -203,7 +198,7 @@ class MixedEffectRegressor:
         Returns
         -------
         prec_resid : np.ndarray
-            Precision-weighted residuals.
+            Precision-weighted residuals V⁻¹(y - f(X)).
         V_op : VLinearOperator
             Linear operator representing the marginal covariance.
         M_op : ResidualPreconditioner or None
@@ -216,11 +211,11 @@ class MixedEffectRegressor:
                 resid_cov_inv = solve(a=residual.cov, b=np.eye(self.m), assume_a='pos')
                 M_op = ResidualPreconditioner(resid_cov_inv, self.n, self.m)
             except Exception:
-                print("Warning: Singular residual covariance. If the fixed-effects model absorbs nearly all degrees of freedom, residual variance may vanish, leading to singularity.")
+                print("Warning: Singular residual covariance. Residual variance may have vanished.")
             
         prec_resid, info = cg(A=V_op, b=marginal_residual, M=M_op)
         if info != 0:
-            print(f"Warning: CG solver (V⁻¹(y-fx)) did not converge. Info={info}")
+            print(f"Warning: CG solver for V⁻¹(y - f(X)) did not converge. Info={info}")
         return prec_resid, V_op, M_op
 
     def _e_step(self, marginal_residual: np.ndarray, random_effects: tuple[RandomEffect, ...], residual: Residual):

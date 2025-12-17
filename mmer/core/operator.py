@@ -137,14 +137,13 @@ def compute_cov_correction(k: int, V_op: VLinearOperator, M_op: ResidualPrecondi
     Parameters
     ----------
     k : int
-        Index of the random effect.
+        Index of the grouping factor for the random effects.
     V_op : VLinearOperator
         Marginal covariance linear operator.
     M_op : ResidualPreconditioner
         Preconditioner operator.
     method : str
-        Correction method: 'detr' for deterministic, 'bste' for block stochastic
-        trace estimation, or 'ste' for stochastic trace estimation.
+        Method for covariance correction. Options: 'ste' (Stochastic Trace Estimation), 'bste' (Block Stochastic Trace Estimation), 'de' (Deterministic Estimation).
     n_jobs : int
         Number of parallel jobs.
     backend : str
@@ -153,14 +152,14 @@ def compute_cov_correction(k: int, V_op: VLinearOperator, M_op: ResidualPrecondi
     Returns
     -------
     tuple
-        Correction matrices (T, W).
+        Covariance correction matrices (T, W).
     """
     re = V_op.random_effects[k]
     block_size = re.q * re.o
     n_probes = min(max(20, block_size // 10), 100)
-    if method == 'detr':
+    if method == 'de':
         # For small problems, the exact method is better and often faster.
-        return compute_cov_correction_detr(k, V_op, M_op, n_jobs, backend)
+        return compute_cov_correction_de(k, V_op, M_op, n_jobs, backend)
     elif method == 'bste':
         # For medium-sized to large problems, the stochastic block trace method is necessary for performance.
         return compute_cov_correction_bste(k, V_op, M_op, n_probes, n_jobs, backend)
@@ -379,7 +378,7 @@ def _cov_correction_per_response_bste(n_probes: int, k: int, V_op: VLinearOperat
 
 # ====================== Deterministic for Correction ======================
 
-def compute_cov_correction_detr(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, n_jobs: int, backend: str):
+def compute_cov_correction_de(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, n_jobs: int, backend: str):
     """
     Compute uncertainty correction matrices T and W using deterministic method.
 
@@ -409,7 +408,7 @@ def compute_cov_correction_detr(k: int, V_op: VLinearOperator, M_op: ResidualPre
     T = np.zeros((m, m))
     W = np.zeros((m * q, m * q))
     with parallel_config(backend=backend, n_jobs=n_jobs):
-        results = Parallel(return_as="generator")(delayed(_cov_correction_per_response)(k, V_op, M_op, col) for col in range(m))
+        results = Parallel(return_as="generator")(delayed(_cov_correction_per_response_de)(k, V_op, M_op, col) for col in range(m))
 
         for col, T_lower_traces, W_lower_blocks in results:
             for i, (trace, W_block) in enumerate(zip(T_lower_traces, W_lower_blocks)):
@@ -425,7 +424,7 @@ def compute_cov_correction_detr(k: int, V_op: VLinearOperator, M_op: ResidualPre
 
     return T, W
 
-def _cov_correction_per_response(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, col: int):
+def _cov_correction_per_response_de(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, col: int):
     """
     Compute uncertainty correction elements Tᵢⱼ = trace((Zₖᵀ Zₖ) Σᵢⱼ).
 
@@ -471,41 +470,3 @@ def _cov_correction_per_response(k: int, V_op: VLinearOperator, M_op: ResidualPr
     W_blocks = lower_sigma.reshape(num_blocks, q, o, q, o).sum(axis=(2, 4))
 
     return col, T_traces, W_blocks
-
-def _cond_covariance_per_response(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, col: int):
-    """
-    Compute conditional covariance Σ = D - D(Iₘ ⊗ Z)ᵀ V⁻¹(Iₘ ⊗ Z)D per response.
-
-    Parameters
-    ----------
-    k : int
-        Index of the random effect.
-    V_op : VLinearOperator
-        Marginal covariance linear operator.
-    M_op : ResidualPreconditioner
-        Preconditioner operator.
-    col : int
-        Column index for processing.
-
-    Returns
-    -------
-    tuple
-        (col, T_traces, W_blocks) for assembly.
-    """
-    m = V_op.residual.m
-    re = V_op.random_effects[k]
-    q, o = re.q, re.o
-    block_size = q * o
-    num_blocks = m - col
-    sigma_col = np.empty((block_size, block_size))
-    base_idx = col * block_size
-    vec = np.zeros(m * block_size)
-    for i in range(block_size):
-        vec[base_idx + i] = 1.0
-        vec_cg = re._kronZ_D_matvec(vec)
-        vec_cg, info = cg(A=V_op, b=vec_cg, M=M_op)
-        if info != 0:
-            print(f"Warning: CG solver (V⁻¹(Iₘ ⊗ Z)D) did not converge. Info={info}")
-        sigma_col[:, i] = (re._D_matvec(vec) - re._kronZ_D_T_matvec(vec_cg))[col * block_size: (col+1) * block_size]
-        vec[base_idx + i] = 0
-    return col, sigma_col

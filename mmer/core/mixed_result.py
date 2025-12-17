@@ -23,14 +23,15 @@ class MixedEffectResults:
     ----------
     fe_model : object
         Fitted fixed effects model.
-    m : int
-        Number of response variables.
     n : int
-        Number of observations.
+        Number of samples.
+    m : int
+        Number of outputs.
     k : int
         Number of grouping factors.
-    random_slopes : list
-        List of random slopes per grouping factor.
+    random_slopes : None or tuple of (list of int or None)
+        Tuple containing lists of column indices from `X` to be used as random slopes for each grouping factor.
+        Example: ([0, 2], None) means group 1 has random slopes for columns 0 and 2 from `X`, while group 2 has random intercept only.
     log_likelihood : list
         Log-likelihood values per iteration.
     """
@@ -55,7 +56,7 @@ class MixedEffectResults:
             X: (n_samples, n_features) array of fixed effect covariates.
         
         Returns:
-            (n_samples, M) array of predicted responses.
+            (n_samples, n_outputs) array of predicted responses.
         """
         return self.fe_model.predict(X)
     
@@ -68,7 +69,7 @@ class MixedEffectResults:
             X: (n_samples, n_features) array of fixed effect covariates.
         
         Returns:
-            (n_samples, M) array of sampled responses.
+            (n_samples, n_outputs) array of sampled responses.
         """
         pass
     
@@ -98,35 +99,6 @@ class MixedEffectResults:
         resid -= total_re  # unexplained residual
 
         return mu, resid
-    
-    def compute_conditional_covariance(self, k: int, col: int):
-        """
-        Compute conditional covariance Σ = D - D(Iₘ ⊗ Z)ᵀ V⁻¹(Iₘ ⊗ Z)D per response.
-        """
-        V_op = VLinearOperator(self.random_effects, self.residual)
-        try:
-            resid_cov_inv = solve(a=self.residual.cov, b=np.eye(self.m), assume_a='pos')
-            M_op = ResidualPreconditioner(resid_cov_inv, self.n, self.m)
-        except Exception:
-            print("Warning: Singular residual covariance. If the fixed-effects model absorbs nearly all degrees of freedom, residual variance may vanish, leading to singularity.")
-            M_op = None
-
-        m = V_op.residual.m
-        re = V_op.random_effects[k]
-        q, o = re.q, re.o
-        block_size = q * o
-        sigma_col = np.empty((block_size, block_size))
-        base_idx = col * block_size
-        vec = np.zeros(m * block_size)
-        for i in range(block_size):
-            vec[base_idx + i] = 1.0
-            vec_cg = re._kronZ_D_matvec(vec)
-            vec_cg, info = cg(A=V_op, b=vec_cg, M=M_op)
-            if info != 0:
-                print(f"Warning: CG solver (V⁻¹(Iₘ ⊗ Z)D) did not converge. Info={info}")
-            sigma_col[:, i] = (re._D_matvec(vec) - re._kronZ_D_T_matvec(vec_cg))[col * block_size: (col+1) * block_size]
-            vec[base_idx + i] = 0
-        return sigma_col
 
     def summary(self):
         """
@@ -142,12 +114,12 @@ class MixedEffectResults:
         print(indent1 + f"FE Model: {type(self.fe_model).__name__}")
         print(indent1 + f"Iterations: {len(self.log_likelihood) - self._no_improvement_count}")
         print(indent1 + f"Converged: {self._is_converged}")
-        print(indent1 + f"Log-Likelihood: {self._best_log_likelihood:.2f}")
-        print(indent1 + f"No. Observations: {self.n}")
-        print(indent1 + f"No. Response Variables: {self.m}")
+        print(indent1 + f"Log-Likelihood: {self._best_log_likelihood:.3f}")
+        print(indent1 + f"No. Samples: {self.n}")
+        print(indent1 + f"No. Outputs: {self.m}")
         print(indent1 + f"No. Grouping Factors: {self.k}")
         print("-" * 50)
-        print(indent1 + f"Residual (Unexplained) Variances")
+        print(indent1 + f"Unexplained Residual Variances")
         print(indent2 + "{:<10} {:>10}".format("Response", "Variance"))
         for m in range(self.m):
             print(indent2 + "{:<10} {:>10.4f}".format(m + 1, self.residual.cov[m, m]))

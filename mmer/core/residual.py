@@ -2,17 +2,17 @@ import numpy as np
 
 class Residual:
     """
-    Residual class to handle residual computations in mixed effects models.
+    Residual class to handle unexplained residual computations in mixed effects models.
     
-    It provides methods to compute covariance, and residuals, and perform matrix-vector operations.
+    It provides methods to compute covariance, and unexplained residuals, and perform matrix-vector operations.
     where ϵ = y - fx - Σ(Iₘ ⊗ Z)μ
     
     Parameters
     ----------
     n : int
-        Number of observations.
+        Number of samples.
     m : int
-        Number of output dimensions.
+        Number of outputs.
     """
     __slots__ = ('n', 'm', 'cov')
     
