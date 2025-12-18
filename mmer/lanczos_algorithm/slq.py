@@ -28,7 +28,11 @@ def slq_probe(V_op: VLinearOperator, lanczos_steps: int, seed: int):
     rng = np.random.default_rng(seed)
     dim = V_op.shape[0]
     # Use Rademacher distribution for the probe vector ({-1, 1})
-    v = rng.choice([-1.0, 1.0], size=dim)
+    v = rng.integers(0, 2, size=dim, dtype=np.int8)
+    v *= 2
+    v -= 1
+    v = v.astype(np.float64)
+    
     # --- Lanczos Iteration ---
     alphas = np.zeros(lanczos_steps)
     betas = np.zeros(lanczos_steps - 1)
@@ -41,7 +45,10 @@ def slq_probe(V_op: VLinearOperator, lanczos_steps: int, seed: int):
         alphas[j] = alpha_j
 
         if j < lanczos_steps - 1:
-            w = w - alpha_j * q_cur - (betas[j-1] if j > 0 else 0.0) * q_prev
+            w -= alpha_j * q_cur
+            if j > 0:
+                w -= betas[j-1] * q_prev
+            
             beta_j = np.linalg.norm(w)
             # Use a strict threshold to avoid numerical issues and stop early if needed
             if beta_j < 1e-12:
@@ -50,7 +57,10 @@ def slq_probe(V_op: VLinearOperator, lanczos_steps: int, seed: int):
                 betas = betas[:lanczos_steps-1]
                 break
             betas[j] = beta_j
-            q_prev, q_cur = q_cur, w / beta_j
+            
+            w /= beta_j
+            q_prev = q_cur
+            q_cur = w
 
     # Only wrap the potentially unstable eigenvalue computation
     try:
@@ -62,7 +72,7 @@ def slq_probe(V_op: VLinearOperator, lanczos_steps: int, seed: int):
         return 0.0
     
     # Clip small or negative eigenvalues to prevent log(0) errors.
-    eps = 1e-14  # Fixed threshold, faster than np.finfo
+    eps = 1e-14
     eigvals = np.maximum(eigvals, eps)
     # The quadrature rule: sum of log(eigvals) weighted by squared first elements of eigenvectors
     return np.sum(np.log(eigvals) * (eigvecs[0, :] ** 2))
