@@ -3,6 +3,7 @@ import numpy as np
 from scipy.sparse.linalg import cg
 from scipy.linalg import solve
 from sklearn.base import RegressorMixin
+from sklearn.model_selection import GroupShuffleSplit
 from tqdm import tqdm
 from .operator import VLinearOperator, ResidualPreconditioner, compute_cov_correction
 from ..lanczos_algorithm import slq
@@ -66,7 +67,8 @@ class MixedEffectRegressor:
         self._best_resid_cov = None
         self._best_fe_model = None
 
-    def prepare_data(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, random_slopes: None | tuple[list[int] | None] = None):
+    def prepare_data(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, random_slopes: None | tuple[list[int] | None] = None,
+                     validation_split: float = 0.0, validation_group: int = 0):
         """
         Prepare initial parameters, instances of random effects and residuals.
 
@@ -82,6 +84,10 @@ class MixedEffectRegressor:
             Tuple containing lists of column indices from `X` to be used as random slopes for each grouping factor.
             Example: ([0, 2], None) means group 1 has random slopes for columns 0 and 2 from `X`,
             while group 2 has random intercept only.
+        validation_split : float, default=0.0
+            Fraction of groups to withhold for validation (0.0 to 1.0).
+        validation_group : int, default=0
+            Index of the grouping factor to use for validation split.
 
         Returns
         -------
@@ -100,6 +106,22 @@ class MixedEffectRegressor:
             raise ValueError(f"Length of random_slopes tuple ({len(random_slopes)}) " f"must match the number of groups ({self.k}).")
         else:
             self.random_slopes = random_slopes
+
+        if validation_split > 0:
+            if validation_group < 0 or validation_group >= self.k:
+                raise ValueError(
+                    f"validation_group={validation_group} is out of bounds. "
+                    f"Must be between 0 and {self.k - 1} (number of grouping columns)."
+                )
+            # We assume the first column of 'groups' is the main grouping factor for validation split
+            main_group = groups[:, validation_group]
+            gss = GroupShuffleSplit(n_splits=1, test_size=validation_split, random_state=42)
+            self.train_idx, self.val_idx = next(gss.split(X, y, groups=main_group))
+            self.has_validation = True
+        else:
+            self.train_idx = np.arange(self.n)
+            self.val_idx = None
+            self.has_validation = False
 
         random_effects = tuple(RandomEffect(self.n, self.m, k, slope_col) for k, slope_col in enumerate(self.random_slopes))
 
@@ -131,7 +153,22 @@ class MixedEffectRegressor:
         """
         y_adj = y - total_random_effect
         y_adj = y_adj.ravel() if self.m == 1 else y_adj
-        fx = self.fe_model.fit(X, y_adj).predict(X)
+
+        if self.has_validation:
+            # Split Data
+            X_train = X[self.train_idx]
+            y_adj_train = y_adj[self.train_idx]
+            
+            X_val = X[self.val_idx]
+            y_adj_val = y_adj[self.val_idx]
+            # Direct Pass: If validation split exists, we assume the model accepts X_val/y_val. otherwise, it raises an error.
+            self.fe_model.fit(X_train, y_adj_train, X_val=X_val, y_val=y_adj_val)
+        else:
+            # Standard fit on all data
+            self.fe_model.fit(X, y_adj)
+
+        # Predict on ALL data (Train + Val) to continue the EM loop
+        fx = self.fe_model.predict(X)
         fx = fx[:, None] if self.m == 1 else fx
         return (y - fx).T.ravel()
 
@@ -367,7 +404,8 @@ class MixedEffectRegressor:
 
         return marginal_residual
 
-    def fit(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, random_slopes: None | tuple[list[int]] = None):
+    def fit(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, random_slopes: None | tuple[list[int]] = None,
+            validation_split: float = 0.0, validation_group: int = 0):
         """
         Fit the mixed effects model using the EM algorithm.
 
@@ -381,15 +419,19 @@ class MixedEffectRegressor:
             Grouping factors of shape (n_samples, n_groups).
         random_slopes : None or tuple of list of int, optional
             Random slope column indices for each grouping factor.
+        validation_split : float, default=0.0
+            Fraction of groups to withhold for validation (0.0 to 1.0).
+        validation_group : int, default=0
+            Index of the grouping factor to use for validation split.
 
         Returns
         -------
         MixedEffectResults
             Contains fitted model and results.
         """
-        return self._fit(X=X, y=y, groups=groups, random_slopes=random_slopes)
+        return self._fit(X=X, y=y, groups=groups, random_slopes=random_slopes, validation_split=validation_split)
     
-    def partial_fit(self, marginal_residual: np.ndarray, random_effects: tuple[RandomEffect, ...], residual: Residual):
+    def partial_fit(self, marginal_residual: np.ndarray, random_effects: tuple[RandomEffect, ...], residual: Residual, validation_split: float = 0.0, validation_group: int = 0):
         """
         Continue fitting the model using previously fitted model parameters.
 
@@ -401,16 +443,21 @@ class MixedEffectRegressor:
             Random effect objects from previous fit.
         residual : Residual
             Residual object from previous fit.
+        validation_split : float, default=0.0
+            Fraction of groups to withhold for validation (0.0 to 1.0).
+        validation_group : int, default=0
+            Index of the grouping factor to use for validation split.
 
         Returns
         -------
         MixedEffectResults
             Contains fitted model and results.
         """
-        return self._fit(marginal_residual=marginal_residual, random_effects=random_effects, residual=residual)
+        return self._fit(marginal_residual=marginal_residual, random_effects=random_effects, residual=residual, validation_split=validation_split)
 
     def _fit(self, X: np.ndarray = None, y: np.ndarray = None, groups: np.ndarray = None, random_slopes: None | tuple[list[int]] = None,
-             marginal_residual: np.ndarray = None, random_effects: tuple[RandomEffect, ...] = None, residual: Residual = None):
+             marginal_residual: np.ndarray = None, random_effects: tuple[RandomEffect, ...] = None, residual: Residual = None,
+             validation_split=0.0, validation_group: int = 0):
         """
         Fit the multivariate mixed effects model using EM algorithm.
 
@@ -432,6 +479,10 @@ class MixedEffectRegressor:
             Random effect objects from previous fit.
         residual : Residual, optional
             Residual object from previous fit.
+        validation_split : float, default=0.0
+            Fraction of groups to withhold for validation (0.0 to 1.0).
+        validation_group : int, default=0
+            Index of the grouping factor to use for validation split.
 
         Returns
         -------
@@ -439,7 +490,7 @@ class MixedEffectRegressor:
             Fitted model results.
         """
         if marginal_residual is None:
-            marginal_residual, random_effects, residual = self.prepare_data(X, y, groups, random_slopes)
+            marginal_residual, random_effects, residual = self.prepare_data(X, y, groups, random_slopes, validation_split)
         pbar = tqdm(range(1, self.max_iter + 1), desc="Fitting Model",
                     bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
         for _ in pbar:
