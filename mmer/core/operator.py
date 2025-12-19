@@ -5,13 +5,22 @@ from .random_effect import RealizedRandomEffect, RealizedResidual
 
 class VLinearOperator(LinearOperator):
     """
-    A linear operator that represents the marginal covariance matrix V and its matrix-vector product.
-    V = Σ(Iₘ ⊗ Zₖ) Dₖ (Iₘ ⊗ Zₖ)ᵀ + R
+    Linear Operator for the marginal covariance matrix V.
+
+    Represents the matrix-vector product with:
+    V = Σ (I_m ⊗ Z_k) D_k (I_m ⊗ Z_k)^T + R
+
+    Wraps 'RealizedRandomEffect' and 'RealizedResidual' objects to compute
+    V @ x efficiently without forming the dense matrix V.
+
+    Parameters
+    ----------
+    random_effects : tuple of RealizedRandomEffect
+        Realized random effect components.
+    realized_residual : RealizedResidual
+        Realized residual component.
     """
     def __init__(self, random_effects: tuple[RealizedRandomEffect, ...], realized_residual: RealizedResidual):
-        """
-        Initialize the VLinearOperator.
-        """
         self.random_effects = random_effects
         self.realized_residual = realized_residual
         self.n = realized_residual.n
@@ -19,9 +28,7 @@ class VLinearOperator(LinearOperator):
         super().__init__(dtype=np.float64, shape=(self.m * self.n, self.m * self.n))
 
     def _matvec(self, x_vec: np.ndarray):
-        """
-        Compute the marginal covariance matrix-vector product V @ x_vec.
-        """
+        """Compute V @ x_vec."""
         # Residual part: (R ⊗ I_n) x
         Vx = self.realized_residual._full_cov_matvec(x_vec)
         
@@ -38,7 +45,10 @@ class VLinearOperator(LinearOperator):
 
 class ResidualPreconditioner(LinearOperator):
     """
-    The Lightweight Preconditioner: P⁻¹ = R⁻¹ = φ⁻¹ ⊗ Iₙ.
+    Preconditioner based on the Residual covariance (R).
+
+    Computes M^{-1} @ x, where M approximation is R.
+    P^{-1} = R^{-1} = φ^{-1} ⊗ I_n.
     """
     def __init__(self, resid_cov_inv: np.ndarray, n: int, m: int):
         self.cov_inv = resid_cov_inv
@@ -60,7 +70,10 @@ class ResidualPreconditioner(LinearOperator):
 
 def compute_cov_correction(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, method: str, n_jobs: int, backend: str):
     """
-    Adaptively compute the uncertainty correction matrices T and W.
+    Compute adaptive uncertainty correction terms (T, W) for covariance updates.
+    
+    Dispatches to Stochastic Trace Estimation (STE), Block-STE (BSTE), or 
+    Deterministic Estimation (DE) based on 'method'.
     """
     re = V_op.random_effects[k]
     block_size = re.q * re.o
@@ -82,6 +95,9 @@ def _generate_rademacher_probes(n_rows, n_probes, seed=42):
 # ====================== Stochastic Trace Estimation for Correction ======================
 
 def compute_cov_correction_ste(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, n_probes: int, n_jobs: int, backend: str):
+    """
+    Compute adaptive uncertainty correction terms (T, W) for covariance updates using Stochastic Trace Estimation (STE).
+    """
     m = V_op.m
     re = V_op.random_effects[k]
     q, o = re.q, re.o
@@ -103,6 +119,9 @@ def compute_cov_correction_ste(k: int, V_op: VLinearOperator, M_op: ResidualPrec
     return np.diag(T_diag), np.diag(W_diag)
 
 def _compute_C_probe(probe_index: int, k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner):
+    """
+    Compute the C-probe for Stochastic Trace Estimation (STE).
+    """
     seed = 42 + probe_index
     re = V_op.random_effects[k]
     probe_vector = _generate_rademacher_probes(re.m * re.q * re.o, 1, seed).ravel()
@@ -116,6 +135,9 @@ def _compute_C_probe(probe_index: int, k: int, V_op: VLinearOperator, M_op: Resi
 # ====================== Block Stochastic Trace Estimation ======================
 
 def compute_cov_correction_bste(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, n_probes: int, n_jobs: int, backend: str):
+    """
+    Compute adaptive uncertainty correction terms (T, W) for covariance updates using Block Stochastic Trace Estimation (BSTE).
+    """
     m = V_op.m
     re = V_op.random_effects[k]
     q = re.q 
@@ -136,6 +158,9 @@ def compute_cov_correction_bste(k: int, V_op: VLinearOperator, M_op: ResidualPre
     return T, W
 
 def _cov_correction_per_response_bste(n_probes: int, k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, col: int):
+    """
+    Compute adaptive uncertainty correction terms (T, W) for covariance updates using Block Stochastic Trace Estimation (BSTE) for a single response.
+    """
     m = V_op.m
     re = V_op.random_effects[k]
     q, o = re.q, re.o
@@ -172,6 +197,9 @@ def _cov_correction_per_response_bste(n_probes: int, k: int, V_op: VLinearOperat
 # ====================== Deterministic Correction ======================
 
 def compute_cov_correction_de(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, n_jobs: int, backend: str):
+    """
+    Compute adaptive uncertainty correction terms (T, W) for covariance updates using Deterministic Estimation (DE).
+    """
     m = V_op.m
     re = V_op.random_effects[k]
     q = re.q
@@ -192,6 +220,9 @@ def compute_cov_correction_de(k: int, V_op: VLinearOperator, M_op: ResidualPreco
     return T, W
 
 def _cov_correction_per_response_de(k: int, V_op: VLinearOperator, M_op: ResidualPreconditioner, col: int):
+    """
+    Compute adaptive uncertainty correction terms (T, W) for covariance updates using Deterministic Estimation (DE) for a single response.
+    """
     m = V_op.m
     re = V_op.random_effects[k]
     q, o = re.q, re.o

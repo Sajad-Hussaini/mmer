@@ -3,7 +3,27 @@ from .mixed_effect import MixedEffectRegressor
 
 class MixedEffectResults:
     """
-    Result class for the Multivariate Mixed Effects Regression.
+    Result container for a fitted MMER model.
+
+    Provides access to the fitted model state (coefficients, covariances) and 
+    inference methods.
+
+    Attributes
+    ----------
+    model : MixedEffectRegressor
+        The source model instance.
+    fe_model : RegressorMixin
+        Fitted fixed effects model.
+    m : int
+        Number of output responses.
+    k : int
+        Number of grouping factors.
+    random_effect_terms : list of RandomEffectTerm
+        Learned random effect states.
+    residual_term : ResidualTerm
+        Learned residual state.
+    log_likelihood : list
+        History of log-likelihood values during training.
     """
     def __init__(self, mixed_model: MixedEffectRegressor):
         self.model = mixed_model
@@ -19,11 +39,40 @@ class MixedEffectResults:
         self.best_log_likelihood = mixed_model._best_log_likelihood
 
     def predict(self, X: np.ndarray) -> np.ndarray:
+        """
+        Predict target values using fixed effects only.
+
+        Parameters
+        ----------
+        X : np.ndarray
+            Features, shape (n, p).
+
+        Returns
+        -------
+        np.ndarray
+            Predicted values, shape (n, m).
+        """
         return self.model.predict(X)
     
     def compute_random_effects(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray):
         """
-        Compute residual and random effects for specific data.
+        Estimate posterior random effects for new or existing data.
+
+        Parameters
+        ----------
+        X : np.ndarray
+            Features, shape (n, p).
+        y : np.ndarray
+            Targets, shape (n, m).
+        groups : np.ndarray
+            Grouping factors, shape (n, k).
+
+        Returns
+        -------
+        mean_random_effects : tuple of list of np.ndarray
+            Posterior means of random effects.
+        residuals : np.ndarray
+            Estimated residuals after accounting for fixed and random effects.
         """
         return self.model.compute_random_effects(X, y, groups)
 

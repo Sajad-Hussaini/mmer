@@ -4,8 +4,19 @@ from .terms import RandomEffectTerm, ResidualTerm
 
 class RealizedRandomEffect:
     """
-    Represents a Random Effect realized on a specific dataset.
-    Binds a RandomEffectTerm (State) with Data (Design Matrix Z).
+    Transient realization of a random effect for a specific dataset Z.
+    
+    Binds a learned `RandomEffectTerm` (state) to a specific design matrix Z constructed 
+    from data X. Used for efficient matrix-vector products in the solver.
+
+    Parameters
+    ----------
+    term : RandomEffectTerm
+        The learned random effect state (e.g., covariance).
+    X : np.ndarray
+        Fixed effect covariates of shape (n, p).
+    groups : np.ndarray
+        Grouping factors of shape (n, k).
     """
     def __init__(self, term: RandomEffectTerm, X: np.ndarray, groups: np.ndarray):
         self.term = term
@@ -29,7 +40,16 @@ class RealizedRandomEffect:
     @staticmethod
     def design_Z(group: np.ndarray, covariates: np.ndarray | None):
         """
-        Construct random effects design matrix (Z).
+        Construct sparse random effects design matrix Z.
+
+        Returns
+        -------
+        Z : scipy.sparse.csr_array
+            Design matrix of shape (n, q*o).
+        q : int
+            Number of random parameters per group (intercept + slopes).
+        o : int
+            Number of unique levels in the grouping factor.
         """
         n = group.shape[0]
         levels, level_indices = np.unique(group, return_inverse=True)
@@ -60,21 +80,22 @@ class RealizedRandomEffect:
 
     def _compute_mu(self, prec_resid: np.ndarray):
         """
-        Compute random effect conditional mean.
-        μₖ = Dₖ (Iₘ ⊗ Zₖ)ᵀ V⁻¹ (y - f(X))
+        Compute posterior mean of random effects.
+        μ = D (I_m ⊗ Z^T) V^{-1} r
         """
         return self._kronZ_D_T_matvec(prec_resid)
 
     def _map_mu(self, mu: np.ndarray):
         """
-        Map conditional mean to sample space.
+        Map posterior mean back to observation space.
+        y_re = (I_m ⊗ Z) μ
         """
         return self._kronZ_matvec(mu)
 
     def _compute_next_cov(self, mu: np.ndarray, W: np.ndarray):
         """
-        Compute the NEW covariance matrix for the term based on this realization.
-        Returns 'tau', does NOT update term in place.
+        Estimate new covariance D (EM M-step).
+        D_new = (μ μ^T + W) / o
         """
         mur = mu.reshape((self.m * self.q, self.o))
         tau = mur @ mur.T
@@ -85,12 +106,7 @@ class RealizedRandomEffect:
     
     def to_corr(self):
         """
-        Convert covariance matrix to correlation matrix.
-        
-        Returns
-        -------
-        np.ndarray
-            Correlation matrix of shape (m * q, m * q).
+        Convert covariance D to correlation matrix.
         """
         std = np.sqrt(np.diag(self.term.cov))
         return self.term.cov / np.outer(std, std)
@@ -98,46 +114,34 @@ class RealizedRandomEffect:
 # ====================== Matrix-Vector Operations ======================
     
     def _kronZ_D_matvec(self, x_vec: np.ndarray):
-        """
-        (Iₘ ⊗ Zₖ)D @ x_vec
-        """
+        """(I_m ⊗ Z) D @ x"""
         A_k = self._D_matvec(x_vec)
         B_k = self._kronZ_matvec(A_k)
         return B_k
 
     def _kronZ_D_T_matvec(self, x_vec: np.ndarray):
-        """
-        D (Iₘ ⊗ Zₖᵀ) @ x_vec
-        """
+        """D (I_m ⊗ Z^T) @ x"""
         A_k = self._kronZ_T_matvec(x_vec)
         B_k = self._D_matvec(A_k)
         return B_k
     
     def _kronZ_T_matvec(self, x_vec: np.ndarray):
-        """
-        (Iₘ ⊗ Zₖᵀ) @ x_vec
-        """
+        """(I_m ⊗ Z^T) @ x"""
         A_k = (x_vec.reshape((self.m, self.n)) @ self.Z).ravel()
         return A_k
     
     def _kronZ_matvec(self, x_vec: np.ndarray):
-        """
-        (Iₘ ⊗ Zₖ) @ x_vec
-        """
+        """(I_m ⊗ Z) @ x"""
         A_k = (self.Z @ x_vec.reshape((self.m, self.q * self.o)).T).T.ravel()
         return A_k
     
     def _D_matvec(self, x_vec: np.ndarray):
-        """
-        D @ x_vec
-        """
+        """D @ x"""
         Dx = (self.term.cov @ x_vec.reshape((self.m * self.q, self.o))).ravel()
         return Dx
     
     def _full_cov_matvec(self, x_vec: np.ndarray):
-        """
-        (Iₘ ⊗ Zₖ) Dₖ (Iₘ ⊗ Zₖ)ᵀ @ x_vec
-        """
+        """(I_m ⊗ Z) D (I_m ⊗ Z^T) @ x"""
         A_k = self._kronZ_D_T_matvec(x_vec)
         B_k = self._kronZ_matvec(A_k)
         return B_k
@@ -145,8 +149,14 @@ class RealizedRandomEffect:
 
 class RealizedResidual:
     """
-    Realized Residual for a specific dataset size n.
-    Wraps ResidualTerm (State) and handles n-specific operations.
+    Transient realization of residuals for a specific dataset size n.
+    
+    Parameters
+    ----------
+    term : ResidualTerm
+        The learned residual state (e.g., covariance).
+    n : int
+        Dataset size.
     """
     def __init__(self, term: ResidualTerm, n: int):
         self.term = term
@@ -155,10 +165,8 @@ class RealizedResidual:
 
     def _compute_next_cov(self, eps: np.ndarray, T_sum: np.ndarray):
         """
-        Compute the NEW covariance matrix for the term based on this realization.
-        Returns 'phi', does NOT update term in place.
-        
-        ɸ = (S + T) / n
+        Estimate new residual covariance (EM M-step).
+        (ε ε^T + T) / n
         """
         epsr = eps.reshape((self.m, self.n))
         phi = epsr @ epsr.T
@@ -169,20 +177,14 @@ class RealizedResidual:
     
     def _full_cov_matvec(self, x_vec: np.ndarray):
         """
-        Compute the residual covariance matrix-vector product.
-        Computes (φ ⊗ Iₙ) @ x_vec.
+        Compute (R ⊗ I_n) @ x.
         """
         # Using self.term.cov (phi)
         return (self.term.cov @ x_vec.reshape((self.m, self.n))).ravel()
     
     def to_corr(self):
         """
-        Convert covariance matrix to correlation matrix.
-        
-        Returns
-        -------
-        np.ndarray
-            Correlation matrix of shape (m, m).
+        Convert residual covariance R to correlation matrix.
         """
         std = np.sqrt(np.diag(self.term.cov))
         return self.term.cov / np.outer(std, std)
