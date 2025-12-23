@@ -1,6 +1,7 @@
 import numpy as np
 from .mixed_effect import MixedEffectRegressor
 
+
 class MixedEffectResults:
     """
     Result container for a fitted MMER model.

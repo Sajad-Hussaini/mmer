@@ -1,7 +1,8 @@
 import numpy as np
 from scipy.sparse.linalg import LinearOperator, cg
 from joblib import Parallel, delayed, parallel_config
-from .random_effect import RealizedRandomEffect, RealizedResidual
+from .terms import RealizedRandomEffect, RealizedResidual
+
 
 class VLinearOperator(LinearOperator):
     """

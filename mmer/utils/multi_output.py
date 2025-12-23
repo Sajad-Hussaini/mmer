@@ -1,5 +1,6 @@
 import numpy as np
 
+
 class MultiOutputRegressor:
     """
     A multi-output regressor that fits a separate estimator for specified groups/individuals of target variables.

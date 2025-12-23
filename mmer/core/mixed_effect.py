@@ -7,15 +7,16 @@ from sklearn.model_selection import GroupShuffleSplit
 from tqdm import tqdm
 from .operator import VLinearOperator, ResidualPreconditioner, compute_cov_correction
 from ..lanczos_algorithm import slq
-from .random_effect import RealizedRandomEffect, RealizedResidual
-from .terms import RandomEffectTerm, ResidualTerm
+from .terms import RandomEffectTerm, ResidualTerm, RealizedRandomEffect, RealizedResidual
+
 
 class MixedEffectRegressor:
     """
     Multivariate Mixed Effects Regression (MMER) using Expectation-Maximization.
 
     Fits mixed model with multiple responses, supporting arbitrary grouping factors 
-    and linear random slopes. Solves for random effects and residual covariances.
+    and linear random slopes.
+    Solves for random effects and residual covariances.
 
     Parameters
     ----------
@@ -34,7 +35,10 @@ class MixedEffectRegressor:
     preconditioner : bool, default=True
         Use residual-based preconditioner for CG solver.
     correction_method : str, default='bste'
-        Method for variance correction ('ste' stochastic trace estimation, 'bste' block stochastic trace estimation, 'de' deterministic estimation).
+        Method for variance correction:
+        'ste': stochastic trace estimation
+        'bste': block stochastic trace estimation
+        'de': deterministic estimation
     n_jobs : int, default=-1
         Parallel jobs for SLQ and trace estimation.
     backend : str, default='loky'
@@ -70,7 +74,9 @@ class MixedEffectRegressor:
         self._best_fe_model = None
         
     def _prepare_terms(self, m: int, groups: np.ndarray, random_slopes: tuple[list[int] | None] | None):
-        """Initialize state RandomEffect and Residual Terms if not present."""
+        """
+        Initialize state RandomEffect and Residual Terms if not present.
+        """
         k = groups.shape[1]
         
         # 1. Initialize Random Structure Config
@@ -94,7 +100,8 @@ class MixedEffectRegressor:
 
     def prepare_data(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, 
                      validation_split: float = 0.0, validation_group: int = 0):
-        """Generate transient realized random effects and residual for the current dataset.
+        """
+        Generate transient realized random effects and residual for the current dataset.
         
         Parameters
         ----------
@@ -206,7 +213,8 @@ class MixedEffectRegressor:
         total_random_effect, mu = self._aggregate_random_effects(prec_resid, realized_effects)
         return total_random_effect, mu, V_op, M_op
 
-    def _m_step(self, marginal_residual, total_random_effect, mu, realized_effects, realized_residual, V_op, M_op):
+    def _m_step(self, marginal_residual: np.ndarray, total_random_effect: np.ndarray, mu: list[np.ndarray],
+                realized_effects: tuple[RealizedRandomEffect], realized_residual: RealizedResidual, V_op: VLinearOperator, M_op: ResidualPreconditioner):
         """Run M-step."""
         eps = marginal_residual - total_random_effect
         T_sum = np.zeros((self.m, self.m))
@@ -227,7 +235,9 @@ class MixedEffectRegressor:
         return self
 
     def _solver(self, marginal_residual, realized_effects, realized_residual):
-        """Run solver."""
+        """
+        Solve V * x = marginal_residual using Conjugate Gradient with optional preconditioning.
+        """
         V_op = VLinearOperator(realized_effects, realized_residual)
         M_op = None
         if self.preconditioner:
@@ -243,7 +253,9 @@ class MixedEffectRegressor:
         return prec_resid, V_op, M_op
 
     def _compute_marginal_residual(self, X, y, total_random_effect):
-        """Fit FE model and compute marginal residual."""
+        """
+        Fit FE model and compute new marginal residual.
+        """
         y_adj = y - total_random_effect
         y_adj = y_adj.ravel() if self.m == 1 else y_adj
 
@@ -261,13 +273,17 @@ class MixedEffectRegressor:
         return (y - fx).T.ravel()
 
     def _compute_log_likelihood(self, marginal_residual, prec_resid, V_op):
-        """Compute log-likelihood."""
+        """
+        Compute log-likelihood.
+        """
         log_det_V = slq.logdet(V_op, self.slq_steps, self.slq_probes, self.n_jobs, self.backend)
         log_likelihood = -(self.m * self.n * np.log(2 * np.pi) + log_det_V + marginal_residual.T @ prec_resid) / 2
         return log_likelihood
 
     def _aggregate_random_effects(self, prec_resid, realized_effects):
-        """Aggregate random effects."""
+        """
+        Aggregate random effects.
+        """
         total_random_effect = np.zeros(self.m * self.n)
         mu = []
         for re in realized_effects:
@@ -276,7 +292,8 @@ class MixedEffectRegressor:
         return total_random_effect, tuple(mu)
 
     def _check_convergence(self):
-        """Check for convergence.
+        """
+        Check for convergence.
         
         If the log-likelihood has not improved for `patience` iterations,
         the model is considered to have converged.

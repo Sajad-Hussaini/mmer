@@ -3,6 +3,7 @@ from scipy.linalg import eigh_tridiagonal
 from joblib import Parallel, delayed, parallel_config
 from ..core.operator import VLinearOperator
 
+
 def slq_probe(V_op: VLinearOperator, lanczos_steps: int, seed: int):
     """
     Single probe for SLQ logdet estimation.
