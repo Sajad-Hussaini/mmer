@@ -1,5 +1,49 @@
 import numpy as np
 from scipy import sparse
+from abc import ABC, abstractmethod
+
+
+class RealizedTermBase(ABC):
+    """
+    Abstract base class for realized terms (random effects and residuals).
+    
+    Provides common interface for posterior computation and matrix-vector operations
+    on data-specific realizations of learned terms.
+    """
+    
+    def __init__(self, term, n: int, m: int):
+        """
+        Initialize realized term.
+        
+        Parameters
+        ----------
+        term : RandomEffectTerm or ResidualTerm
+            Learned state (contains covariance).
+        n : int
+            Dataset size.
+        m : int
+            Number of outputs.
+        """
+        self.term = term
+        self.n = n
+        self.m = m
+    
+    @abstractmethod
+    def _full_cov_matvec(self, x_vec: np.ndarray) -> np.ndarray:
+        """Compute full covariance matrix-vector product."""
+        pass
+    
+    def _compute_next_cov(self, *args, **kwargs):
+        """
+        Estimate new covariance (EM M-step).
+        Subclasses override with specific logic.
+        """
+        raise NotImplementedError
+    
+    def to_corr(self):
+        """Convert covariance to correlation matrix."""
+        std = np.sqrt(np.diag(self.term.cov))
+        return self.term.cov / np.outer(std, std)
 
 
 class RandomEffectTerm:
@@ -67,7 +111,7 @@ class ResidualTerm:
         self.cov = new_cov
 
 
-class RealizedRandomEffect:
+class RealizedRandomEffect(RealizedTermBase):
     """
     Transient realization of a random effect for a specific dataset Z.
     
@@ -84,9 +128,9 @@ class RealizedRandomEffect:
         Grouping factors of shape (n, k).
     """
     def __init__(self, term: "RandomEffectTerm", X: np.ndarray, groups: np.ndarray):
-        self.term = term
-        self.n = X.shape[0]
-        self.m = term.m
+        n = X.shape[0]
+        m = term.m
+        super().__init__(term, n, m)
         
         if term.covariates_id is not None:
              covariates = X[:, term.covariates_id]
@@ -212,7 +256,7 @@ class RealizedRandomEffect:
         return B_k
 
 
-class RealizedResidual:
+class RealizedResidual(RealizedTermBase):
     """
     Transient realization of residuals for a specific dataset size n.
     
@@ -224,9 +268,7 @@ class RealizedResidual:
         Dataset size.
     """
     def __init__(self, term: "ResidualTerm", n: int):
-        self.term = term
-        self.n = n
-        self.m = term.m
+        super().__init__(term, n, term.m)
 
     def _compute_next_cov(self, eps: np.ndarray, T_sum: np.ndarray):
         """
@@ -246,10 +288,3 @@ class RealizedResidual:
         """
         # Using self.term.cov (phi)
         return (self.term.cov @ x_vec.reshape((self.m, self.n))).ravel()
-    
-    def to_corr(self):
-        """
-        Convert residual covariance R to correlation matrix.
-        """
-        std = np.sqrt(np.diag(self.term.cov))
-        return self.term.cov / np.outer(std, std)

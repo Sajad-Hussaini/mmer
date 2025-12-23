@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mmer"
-version = "0.1.1"
+version = "0.1.2"
 authors = [{name = "Sajad Hussaini", email = "hussaini.smsajad@gmail.com"}]
 description = "MMER: Multivariate Mixed Effects Regression."
 readme = "README.md"

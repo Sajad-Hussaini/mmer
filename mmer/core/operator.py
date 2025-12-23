@@ -4,6 +4,70 @@ from joblib import Parallel, delayed, parallel_config
 from .terms import RealizedRandomEffect, RealizedResidual
 
 
+# ====================== Variance Correction ======================
+
+class VarianceCorrection:
+    """
+    Variance correction computations.
+    
+    Provides unified interface for STE, BSTE, and DE correction methods,
+    eliminating need for explicit method dispatch in M-step.
+    """
+    _VALID_METHODS = {'ste', 'bste', 'de'}
+    
+    def __init__(self, method: str):
+        """
+        Initialize orchestrator.
+        
+        Parameters
+        ----------
+        method : str
+            Correction method: 'ste', 'bste', or 'de'.
+        """
+        if method not in self._VALID_METHODS:
+            raise ValueError(f"Method must be one of {self._VALID_METHODS}, got {method}")
+        self.method = method
+    
+    def compute_correction(self, k: int, V_op: 'VLinearOperator', M_op: 'ResidualPreconditioner',
+                          n_probes: int = None, n_jobs: int = -1, backend: str = 'loky') -> tuple:
+        """
+        Compute adaptive uncertainty correction terms (T, W).
+        
+        Parameters
+        ----------
+        k : int
+            Index of random effect term.
+        V_op : VLinearOperator
+            Marginal covariance linear operator.
+        M_op : ResidualPreconditioner
+            Optional preconditioner.
+        n_probes : int, optional
+            Number of probes for stochastic methods. Auto-computed if None.
+        n_jobs : int, default=-1
+            Parallel jobs.
+        backend : str, default='loky'
+            Joblib backend.
+        
+        Returns
+        -------
+        T : np.ndarray
+            Trace correction matrix.
+        W : np.ndarray
+            Covariance correction matrix.
+        """
+        if n_probes is None:
+            re = V_op.random_effects[k]
+            block_size = re.q * re.o
+            n_probes = min(max(20, block_size // 10), 100)
+        
+        if self.method == 'de':
+            return compute_cov_correction_de(k, V_op, M_op, n_jobs, backend)
+        elif self.method == 'bste':
+            return compute_cov_correction_bste(k, V_op, M_op, n_probes, n_jobs, backend)
+        elif self.method == 'ste':
+            return compute_cov_correction_ste(k, V_op, M_op, n_probes, n_jobs, backend)
+
+
 class VLinearOperator(LinearOperator):
     """
     Linear Operator for the marginal covariance matrix V.
@@ -75,16 +139,11 @@ def compute_cov_correction(k: int, V_op: VLinearOperator, M_op: ResidualPrecondi
     
     Dispatches to Stochastic Trace Estimation (STE), Block-STE (BSTE), or 
     Deterministic Estimation (DE) based on 'method'.
+    
+    This function now delegates to VarianceCorrection for cleaner dispatch.
     """
-    re = V_op.random_effects[k]
-    block_size = re.q * re.o
-    n_probes = min(max(20, block_size // 10), 100)  # Adjust based on block size; may need to allow argument for it!
-    if method == 'de':
-        return compute_cov_correction_de(k, V_op, M_op, n_jobs, backend)
-    elif method == 'bste':
-        return compute_cov_correction_bste(k, V_op, M_op, n_probes, n_jobs, backend)
-    elif method == 'ste':
-        return compute_cov_correction_ste(k, V_op, M_op, n_probes, n_jobs, backend)
+    orchestrator = VarianceCorrection(method)
+    return orchestrator.compute_correction(k, V_op, M_op, n_jobs=n_jobs, backend=backend)
 
 def _generate_rademacher_probes(n_rows, n_probes, seed=42):
     rng = np.random.default_rng(seed)

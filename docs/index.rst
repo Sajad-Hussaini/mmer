@@ -1,6 +1,6 @@
 .. mmer documentation master file.
 
-Welcome to MMER's Documentation!
+MMER's Documentation!
 ==================================
 
 MMER is a Python package for Multivariate Mixed-Effects Regression.

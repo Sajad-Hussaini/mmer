@@ -70,10 +70,12 @@ class MixedEffectResults:
 
         Returns
         -------
-        mean_random_effects : tuple of list of np.ndarray
-            Posterior means of random effects.
         residuals : np.ndarray
             Estimated residuals after accounting for fixed and random effects.
+        total_effect : np.ndarray
+            Total estimated random effects.
+        mu : tuple of np.ndarray
+            Estimated random effects for each grouping factor.
         """
         return self.model.compute_random_effects(X, y, groups)
 
