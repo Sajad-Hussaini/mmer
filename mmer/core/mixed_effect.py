@@ -18,24 +18,30 @@ class SolverContext:
     
     Handles preconditioner creation, VLinearOperator setup, and CG invocation
     in one place to eliminate duplicated solver code.
+    
+    Parameters
+    ----------
+    realized_effects : tuple of RealizedRandomEffect
+        Realized random effects.
+    realized_residual : RealizedResidual
+        Realized residual term (for preconditioner).
+    preconditioner : bool, default=True
+        Whether to use preconditioner.
+    
+    Attributes
+    ----------
+    realized_effects : tuple of RealizedRandomEffect
+        Stored realized random effects.
+    realized_residual : RealizedResidual
+        Stored realized residual term.
+    n : int
+        Dataset size, extracted from realized_residual.
+    m : int
+        Number of outputs, extracted from realized_residual.
+    use_preconditioner : bool
+        Whether preconditioner will be applied.
     """
     def __init__(self, realized_effects: tuple[RealizedRandomEffect], realized_residual: RealizedResidual, preconditioner: bool = True):
-        """
-        Initialize solver context.
-        
-        Parameters
-        ----------
-        realized_effects : tuple of RealizedRandomEffect
-            Realized random effects.
-        realized_residual : RealizedResidual
-            Realized residual term (for preconditioner).
-        n : int
-            Dataset size.
-        m : int
-            Number of outputs.
-        preconditioner : bool, default=True
-            Whether to use preconditioner.
-        """
         self.realized_effects = realized_effects
         self.realized_residual = realized_residual
         self.n = realized_residual.n
@@ -44,17 +50,17 @@ class SolverContext:
     
     def solve(self, marginal_residual: np.ndarray) -> tuple:
         """
-        Solve V * x = marginal_residual using CG.
+        Solve V * x = marginal_residual using conjugate gradient.
         
         Parameters
         ----------
         marginal_residual : np.ndarray
-            Right-hand side of linear system.
+            Right-hand side of linear system, shape (m*n,).
         
         Returns
         -------
         prec_resid : np.ndarray
-            Solution vector.
+            Solution vector, shape (m*n,).
         V_op : VLinearOperator
             Linear operator used in solve.
         M_op : ResidualPreconditioner or None
@@ -82,18 +88,28 @@ class ConvergenceMonitor:
     Tracks convergence state during EM iterations.
     
     Manages log-likelihood history, patience counter, and best-state restoration.
+    Supports both relative tolerance-based stopping and early stopping based on
+    patience when no improvement is observed.
+    
+    Parameters
+    ----------
+    tol : float, default=1e-6
+        Convergence tolerance on log-likelihood relative change.
+    patience : int, default=3
+        Number of iterations to wait before early stopping if no improvement.
+    
+    Attributes
+    ----------
+    tol : float
+        Convergence tolerance.
+    patience : int
+        Patience counter threshold.
+    log_likelihood : list of float
+        History of log-likelihood values across iterations.
+    is_converged : bool
+        Whether convergence criteria have been met.
     """
     def __init__(self, tol: float = 1e-6, patience: int = 3):
-        """
-        Initialize convergence monitor.
-        
-        Parameters
-        ----------
-        tol : float, default=1e-6
-            Convergence tolerance on log-likelihood relative change.
-        patience : int, default=3
-            Iterations to wait before early stopping.
-        """
         self.tol = tol
         self.patience = max(1, patience)
         self.log_likelihood = []
@@ -104,19 +120,23 @@ class ConvergenceMonitor:
     
     def update(self, current_log_likelihood: float, current_state: dict) -> bool:
         """
-        Update convergence monitor with new log-likelihood.
+        Update convergence monitor with new log-likelihood value.
+        
+        Checks both relative change tolerance and patience-based early stopping.
+        Stores the best state encountered during optimization.
         
         Parameters
         ----------
         current_log_likelihood : float
-            Current log-likelihood value.
+            Current iteration's log-likelihood value.
         current_state : dict
-            Current model state (re_covs, resid_cov, fe_model) to save if improved.
+            Current model state containing 're_covs', 'resid_cov', and 'fe_model'
+            to save if this is the best state so far.
         
         Returns
         -------
         is_converged : bool
-            Whether model has converged.
+            Whether model has converged based on tolerance or patience.
         """
         self.log_likelihood.append(current_log_likelihood)
         
@@ -144,28 +164,37 @@ class ConvergenceMonitor:
 
 class InferenceEngine:
     """
-    Handles post-fit inference computations (random effects, residuals).
+    Handles post-fit inference computations for random effects and residuals.
     
     Decouples inference logic from the EM fitting loop, allowing reuse across
-    compute_random_effects() and enhanced predict() methods.
+    compute_random_effects() and enhanced predict() methods. Computes posterior
+    means of random effects given fitted model parameters.
+    
+    Parameters
+    ----------
+    random_effect_terms : tuple of RandomEffectTerm
+        Learned random effect terms (fitted state).
+    residual_term : ResidualTerm
+        Learned residual term (fitted state).
+    n : int
+        Dataset size.
+    preconditioner : bool, default=True
+        Whether to use preconditioner in solver.
+    
+    Attributes
+    ----------
+    random_effect_terms : tuple of RandomEffectTerm
+        Stored random effect terms.
+    residual_term : ResidualTerm
+        Stored residual term.
+    n : int
+        Dataset size.
+    m : int
+        Number of outputs, extracted from residual_term.
+    preconditioner : bool
+        Whether to use preconditioner.
     """
     def __init__(self, random_effect_terms: tuple[RandomEffectTerm], residual_term: ResidualTerm, n: int, preconditioner: bool = True):
-        """
-        Initialize inference engine.
-        
-        Parameters
-        ----------
-        random_effect_terms : list of RandomEffectTerm
-            Learned random effect terms (fitted state).
-        residual_term : ResidualTerm
-            Learned residual term (fitted state).
-        n : int
-            Dataset size.
-        m : int
-            Number of outputs.
-        preconditioner : bool, default=True
-            Whether to use preconditioner in solver.
-        """
         self.random_effect_terms = random_effect_terms
         self.residual_term = residual_term
         self.n = n
@@ -177,10 +206,15 @@ class InferenceEngine:
         """
         Compute posterior mean random effects and residuals.
         
+        Given observations and fixed effect predictions, computes the posterior
+        mean of random effects for each grouping factor and the final residuals.
+        
         Parameters
         ----------
         realized_effects : tuple of RealizedRandomEffect
             Realized random effect objects for current data.
+        realized_residual : RealizedResidual
+            Realized residual term for current data.
         y : np.ndarray
             Target values, shape (n, m).
         fe_predictions : np.ndarray
@@ -188,12 +222,12 @@ class InferenceEngine:
         
         Returns
         -------
-        mu : list of np.ndarray
-            Posterior means for each random effect term.
         residuals : np.ndarray
-            Residuals (raveled, shape m*n).
+            Final residuals after subtracting all effects, raveled shape (m*n,).
         random_effects_sum : np.ndarray
-            Sum of random effects across terms (raveled, shape m*n).
+            Sum of random effects across all terms, raveled shape (m*n,).
+        mu : tuple of np.ndarray
+            Posterior means for each random effect term.
         """
         # Compute marginal residual (before random effects)
         marginal_resid = (y - fe_predictions).T.ravel()
@@ -221,34 +255,64 @@ class MixedEffectRegressor:
     Multivariate Mixed Effects Regression (MMER) using Expectation-Maximization.
 
     Fits mixed model with multiple responses, supporting arbitrary grouping factors 
-    and linear random slopes.
-    Solves for random effects and residual covariances.
+    and linear random slopes. Solves for random effects and residual covariances
+    using EM algorithm with stochastic log-determinant estimation.
 
     Parameters
     ----------
     fixed_effects_model : RegressorMixin
         Base regressor for fixed effects (must support multi-output).
     max_iter : int, default=20
-        Maximum EM iterations.
+        Maximum number of EM iterations.
     tol : float, default=1e-6
-        Convergence tolerance on log-likelihood.
+        Convergence tolerance on log-likelihood relative change.
     patience : int, default=3
-        Iterations to wait for likelihood improvement before early stopping.
+        Number of iterations to wait for likelihood improvement before early stopping.
+        Setting to a high value effectively disables early stopping and relies solely on `tol`.
     slq_steps : int, default=50
-        Steps for Stochastic Lanczos Quadrature (log-det estimation).
+        Number of Lanczos steps for Stochastic Lanczos Quadrature (log-det estimation).
+        A range of 30-100 is typically sufficient. Higher values yield more accurate estimates but increase computation time.
     slq_probes : int, default=50
-        Number of probes for SLQ.
+        Number of random probes for SLQ log-determinant estimation.
+        A range of 30-100 is typically sufficient. Higher values yield more accurate estimates but increase computation time.
     preconditioner : bool, default=True
-        Use residual-based preconditioner for CG solver.
+        Whether to use residual-based preconditioner for CG solver.
     correction_method : str, default='bste'
-        Method for variance correction:
-        'ste': stochastic trace estimation
-        'bste': block stochastic trace estimation
-        'de': deterministic estimation
+        Method for variance correction in M-step:
+        
+        - 'ste': stochastic trace estimation
+        - 'bste': block stochastic trace estimation
+        - 'de': deterministic estimation
     n_jobs : int, default=-1
-        Parallel jobs for SLQ and trace estimation.
+        Number of parallel jobs for SLQ and trace estimation (-1 uses all cores).
+        Setting to number of outputs (`m`) is recommended for optimal performance.
     backend : str, default='loky'
-        Joblib backend.
+        Joblib parallel backend ('loky', 'threading').
+        Setting to 'loky' is recommended for CPU-bound tasks.
+    
+    Attributes
+    ----------
+    fe_model : RegressorMixin
+        Fitted fixed effects model.
+    random_effect_terms : tuple of RandomEffectTerm
+        Fitted random effect terms containing covariance matrices.
+    residual_term : ResidualTerm
+        Fitted residual term containing residual covariance matrix.
+    log_likelihood : list of float
+        Log-likelihood values across EM iterations.
+    n : int
+        Number of observations.
+    m : int
+        Number of output dimensions.
+    k : int
+        Number of grouping factors.
+    
+    Examples
+    --------
+    >>> from sklearn.linear_model import Ridge
+    >>> model = MixedEffectRegressor(fixed_effects_model=Ridge())
+    >>> results = model.fit(X, y, groups, random_slopes=([0, 1], None))
+    >>> predictions = model.predict(X_new)
     """
     _VALID_CORRECTION_METHODS = ['ste', 'bste', 'de']
 
@@ -275,24 +339,39 @@ class MixedEffectRegressor:
     @property
     def log_likelihood(self):
         """
-        Expose log-likelihood history from convergence monitor.
+        Log-likelihood history from convergence monitor.
+        
+        Returns
+        -------
+        list of float
+            Log-likelihood values for each EM iteration.
         """
         return self.convergence_monitor.log_likelihood
     
     @property
     def _is_converged(self):
         """
-        Expose convergence status from convergence monitor.
+        Convergence status from convergence monitor.
+        
+        Returns
+        -------
+        bool
+            Whether the model has converged.
         """
         return self.convergence_monitor.is_converged
     
     @property
     def _best_log_likelihood(self):
         """
-        Expose best log-likelihood from convergence monitor.
+        Best log-likelihood value encountered during fitting.
+        
+        Returns
+        -------
+        float
+            Maximum log-likelihood achieved.
         """
         return self.convergence_monitor._best_log_likelihood
-        
+
     def _prepare_terms(self, y: np.ndarray, groups: np.ndarray, random_slopes: tuple[list[int] | None] | None):
         """
         Initialize state RandomEffect and Residual Terms if not present.
@@ -344,7 +423,11 @@ class MixedEffectRegressor:
     def prepare_data(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, 
                      validation_split: float = 0.0, validation_group: int = 0):
         """
-        Generate transient realized random effects and residual for the current dataset.
+        Prepare data for EM algorithm by creating realized objects.
+        
+        Generates transient realized random effects and residual for the current 
+        dataset. Optionally splits data into training and validation sets based on
+        group membership.
         
         Parameters
         ----------
@@ -355,9 +438,19 @@ class MixedEffectRegressor:
         groups : np.ndarray
             Grouping factors, shape (n, k).
         validation_split : float, default=0.0
-            Fraction of data to use for validation.
+            Fraction of groups to use for validation (0.0 means no validation).
+            Setting to a non-zero value means fixed effects can accept validation data.
         validation_group : int, default=0
-            Group index for validation split.
+            Column index in `groups` to use for group-wise validation splitting.
+        
+        Returns
+        -------
+        marginal_residual : np.ndarray
+            Initial marginal residual, raveled shape (m*n,).
+        realized_effects : tuple of RealizedRandomEffect
+            Realized random effect objects.
+        realized_residual : RealizedResidual
+            Realized residual term.
         """        
         # Setup Validation Split
         if validation_split > 0:
@@ -381,28 +474,45 @@ class MixedEffectRegressor:
     def fit(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, random_slopes: None | tuple[list[int]] = None,
             validation_split: float = 0.0, validation_group: int = 0):
         """
-        Fit the MMER model.
+        Fit the MMER model using the EM algorithm.
 
         Parameters
         ----------
         X : np.ndarray
-            Covariates, shape (n, p).
+            Covariates, shape (n, p) where n is number of observations and p is
+            number of features.
         y : np.ndarray
-            Multi-output targets, shape (n, m).
+            Multi-output targets, shape (n, m) where m is number of outputs.
         groups : np.ndarray
-            Grouping factors, shape (n, k).
-        random_slopes : tuple, optional
-            Tuple of lists. Each list contains column indices in X for random slopes 
-            corresponding to that group. None implies random intercept only.
+            Grouping factors, shape (n, k) where k is number of grouping factors.
+            Each column represents a different grouping structure.
+        random_slopes : tuple of list of int, optional
+            Tuple of lists specifying random slopes for each grouping factor.
+            Each list contains column indices in X for random slopes corresponding 
+            to that group. None or empty list implies random intercept only for
+            that group. If None, all groups get random intercepts only.
         validation_split : float, default=0.0
-            Fraction of data to use for validation (early stopping).
+            Fraction of groups to use for validation (early stopping). Must be
+            between 0.0 and 1.0. Set to 0.0 to disable validation.
+            Setting to a non-zero value means fixed effects can accept validation data.
         validation_group : int, default=0
             Column index in `groups` to use for group-wise validation splitting.
 
         Returns
         -------
         MixedEffectResults
-            Fitted result object.
+            Fitted result object containing covariance estimates and diagnostics.
+        
+        Examples
+        --------
+        >>> # Fit model with random intercepts only
+        >>> results = model.fit(X, y, groups)
+        
+        >>> # Fit with random slopes on features 0 and 1 for first group
+        >>> results = model.fit(X, y, groups, random_slopes=([0, 1], None))
+        
+        >>> # Fit with validation split
+        >>> results = model.fit(X, y, groups, validation_split=0.2)
         """
         # Initialize terms if new training
         if self.random_effect_terms is None:
@@ -488,7 +598,8 @@ class MixedEffectRegressor:
         """
         Fit FE model and compute new marginal residual.
         """
-        y_adj = (y_adj := y - total_random_effect) if self.m != 1 else y_adj.ravel()
+        y_adj = y - total_random_effect
+        y_adj = y_adj if self.m != 1 else y_adj.ravel()
 
         if self.has_validation:
             X_train = X[self.train_idx]
@@ -499,7 +610,8 @@ class MixedEffectRegressor:
         else:
             self.fe_model.fit(X, y_adj)
 
-        fx = (fx := self.fe_model.predict(X)) if self.m != 1 else fx[:, None]
+        fx = self.fe_model.predict(X)
+        fx = fx if self.m != 1 else fx[:, None]
 
         return (y - fx).T.ravel()
 
@@ -527,6 +639,39 @@ class MixedEffectRegressor:
     def compute_random_effects(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray):
         """
         Compute posterior mean of random effects for new data.
+        
+        Given a fitted model, computes the posterior distribution of random effects
+        and residuals for new observations. Useful for prediction and model diagnostics.
+        
+        Parameters
+        ----------
+        X : np.ndarray
+            Covariates for new data, shape (n_new, p).
+        y : np.ndarray
+            Observed targets for new data, shape (n_new, m).
+        groups : np.ndarray
+            Grouping factors for new data, shape (n_new, k).
+        
+        Returns
+        -------
+        residuals : np.ndarray
+            Final residuals after subtracting all effects, raveled shape (m*n_new,).
+        total_effect : np.ndarray
+            Sum of random effects across all terms, raveled shape (m*n_new,).
+        mu : tuple of np.ndarray
+            Posterior means for each random effect term. Each element corresponds
+            to one grouping factor.
+        
+        Raises
+        ------
+        RuntimeError
+            If model has not been fitted yet.
+        
+        Examples
+        --------
+        >>> residuals, total_re, mu = model.compute_random_effects(X_new, y_new, groups_new)
+        >>> # mu[0] contains random effects for first grouping factor
+        >>> # mu[1] contains random effects for second grouping factor (if present)
         """
         if self.random_effect_terms is None:
             raise RuntimeError("Model is not fitted.")
@@ -535,7 +680,8 @@ class MixedEffectRegressor:
         realized_effects, realized_residual = self._realize_objects(n, X, groups)
         
         # Predict Fixed Effects
-        fx = (fx := self.fe_model.predict(X)) if self.m != 1 else fx[:, None]
+        fx = self.fe_model.predict(X)
+        fx = fx if self.m != 1 else fx[:, None]
         
         # Use InferenceEngine to compute random effects
         inference_engine = InferenceEngine(self.random_effect_terms, self.residual_term, n, self.preconditioner)
@@ -545,15 +691,38 @@ class MixedEffectRegressor:
 
     def predict(self, X: np.ndarray):
         """
-        Predict using fixed effects component.
+        Predict using fixed effects component only.
         
-        Parameters:
-            X: np.ndarray
-                Covariates for prediction of shape (n , p).
-            
-            Current implementation does not support random effects.
+        Makes predictions using only the learned fixed effects model, ignoring
+        random effects. For predictions that include random effects, use
+        compute_random_effects() and add the total effect to predictions.
+        
+        Parameters
+        ----------
+        X : np.ndarray
+            Covariates for prediction, shape (n, p).
 
-        Returns:
-            Predicted values of shape (n, m).
+        Returns
+        -------
+        predictions : np.ndarray
+            Predicted values from fixed effects only, shape (n, m).
+        
+        Notes
+        -----
+        Current implementation does not support random effects in prediction.
+        To obtain predictions including random effects:
+        
+        1. Call compute_random_effects() to get random effect estimates
+        2. Add total_effect to fixed effect predictions
+        
+        Examples
+        --------
+        >>> # Predict with fixed effects only
+        >>> y_pred = model.predict(X_new)
+        
+        >>> # Predict with both fixed and random effects
+        >>> y_fixed = model.predict(X_new)
+        >>> _, total_re, _ = model.compute_random_effects(X_new, y_new, groups_new)
+        >>> y_pred_full = y_fixed + total_re.reshape((-1, model.m))
         """
         return self.fe_model.predict(X)

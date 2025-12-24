@@ -9,3 +9,4 @@ This section provides a gallery of examples using MMER.
    :maxdepth: 1
 
    examples/basic_fit
+   examples/statsmodel_comparison
