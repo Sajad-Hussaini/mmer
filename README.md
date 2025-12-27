@@ -53,4 +53,4 @@ Please cite the following references for any formal study:
 
 **[2] MMER Package**  
 *MMER: Multivariate Mixed Effects Regression*  
-*DOI: [To be added]*  
+*DOI: https://doi.org/10.5281/zenodo.18068839*  
