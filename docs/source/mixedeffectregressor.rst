@@ -6,3 +6,4 @@ MixedEffectRegressor
 .. autoclass:: mmer.MixedEffectRegressor
    :members:
    :undoc-members:
+   :no-index:

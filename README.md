@@ -49,7 +49,7 @@ Please cite the following references for any formal study:
 **[1] Primary Reference**  
 *A Multivariate Mixed-Effects Regression Framework for Ground Motion Modeling: Integrating Parametric and Machine Learning Approaches*  
 *DOI: [To be added]*  
-(Journal of Earthquake Engineering and Structural Dynamics)
+(Expected publication in the Journal of Earthquake Engineering and Structural Dynamics)
 
 **[2] MMER Package**  
 *MMER: Multivariate Mixed Effects Regression*  
