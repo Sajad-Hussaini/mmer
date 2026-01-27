@@ -39,11 +39,6 @@ class RealizedTermBase(ABC):
         Subclasses override with specific logic.
         """
         raise NotImplementedError
-    
-    def to_corr(self):
-        """Convert covariance to correlation matrix."""
-        std = np.sqrt(np.diag(self.term.cov))
-        return self.term.cov / np.outer(std, std)
 
 
 class RandomEffectTerm:
@@ -81,6 +76,37 @@ class RandomEffectTerm:
         if new_cov.shape != (self.m * self.q, self.m * self.q):
             raise ValueError(f"Covariance shape mismatch. Expected {(self.m * self.q, self.m * self.q)}, got {new_cov.shape}")
         self.cov = new_cov
+    
+    def to_corr(self, cov: np.ndarray = None) -> np.ndarray:
+        """
+        Convert a covariance matrix to a correlation matrix.
+        If no matrix is provided, use self.cov.
+        """
+        if cov is None:
+            cov = self.cov
+        std = np.sqrt(np.diag(cov))
+        return cov / np.outer(std, std)
+
+    def marginal_cov(self, z: np.ndarray) -> np.ndarray:
+        """
+        Compute the marginal covariance matrix (m x m) for a single sample
+        given its random effect covariate vector z.
+
+        Parameters
+        ----------
+        z : np.ndarray
+            Covariate vector for the sample (shape: (q,)).
+            for example, for random intercept + slope, z = [1, x_slope].
+
+        Returns
+        -------
+        cov : np.ndarray
+            Marginal covariance matrix in observation space (shape: (m, m)).
+        """
+        z = np.asarray(z)
+        Im_Z = np.kron(np.eye(self.m), z)
+        return Im_Z @ self.cov @ Im_Z.T
+
 
 class ResidualTerm:
     """
@@ -109,6 +135,16 @@ class ResidualTerm:
         if new_cov.shape != (self.m, self.m):
             raise ValueError(f"Residual covariance shape mismatch. Expected {(self.m, self.m)}, got {new_cov.shape}")
         self.cov = new_cov
+    
+    def to_corr(self, cov: np.ndarray = None) -> np.ndarray:
+        """
+        Convert a covariance matrix to a correlation matrix.
+        If no matrix is provided, use self.cov.
+        """
+        if cov is None:
+            cov = self.cov
+        std = np.sqrt(np.diag(cov))
+        return cov / np.outer(std, std)
 
 
 class RealizedRandomEffect(RealizedTermBase):
@@ -212,13 +248,6 @@ class RealizedRandomEffect(RealizedTermBase):
         tau /= self.o
         tau[np.diag_indices_from(tau)] += 1e-5
         return tau
-    
-    def to_corr(self):
-        """
-        Convert covariance D to correlation matrix.
-        """
-        std = np.sqrt(np.diag(self.term.cov))
-        return self.term.cov / np.outer(std, std)
 
 # ====================== Matrix-Vector Operations ======================
     

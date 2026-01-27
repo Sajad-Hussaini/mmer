@@ -686,8 +686,16 @@ class MixedEffectRegressor:
         # Use InferenceEngine to compute random effects
         inference_engine = InferenceEngine(self.random_effect_terms, self.residual_term, n, self.preconditioner)
         residuals, total_effect, mu = inference_engine.compute_random_effects(realized_effects, realized_residual, y, fx)
-        
-        return residuals, total_effect, mu
+        residuals_2d = residuals.reshape((self.m, -1)).T  # shape (n, m)
+        total_effect_2d = total_effect.reshape((self.m, -1)).T  # shape (n, m)
+
+        # Reshape mu for each random effect term: (m*q*o) -> (o, m, q)
+        mu_reshaped = []
+        for k, mu_k in enumerate(mu):
+            m, q = self.m, self.random_effect_terms[k].q
+            mu_reshaped.append(mu_k.reshape((m, q, -1)).transpose(2, 0, 1))  # (o, m, q)
+
+        return residuals_2d, total_effect_2d, tuple(mu_reshaped)
 
     def predict(self, X: np.ndarray):
         """
