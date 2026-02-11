@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mmer"
-version = "1.0.0"
+version = "1.0.1"
 authors = [{name = "Sajad Hussaini", email = "hussaini.smsajad@gmail.com"}]
 description = "MMER: Multivariate Mixed Effects Regression."
 readme = "README.md"
@@ -21,15 +21,26 @@ dependencies = [
     "numpy",
     "scipy",
     "joblib",
-    "matplotlib",
     "scikit-learn",
-    "tqdm",
+    "tqdm"]
+
+[project.optional-dependencies]
+docs = [
     "sphinx",
     "sphinx_rtd_theme",
+    "sphinx-copybutton",
     "myst-parser",
-    "nbsphinx"]
+    "nbsphinx",
+    "pygments",
+    "pydata-sphinx-theme",
+]
 
 [project.urls]
 Homepage = "https://github.com/Sajad-Hussaini/mmer"
+Documentation = "https://mmer.readthedocs.io"
 Repository = "https://github.com/Sajad-Hussaini/mmer"
 Issues = "https://github.com/Sajad-Hussaini/mmer/issues"
+Changelog = "https://github.com/Sajad-Hussaini/mmer/releases"
+
+[tool.setuptools.packages.find]
+where = ["src"]

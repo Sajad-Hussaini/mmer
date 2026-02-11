@@ -5,20 +5,31 @@ Installation
 
 You can install MMER using below methods:
 
-Install from PyPI
------------------
+Install from PyPI (Recommended)
+---------------------------------
 
 .. code-block:: bash
 
    pip install mmer
 
 Install from Source
--------------------
+--------------------
 
-Method 1: Using Git
-~~~~~~~~~~~~~~~~~~~
+Method 1: Using Github
+~~~~~~~~~~~~~~~~~~~~~~~
+
+To use the latest development version (not guaranteed to be stable),
+install directly from the [GitHub repository](https://github.com/Sajad-Hussaini/mmer):
+
+.. code-block:: bash
+
+   pip install git+https://github.com/Sajad-Hussaini/mmer.git
+
+Method 2: Using Git
+~~~~~~~~~~~~~~~~~~~~~
 
 If you have Git installed, clone the repository:
+Go to https://github.com/Sajad-Hussaini/mmer and clone it.
 
 .. code-block:: bash
 
@@ -26,8 +37,8 @@ If you have Git installed, clone the repository:
    cd mmer
    pip install .
 
-Method 2: Download ZIP file
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Method 3: Download ZIP file
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 If you don't have Git installed, you can download the source code as a ZIP file:
 
