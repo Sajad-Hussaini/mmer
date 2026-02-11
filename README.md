@@ -1,11 +1,13 @@
-# MMER - Multivariate Mixed Effects Regression
+# MMER: Python Package for Multivariate Mixed Effects Regression
 
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![PyPI](https://img.shields.io/pypi/v/mmer.svg)](https://pypi.org/project/mmer)
 [![Documentation Status](https://readthedocs.org/projects/mmer/badge/?version=latest)](https://mmer.readthedocs.io/en/latest/?badge=latest)  
 
-**MMER** is a Python package for multivariate mixed-effects regression. It uniquely features a modular fixed-effect component, supporting both parametric models and non-parametric machine learning regressors (e.g., neural networks, random forests, XGBoost). MMER handles multiple responses, grouping factors, and linear random effects structures [[1]](#references).
+## Overview
+
+**MMER** is a Python package for multivariate mixed-effects regression featuring a modular fixed-effects component. It supports parametric and non-parametric machine learning regressors (neural networks, random forests, XGBoost), handles multiple responses and grouping factors, and provides direct access to the covariance matrices arising from its multivariate formulation [[1]](#references).
 
 ## Table of Contents
 - [Features and Installation](#features-and-installation)
@@ -52,5 +54,5 @@ Please cite the following references for any formal study:
 (Expected publication in the Journal of Earthquake Engineering and Structural Dynamics)
 
 **[2] MMER Package**  
-*MMER: Multivariate Mixed Effects Regression*  
+*MMER: Python Package for Multivariate Mixed Effects Regression*  
 *DOI: https://doi.org/10.5281/zenodo.18068839*  
