@@ -4,15 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mmer"
-version = "1.0.2"
+version = "1.0.3"
 authors = [{name = "Sajad Hussaini", email = "hussaini.smsajad@gmail.com"}]
-description = "MMER: Multivariate Mixed Effects Regression."
+description = "Multivariate Mixed Effects Regression."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
-keywords = ["mmer", "multivariate regression", "mixed-effects", "machine-learning", "uncertainty quantification", "ground motion models", "earthquake engineering"]
+keywords = ["mmer", "multivariate regression", "mixed-effects", "machine-learning", "uncertainty quantification", "ground motion models", "earthquake engineering", "structural engineering"]
 classifiers = [
     "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering",]
