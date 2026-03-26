@@ -55,5 +55,5 @@ Please cite the following references for any formal study:
 (Journal of Earthquake Engineering and Structural Dynamics)
 
 **[2] MMER Package**  
-*MMER: Multivariate Mixed Effects Regression*  
+*Multivariate Mixed Effects Regression*  
 *DOI: https://doi.org/10.5281/zenodo.18068839*  
