@@ -5,7 +5,7 @@
 [![PyPI](https://img.shields.io/pypi/v/mmer.svg)](https://pypi.org/project/mmer)
 [![Documentation Status](https://readthedocs.org/projects/mmer/badge/?version=latest)](https://mmer.readthedocs.io/en/latest/?badge=latest)  
 
-**MMER** is a Python package for multivariate mixed-effects regression featuring a modular fixed-effects component. It supports parametric and non-parametric machine learning regressors (neural networks, random forests, XGBoost), handles multiple outcomes and grouping factors, and provides direct access to the covariance matrices arising from its multivariate formulation [[1]](#references).
+**MMER** is a flexible Python framework for multivariate mixed-effects regression. Its defining feature is a plug-and-play architecture that allows you to seamlessly integrate any generic regressor to model the fixed effects—from standard parametric algorithms to advanced machine learning models like Neural Networks, Random Forests, and XGBoost. It natively handles multiple correlated outcomes across grouping structures, providing direct access to the full random effect and residual covariance matrices [[1]](#references).
 
 ## Table of Contents
 - [Installation](#installation)
