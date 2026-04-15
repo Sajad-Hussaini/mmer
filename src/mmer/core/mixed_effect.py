@@ -75,7 +75,7 @@ class MixedEffectRegressor:
     >>> results = model.fit(X, y, groups, random_slopes=([0, 1], None))
     >>> predictions = model.predict(X_new)
     """
-    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 20, tol: float = 1e-6, patience: int = 3,
+    def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 30, tol: float = 1e-6, patience: int = 3,
                  slq_steps: int = 30, n_probes: int = 60, preconditioner: bool = True, correction_method: str = 'bste',
                  n_jobs: int = -1, backend: str = 'loky'):
         self.fe_model = fixed_effects_model

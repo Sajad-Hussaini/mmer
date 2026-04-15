@@ -72,13 +72,16 @@ def slq_probe(V_op: VLinearOperator, lanczos_steps: int, seed: int):
         # Return 0 for failed probes - will be averaged out
         return 0.0
     
-    # Clip small or negative eigenvalues to prevent log(0) errors.
-    eps = 1e-14
-    eigvals = np.maximum(eigvals, eps)
+    # Filter out non-positive eigenvalues (ghost eigenvalues from numerical instability)
+    # instead of clipping to eps, which heavily penalizes the logdet estimate with large negative logs.
+    valid = eigvals > 0
+    if not np.any(valid):
+        return 0.0
+        
     # The quadrature rule: sum of log(eigvals) weighted by squared first elements of eigenvectors
-    return np.sum(np.log(eigvals) * (eigvecs[0, :] ** 2))
+    return np.sum(np.log(eigvals[valid]) * (eigvecs[0, valid] ** 2))
 
-def logdet(V_op: VLinearOperator, lanczos_steps: int, num_probes: int, n_jobs: int = -1, backend: str = 'loky', random_seed: int = 42):
+def logdet(V_op: VLinearOperator, lanczos_steps: int, n_probes: int, n_jobs: int = -1, backend: str = 'loky', random_seed: int = 42):
     """
     Estimate log-determinant using Stochastic Lanczos Quadrature (SLQ).
     
@@ -92,7 +95,7 @@ def logdet(V_op: VLinearOperator, lanczos_steps: int, num_probes: int, n_jobs: i
         Symmetric positive-definite linear operator V.
     lanczos_steps : int
         Number of Lanczos iterations per probe.
-    num_probes : int
+    n_probes : int
         Number of probe vectors m.
     n_jobs : int
         Number of parallel jobs.
@@ -120,13 +123,13 @@ def logdet(V_op: VLinearOperator, lanczos_steps: int, num_probes: int, n_jobs: i
     # However, since V is an implicit LinearOperator, we can cap probes to dim
     # but practically dim = n*m is usually huge (thousands+), so this rarely triggers
     # on real data, but guarantees mathematical safety on toy datasets.
-    num_probes = min(num_probes, dim)
+    n_probes = min(n_probes, dim)
 
     # Create a sequence of independent random seeds for each parallel job
     # This ensures reproducibility while maintaining statistical independence.
-    seeds = np.random.SeedSequence(random_seed).spawn(num_probes)
+    seeds = np.random.SeedSequence(random_seed).spawn(n_probes)
     with parallel_config(backend=backend, n_jobs=n_jobs):
         result = Parallel(return_as="generator")(delayed(slq_probe)(V_op, lanczos_steps, int(s.generate_state(1)[0])) for s in seeds)
         logdet_est = sum(result)
 
-    return dim * logdet_est / num_probes
+    return dim * logdet_est / n_probes

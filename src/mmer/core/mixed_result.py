@@ -126,6 +126,43 @@ class MixedEffectResults:
         """Get the estimated covariance matrices for each random effect grouping factor."""
         return [term.cov for term in self.random_effect_terms]
 
+    @staticmethod
+    def cov_to_corr(cov: np.ndarray) -> np.ndarray:
+        """
+        Convert a covariance matrix to a correlation matrix.
+        Protects against zero variances for numerical stability.
+        """
+        std = np.sqrt(np.diag(cov))
+        std[std == 0] = 1e-12  # avoid division by zero
+        return cov / np.outer(std, std)
+
+    @property
+    def residual_correlation(self) -> np.ndarray:
+        """Get the estimated residual correlation matrix."""
+        return self.cov_to_corr(self.residual_covariance)
+        
+    @property
+    def random_effects_correlations(self) -> list[np.ndarray]:
+        """Get the estimated correlation matrices for each random effect grouping factor."""
+        return [self.cov_to_corr(cov) for cov in self.random_effects_covariances]
+
+    def get_marginal_correlation(self, slope_covariates: list[np.ndarray | None] | None = None) -> np.ndarray:
+        """
+        Compute the total marginal correlation matrix (m x m) for a single observation profile.
+        
+        Parameters
+        ----------
+        slope_covariates : list of np.ndarray or None, optional
+            List of 1D arrays containing random slope covariates for each grouping factor.
+            Omit the intercept (1.0) as it is automatically included.
+            
+        Returns
+        -------
+        corr : np.ndarray
+            Total marginal correlation matrix.
+        """
+        return self.cov_to_corr(self.get_marginal_covariance(slope_covariates))
+
     def get_marginal_covariance(self, slope_covariates: list[np.ndarray | None] | None = None) -> np.ndarray:
         """
         Compute the total marginal covariance matrix (m x m) for a single observation profile.
