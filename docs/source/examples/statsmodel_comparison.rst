@@ -8,7 +8,6 @@ Comparing Linear Mixed-Effects Models using MMER and Statsmodels For Numerical V
 
 .. code-block:: python
 
-   import pandas as pd
    import numpy as np
    from mmer import MixedEffectRegressor
    from sklearn.linear_model import LinearRegression
@@ -23,11 +22,9 @@ Comparing Linear Mixed-Effects Models using MMER and Statsmodels For Numerical V
    true_phi = 0.3  # Residual variance
    true_tau = 0.2  # Random effects variance
    b_k = np.random.normal(0, np.sqrt(true_tau), o_k)
-   Z_k = np.zeros((n, o_k))
-   for i, g in enumerate(groups): Z_k[i, g] = 1
    cof = np.random.randn(5)
    fX = X @ cof  # Fixed effects
-   y = fX + Z_k @ b_k + np.random.normal(0, np.sqrt(true_phi), n)
+   y = fX + b_k[groups.ravel()] + np.random.normal(0, np.sqrt(true_phi), n)
    y = y[:, None]
 
    # %% Perform MMER on the Data and Display Results
@@ -44,11 +41,8 @@ Comparing Linear Mixed-Effects Models using MMER and Statsmodels For Numerical V
       print(f"  {name:12s}: {coef:10.6f}")
    
    # %% Perform Statsmodels MixedLM on the Data and Display Results
-   df = pd.DataFrame(X, columns=[f'x{i}' for i in range(5)])
-   df['y'] = y
-   df['group'] = groups.flatten()
-   exog = sm.add_constant(df[[f'x{i}' for i in range(5)]])  # add intercept
+   exog = sm.add_constant(X, has_constant='add')  # add intercept
    exog_re = np.ones((n, 1))  # Random intercept
-   model2 = MixedLM(df['y'], exog, groups=df['group'], exog_re=exog_re)
+   model2 = MixedLM(y.ravel(), exog, groups=groups.ravel(), exog_re=exog_re)
    result2 = model2.fit()
    print(result2.summary())

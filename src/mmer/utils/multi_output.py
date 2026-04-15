@@ -1,4 +1,5 @@
 import numpy as np
+from sklearn.base import clone
 
 
 class MultiOutputRegressor:
@@ -33,21 +34,27 @@ class MultiOutputRegressor:
         self : object
             Returns self.
         """
-        if not hasattr(self, "estimators_"):
-            self.estimators_ = []
+        if not self.estimator_groups:
+            raise ValueError("At least one estimator group is required.")
+
+        self.estimators_ = []
+        self.output_indices_ = []
+        self.n_outputs_ = max(idx for _, indices in self.estimator_groups for idx in indices) + 1
 
         for estimator, y_indices in self.estimator_groups:
-            if not y_indices:
+            if len(y_indices) == 0:
                 raise ValueError("Each estimator group must have at least one target index.")
 
             y_subset = y[:, y_indices]
+            fitted_estimator = clone(estimator)
 
             # If an estimator handles a single output, ensure y is 1D
             if y_subset.shape[1] == 1:
                 y_subset = y_subset.ravel()
 
-            estimator.fit(X, y_subset)
-            self.estimators_.append(estimator)
+            fitted_estimator.fit(X, y_subset)
+            self.estimators_.append(fitted_estimator)
+            self.output_indices_.append(tuple(y_indices))
 
         return self
 
@@ -68,15 +75,13 @@ class MultiOutputRegressor:
         y : np.ndarray, shape (n_samples, n_outputs)
             Predicted values for each output.
         """
-        # Determine the total number of output columns from the groups
-        all_indices = [idx for _, indices in self.estimator_groups for idx in indices]
-        n_outputs = max(all_indices) + 1
+        if not hasattr(self, "estimators_"):
+            raise RuntimeError("This MultiOutputRegressor instance is not fitted yet.")
 
-        # Initialize an empty array to store all predictions
-        y_pred = np.zeros((X.shape[0], n_outputs))
+        y_pred = np.zeros((X.shape[0], self.n_outputs_))
 
-        for estimator, y_indices in self.estimator_groups:
-            pred_subset = estimator.predict(X)
+        for estimator, y_indices in zip(self.estimators_, self.output_indices_):
+            pred_subset = np.asarray(estimator.predict(X))
 
             # If prediction is 1D, reshape to 2D for consistent indexing
             if pred_subset.ndim == 1:

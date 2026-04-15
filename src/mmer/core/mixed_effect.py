@@ -1,253 +1,14 @@
-import pickle
 import numpy as np
-from scipy.sparse.linalg import cg
-from scipy.linalg import solve
 from sklearn.base import RegressorMixin
-from sklearn.model_selection import GroupShuffleSplit
 from tqdm import tqdm
+from .convergence import ConvergenceMonitor
+from .fixed_effect import FixedEffectPipeline
+from .inference import InferenceEngine
+from .mixed_result import MixedEffectResults
 from .operator import VLinearOperator, ResidualPreconditioner, compute_cov_correction
 from ..lanczos_algorithm import slq
+from .solver import SolverContext
 from .terms import RandomEffectTerm, ResidualTerm, RealizedRandomEffect, RealizedResidual
-
-
-# ====================== Helper Classes ======================
-
-class SolverContext:
-    """
-    Encapsulates solver setup and execution.
-    
-    Handles preconditioner creation, VLinearOperator setup, and CG invocation
-    in one place to eliminate duplicated solver code.
-    
-    Parameters
-    ----------
-    realized_effects : tuple of RealizedRandomEffect
-        Realized random effects.
-    realized_residual : RealizedResidual
-        Realized residual term (for preconditioner).
-    preconditioner : bool, default=True
-        Whether to use preconditioner.
-    
-    Attributes
-    ----------
-    realized_effects : tuple of RealizedRandomEffect
-        Stored realized random effects.
-    realized_residual : RealizedResidual
-        Stored realized residual term.
-    n : int
-        Dataset size, extracted from realized_residual.
-    m : int
-        Number of outputs, extracted from realized_residual.
-    use_preconditioner : bool
-        Whether preconditioner will be applied.
-    """
-    def __init__(self, realized_effects: tuple[RealizedRandomEffect], realized_residual: RealizedResidual, preconditioner: bool = True):
-        self.realized_effects = realized_effects
-        self.realized_residual = realized_residual
-        self.n = realized_residual.n
-        self.m = realized_residual.m
-        self.use_preconditioner = preconditioner
-    
-    def solve(self, marginal_residual: np.ndarray) -> tuple:
-        """
-        Solve V * x = marginal_residual using conjugate gradient.
-        
-        Parameters
-        ----------
-        marginal_residual : np.ndarray
-            Right-hand side of linear system, shape (m*n,).
-        
-        Returns
-        -------
-        prec_resid : np.ndarray
-            Solution vector, shape (m*n,).
-        V_op : VLinearOperator
-            Linear operator used in solve.
-        M_op : ResidualPreconditioner or None
-            Preconditioner used (if any).
-        """
-        V_op = VLinearOperator(self.realized_effects, self.realized_residual)
-        M_op = None
-        
-        if self.use_preconditioner:
-            try:
-                resid_cov_inv = solve(a=self.realized_residual.cov, b=np.eye(self.m), assume_a='pos')
-                M_op = ResidualPreconditioner(resid_cov_inv, self.n, self.m)
-            except Exception:
-                pass
-        
-        prec_resid, info = cg(A=V_op, b=marginal_residual, M=M_op)
-        if info != 0:
-            print(f"Warning: CG info={info}")
-        
-        return prec_resid, V_op, M_op
-
-
-class ConvergenceMonitor:
-    """
-    Tracks convergence state during EM iterations.
-    
-    Manages log-likelihood history, patience counter, and best-state restoration.
-    Supports both relative tolerance-based stopping and early stopping based on
-    patience when no improvement is observed.
-    
-    Parameters
-    ----------
-    tol : float, default=1e-6
-        Convergence tolerance on log-likelihood relative change.
-    patience : int, default=3
-        Number of iterations to wait before early stopping if no improvement.
-    
-    Attributes
-    ----------
-    tol : float
-        Convergence tolerance.
-    patience : int
-        Patience counter threshold.
-    log_likelihood : list of float
-        History of log-likelihood values across iterations.
-    is_converged : bool
-        Whether convergence criteria have been met.
-    """
-    def __init__(self, tol: float = 1e-6, patience: int = 3):
-        self.tol = tol
-        self.patience = max(1, patience)
-        self.log_likelihood = []
-        self.is_converged = False
-        self._best_log_likelihood = -np.inf
-        self._no_improvement_count = 0
-        self._best_state = None
-    
-    def update(self, current_log_likelihood: float, current_state: dict) -> bool:
-        """
-        Update convergence monitor with new log-likelihood value.
-        
-        Checks both relative change tolerance and patience-based early stopping.
-        Stores the best state encountered during optimization.
-        
-        Parameters
-        ----------
-        current_log_likelihood : float
-            Current iteration's log-likelihood value.
-        current_state : dict
-            Current model state containing 're_covs', 'resid_cov', and 'fe_model'
-            to save if this is the best state so far.
-        
-        Returns
-        -------
-        is_converged : bool
-            Whether model has converged based on tolerance or patience.
-        """
-        self.log_likelihood.append(current_log_likelihood)
-        
-        # Check relative change convergence
-        if len(self.log_likelihood) >= 2:
-            change = np.abs((self.log_likelihood[-1] - self.log_likelihood[-2]) / self.log_likelihood[-2])
-            if change <= self.tol:
-                self.is_converged = True
-        
-        # Track best state
-        if current_log_likelihood > self._best_log_likelihood:
-            self._best_log_likelihood = current_log_likelihood
-            self._no_improvement_count = 0
-            self._best_state = {k: v.copy() if isinstance(v, np.ndarray) else pickle.loads(pickle.dumps(v)) 
-                               for k, v in current_state.items()}
-        else:
-            self._no_improvement_count += 1
-        
-        # Check patience stopping
-        if self._no_improvement_count >= self.patience:
-            self.is_converged = True
-        
-        return self.is_converged
-
-
-class InferenceEngine:
-    """
-    Handles post-fit inference computations for random effects and residuals.
-    
-    Decouples inference logic from the EM fitting loop, allowing reuse across
-    compute_random_effects() and enhanced predict() methods. Computes posterior
-    means of random effects given fitted model parameters.
-    
-    Parameters
-    ----------
-    random_effect_terms : tuple of RandomEffectTerm
-        Learned random effect terms (fitted state).
-    residual_term : ResidualTerm
-        Learned residual term (fitted state).
-    n : int
-        Dataset size.
-    preconditioner : bool, default=True
-        Whether to use preconditioner in solver.
-    
-    Attributes
-    ----------
-    random_effect_terms : tuple of RandomEffectTerm
-        Stored random effect terms.
-    residual_term : ResidualTerm
-        Stored residual term.
-    n : int
-        Dataset size.
-    m : int
-        Number of outputs, extracted from residual_term.
-    preconditioner : bool
-        Whether to use preconditioner.
-    """
-    def __init__(self, random_effect_terms: tuple[RandomEffectTerm], residual_term: ResidualTerm, n: int, preconditioner: bool = True):
-        self.random_effect_terms = random_effect_terms
-        self.residual_term = residual_term
-        self.n = n
-        self.m = residual_term.m
-        self.preconditioner = preconditioner
-    
-    def compute_random_effects(self, realized_effects: tuple[RealizedRandomEffect], realized_residual: RealizedResidual,
-                               y: np.ndarray, fe_predictions: np.ndarray) -> tuple:
-        """
-        Compute posterior mean random effects and residuals.
-        
-        Given observations and fixed effect predictions, computes the posterior
-        mean of random effects for each grouping factor and the final residuals.
-        
-        Parameters
-        ----------
-        realized_effects : tuple of RealizedRandomEffect
-            Realized random effect objects for current data.
-        realized_residual : RealizedResidual
-            Realized residual term for current data.
-        y : np.ndarray
-            Target values, shape (n, m).
-        fe_predictions : np.ndarray
-            Fixed effect predictions, shape (n, m).
-        
-        Returns
-        -------
-        residuals : np.ndarray
-            Final residuals after subtracting all effects, raveled shape (m*n,).
-        random_effects_sum : np.ndarray
-            Sum of random effects across all terms, raveled shape (m*n,).
-        mu : tuple of np.ndarray
-            Posterior means for each random effect term.
-        """
-        # Compute marginal residual (before random effects)
-        marginal_resid = (y - fe_predictions).T.ravel()
-        
-        # Solve for random effects
-        solver_ctx = SolverContext(realized_effects, realized_residual, self.preconditioner)
-        prec_resid, _, _ = solver_ctx.solve(marginal_resid)
-        
-        # Aggregate random effects
-        total_random_effect = np.zeros(self.m * self.n)
-        mu = []
-        for re in realized_effects:
-            val = re._compute_mu(prec_resid)
-            mu.append(val)
-            total_random_effect += re._map_mu(val)
-        
-        # Compute final residuals (after subtracting random effects)
-        residuals = marginal_resid - total_random_effect
-        
-        return residuals, total_random_effect, tuple(mu)
 
 
 class MixedEffectRegressor:
@@ -318,7 +79,8 @@ class MixedEffectRegressor:
 
     def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 20, tol: float = 1e-6, patience: int = 3,
                  slq_steps: int = 50, slq_probes: int = 50, preconditioner: bool = True, correction_method: str = 'bste',
-                 n_jobs: int = -1, backend: str = 'loky'):
+                 n_jobs: int = -1, backend: str = 'loky', cg_rtol: float = 1e-5, cg_atol: float = 0.0,
+                 cg_maxiter: int | None = None):
         self.fe_model = fixed_effects_model
         self.max_iter = max_iter
         self.tol = tol
@@ -329,8 +91,13 @@ class MixedEffectRegressor:
         self.correction_method = correction_method
         self.n_jobs = n_jobs
         self.backend = backend
+        self.cg_rtol = cg_rtol
+        self.cg_atol = cg_atol
+        self.cg_maxiter = cg_maxiter
 
         self.convergence_monitor = ConvergenceMonitor(tol=tol, patience=patience)
+        self.fixed_effects = FixedEffectPipeline(self.fe_model)
+        self._prec_resid_guess = None
         
         # State: Terms
         self.random_effect_terms: tuple[RandomEffectTerm] = None # List[RandomEffectTerm]
@@ -420,6 +187,12 @@ class MixedEffectRegressor:
         realized_residual = RealizedResidual(self.residual_term, n)
         return realized_effects, realized_residual
 
+    def _predict_fixed_effects(self, X: np.ndarray) -> np.ndarray:
+        """
+        Predict fixed effects and normalize the output to a 2D array.
+        """
+        return self.fixed_effects.predict(X)
+
     def prepare_data(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, 
                      validation_split: float = 0.0, validation_group: int = 0):
         """
@@ -453,15 +226,11 @@ class MixedEffectRegressor:
             Realized residual term.
         """        
         # Setup Validation Split
-        if validation_split > 0:
-            main_group = groups[:, validation_group]
-            gss = GroupShuffleSplit(n_splits=1, test_size=validation_split, random_state=42)
-            self.train_idx, self.val_idx = next(gss.split(X, y, groups=main_group))
-            self.has_validation = True
-        else:
-            self.train_idx = np.arange(self.n)
-            self.val_idx = None
-            self.has_validation = False
+        self.fixed_effects.configure_validation(X, y, groups, validation_split, validation_group)
+
+        self.train_idx = self.fixed_effects.train_idx
+        self.val_idx = self.fixed_effects.val_idx
+        self.has_validation = self.fixed_effects.has_validation
             
         # Instantiate Realized Objects (Transient)
         realized_effects, realized_residual = self._realize_objects(self.n, X, groups)
@@ -519,7 +288,9 @@ class MixedEffectRegressor:
             self._prepare_terms(y, groups, random_slopes)
         
         # Reset convergence monitor for new fit
+        self.fixed_effects.model = self.fe_model
         self.convergence_monitor = ConvergenceMonitor(tol=self.tol, patience=self.patience)
+        self._prec_resid_guess = None
             
         marginal_residual, realized_effects, realized_residual = self.prepare_data(X, y, groups, validation_split, validation_group)
         
@@ -531,7 +302,6 @@ class MixedEffectRegressor:
                 pbar.set_description(f"Model Converged | Early stopping.")
                 break
                 
-        from .mixed_result import MixedEffectResults
         return MixedEffectResults(self)
 
     def _run_em_iteration(self, X, y, marginal_residual, realized_effects, realized_residual):
@@ -552,18 +322,21 @@ class MixedEffectRegressor:
         """
         Run E-step.
         """
-        solver_ctx = SolverContext(realized_effects, realized_residual, self.preconditioner)
-        prec_resid, V_op, M_op = solver_ctx.solve(marginal_residual)
+        solver_ctx = SolverContext(
+            realized_effects,
+            realized_residual,
+            self.preconditioner,
+            rtol=self.cg_rtol,
+            atol=self.cg_atol,
+            maxiter=self.cg_maxiter,
+        )
+        prec_resid, V_op, M_op = solver_ctx.solve(marginal_residual, x0=self._prec_resid_guess)
+        self._prec_resid_guess = prec_resid
         
         current_log_lh = self._compute_log_likelihood(marginal_residual, prec_resid, V_op)
         
         # Update convergence monitor
-        current_state = {
-            're_covs': [term.cov.copy() for term in self.random_effect_terms],
-            'resid_cov': self.residual_term.cov.copy(),
-            'fe_model': self.fe_model
-        }
-        self.convergence_monitor.update(current_log_lh, current_state)
+        self.convergence_monitor.update(current_log_lh)
         
         if self.convergence_monitor.is_converged:
              return None, None, None, None
@@ -581,7 +354,17 @@ class MixedEffectRegressor:
         new_covs = []
         
         for k, re in enumerate(realized_effects):
-            T_k, W_k = compute_cov_correction(k, V_op, M_op, self.correction_method, self.n_jobs, self.backend)
+            T_k, W_k = compute_cov_correction(
+                k,
+                V_op,
+                M_op,
+                self.correction_method,
+                self.n_jobs,
+                self.backend,
+                self.cg_rtol,
+                self.cg_atol,
+                self.cg_maxiter,
+            )
             T_sum += T_k
             new_covs.append(re._compute_next_cov(mu[k], W_k))
 
@@ -601,17 +384,8 @@ class MixedEffectRegressor:
         y_adj = y - total_random_effect
         y_adj = y_adj if self.m != 1 else y_adj.ravel()
 
-        if self.has_validation:
-            X_train = X[self.train_idx]
-            y_adj_train = y_adj[self.train_idx]
-            X_val = X[self.val_idx]
-            y_adj_val = y_adj[self.val_idx]
-            self.fe_model.fit(X_train, y_adj_train, X_val=X_val, y_val=y_adj_val)
-        else:
-            self.fe_model.fit(X, y_adj)
-
-        fx = self.fe_model.predict(X)
-        fx = fx if self.m != 1 else fx[:, None]
+        self.fixed_effects.fit(X, y_adj)
+        fx = self.fixed_effects.predict(X)
 
         return (y - fx).T.ravel()
 
@@ -679,13 +453,22 @@ class MixedEffectRegressor:
         n, m = y.shape
         realized_effects, realized_residual = self._realize_objects(n, X, groups)
         
-        # Predict Fixed Effects
-        fx = self.fe_model.predict(X)
-        fx = fx if self.m != 1 else fx[:, None]
-        
-        # Use InferenceEngine to compute random effects
-        inference_engine = InferenceEngine(self.random_effect_terms, self.residual_term, n, self.preconditioner)
-        residuals, total_effect, mu = inference_engine.compute_random_effects(realized_effects, realized_residual, y, fx)
+        fx = self._predict_fixed_effects(X)
+        inference_engine = InferenceEngine(
+            self.random_effect_terms,
+            self.residual_term,
+            n,
+            self.preconditioner,
+            rtol=self.cg_rtol,
+            atol=self.cg_atol,
+            maxiter=self.cg_maxiter,
+        )
+        residuals, total_effect, mu, _ = inference_engine.compute_random_effects(
+            realized_effects,
+            realized_residual,
+            y,
+            fx,
+        )
         residuals_2d = residuals.reshape((self.m, -1)).T  # shape (n, m)
         total_effect_2d = total_effect.reshape((self.m, -1)).T  # shape (n, m)
 
@@ -733,4 +516,7 @@ class MixedEffectRegressor:
         >>> _, total_re, _ = model.compute_random_effects(X_new, y_new, groups_new)
         >>> y_pred_full = y_fixed + total_re.reshape((-1, model.m))
         """
-        return self.fe_model.predict(X)
+        if self.random_effect_terms is None:
+            raise RuntimeError("Model is not fitted.")
+
+        return self._predict_fixed_effects(X)

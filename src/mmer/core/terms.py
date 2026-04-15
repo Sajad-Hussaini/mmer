@@ -1,6 +1,17 @@
 import numpy as np
-from scipy import sparse
 from abc import ABC, abstractmethod
+
+from .layout import RandomEffectLayout
+
+
+def _validate_covariance_shape(cov: np.ndarray, expected_shape: tuple[int, int], label: str):
+    if cov.shape != expected_shape:
+        raise ValueError(f"{label} shape mismatch. Expected {expected_shape}, got {cov.shape}")
+
+
+def _cov_to_corr(cov: np.ndarray) -> np.ndarray:
+    std = np.sqrt(np.diag(cov))
+    return cov / np.outer(std, std)
 
 
 class RealizedTermBase(ABC):
@@ -73,8 +84,7 @@ class RandomEffectTerm:
         new_cov : np.ndarray
             New covariance matrix of shape (m*q, m*q).
         """
-        if new_cov.shape != (self.m * self.q, self.m * self.q):
-            raise ValueError(f"Covariance shape mismatch. Expected {(self.m * self.q, self.m * self.q)}, got {new_cov.shape}")
+        _validate_covariance_shape(new_cov, (self.m * self.q, self.m * self.q), "Covariance")
         self.cov = new_cov
     
     def to_corr(self, cov: np.ndarray = None) -> np.ndarray:
@@ -84,8 +94,7 @@ class RandomEffectTerm:
         """
         if cov is None:
             cov = self.cov
-        std = np.sqrt(np.diag(cov))
-        return cov / np.outer(std, std)
+        return _cov_to_corr(cov)
 
     def marginal_cov(self, z: np.ndarray) -> np.ndarray:
         """
@@ -132,8 +141,7 @@ class ResidualTerm:
         new_cov : np.ndarray
             New covariance matrix of shape (m, m).
         """
-        if new_cov.shape != (self.m, self.m):
-            raise ValueError(f"Residual covariance shape mismatch. Expected {(self.m, self.m)}, got {new_cov.shape}")
+        _validate_covariance_shape(new_cov, (self.m, self.m), "Residual covariance")
         self.cov = new_cov
     
     def to_corr(self, cov: np.ndarray = None) -> np.ndarray:
@@ -143,8 +151,7 @@ class ResidualTerm:
         """
         if cov is None:
             cov = self.cov
-        std = np.sqrt(np.diag(cov))
-        return cov / np.outer(std, std)
+        return _cov_to_corr(cov)
 
 
 class RealizedRandomEffect(RealizedTermBase):
@@ -175,53 +182,33 @@ class RealizedRandomEffect(RealizedTermBase):
              
         group_data = groups[:, term.group_id]
 
-        self.Z, self.q, self.o = self.design_Z(group_data, covariates)
+        self.layout = self.design_layout(group_data, covariates)
+        self.q = self.layout.q
+        self.o = self.layout.o
         
         if self.q != term.q:
             raise ValueError(f"Term q={term.q} does not match realized q={self.q}")
 
-        self.ZTZ = self.Z.T @ self.Z
+    @staticmethod
+    def design_layout(group: np.ndarray, covariates: np.ndarray | None):
+        """
+        Construct an exact grouped layout for the random effects design.
+
+        Returns
+        -------
+        layout : RandomEffectLayout
+            Group-aware layout with exact matvecs and Gram summaries.
+        """
+        return RandomEffectLayout(group, covariates)
 
     @staticmethod
     def design_Z(group: np.ndarray, covariates: np.ndarray | None):
         """
-        Construct sparse random effects design matrix Z.
+        Compatibility wrapper for older call sites.
 
-        Returns
-        -------
-        Z : scipy.sparse.csr_array
-            Design matrix of shape (n, q*o).
-        q : int
-            Number of random parameters per group (intercept + slopes).
-        o : int
-            Number of unique levels in the grouping factor.
+        Returns the same exact layout object as design_layout.
         """
-        n = group.shape[0]
-        levels, level_indices = np.unique(group, return_inverse=True)
-        o = len(levels)
-        base_rows = np.arange(n)
-        
-        # Components for the first block (intercept)
-        all_data = [np.ones(n)]
-        all_rows = [base_rows]
-        all_cols = [level_indices]
-        q = 1
-        
-        # Components for the other block (slope)
-        if covariates is not None:
-            q += covariates.shape[1]
-            for col in range(covariates.shape[1]):
-                col_offset = (col + 1) * o
-                
-                all_data.append(covariates[:, col])
-                all_rows.append(base_rows)
-                all_cols.append(level_indices + col_offset)
-                
-        final_data = np.concatenate(all_data)
-        final_rows = np.concatenate(all_rows)
-        final_cols = np.concatenate(all_cols)
-        Z = sparse.csr_array((final_data, (final_rows, final_cols)), shape=(n, q * o))
-        return Z, q, o
+        return RealizedRandomEffect.design_layout(group, covariates)
 
     def _compute_mu(self, prec_resid: np.ndarray):
         """
@@ -265,13 +252,11 @@ class RealizedRandomEffect(RealizedTermBase):
     
     def _kronZ_T_matvec(self, x_vec: np.ndarray):
         """(I_m ⊗ Z^T) @ x"""
-        A_k = (x_vec.reshape((self.m, self.n)) @ self.Z).ravel()
-        return A_k
+        return self.layout.apply_transpose(x_vec)
     
     def _kronZ_matvec(self, x_vec: np.ndarray):
         """(I_m ⊗ Z) @ x"""
-        A_k = (self.Z @ x_vec.reshape((self.m, self.q * self.o)).T).T.ravel()
-        return A_k
+        return self.layout.apply(x_vec)
     
     def _D_matvec(self, x_vec: np.ndarray):
         """D @ x"""
