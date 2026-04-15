@@ -18,7 +18,7 @@ class VarianceCorrection:
     """
     _VALID_METHODS = {'ste', 'bste', 'de'}
     
-    def __init__(self, method: str):
+    def __init__(self, method: str, n_jobs: int = -1, backend: str = 'loky'):
         """
         Initialize orchestrator.
         
@@ -26,13 +26,19 @@ class VarianceCorrection:
         ----------
         method : str
             Correction method: 'ste', 'bste', or 'de'.
+        n_jobs : int, default=-1
+            Number of parallel jobs to use.
+        backend : str, default='loky'
+            Joblib backend.
         """
         if method not in self._VALID_METHODS:
             raise ValueError(f"Method must be one of {self._VALID_METHODS}, got {method}")
         self.method = method
+        self.n_jobs = n_jobs
+        self.backend = backend
     
     def compute_correction(self, k: int, V_op: 'VLinearOperator', M_op: 'ResidualPreconditioner',
-                          n_probes: int = None, n_jobs: int = -1, backend: str = 'loky') -> tuple:
+                          n_probes: int = None) -> tuple:
         """
         Compute adaptive uncertainty correction terms (T, W).
         
@@ -46,10 +52,6 @@ class VarianceCorrection:
             Optional preconditioner.
         n_probes : int, optional
             Number of probes for stochastic methods. Auto-computed if None.
-        n_jobs : int, default=-1
-            Parallel jobs.
-        backend : str, default='loky'
-            Joblib backend.
         
         Returns
         -------
@@ -58,33 +60,28 @@ class VarianceCorrection:
         W : np.ndarray
             Covariance correction matrix.
         """
-        if n_probes is None:
-            re = V_op.random_effects[k]
-            block_size = re.q * re.o
-            n_probes = min(max(20, block_size // 10), 100)
+        re = V_op.random_effects[k]
+        block_size = re.q * re.o
         
-        if self.method == 'de':
-            return compute_cov_correction_de(k, V_op, M_op, n_jobs, backend)
-        elif self.method == 'bste':
-            return compute_cov_correction_bste(k, V_op, M_op, n_probes, n_jobs, backend)
-        elif self.method == 'ste':
-            return compute_cov_correction_ste(k, V_op, M_op, n_probes, n_jobs, backend)
-
-
-# ====================== Main Adaptive Correction Function ======================
-
-def compute_cov_correction(k: int, V_op: 'VLinearOperator', M_op: 'ResidualPreconditioner', method: str, n_jobs: int, backend: str):
-    """
-    Compute adaptive uncertainty correction terms (T, W) for covariance updates.
-    
-    Dispatches to Stochastic Trace Estimation (STE), Block-STE (BSTE), or 
-    Deterministic Estimation (DE) based on 'method'.
-    
-    This function now delegates to VarianceCorrection for cleaner dispatch.
-    """
-    orchestrator = VarianceCorrection(method)
-    return orchestrator.compute_correction(k, V_op, M_op, n_jobs=n_jobs, backend=backend)
-
+        # Hutchinson's trace estimator variance decays as O(1/sqrt(n_probes))
+        # irrespective of block_size. A fixed target of 50-60 is usually optimal.
+        if n_probes is None:
+            n_probes = 60
+            
+        # Mathematical Crossover:
+        # If the exact matrix dimension (block_size) is smaller than the number 
+        # of stochastic probes, Deterministic Estimation (de) requires FEWER 
+        # linear solves (exactly `block_size` solves) and has ZERO variance!
+        active_method = self.method
+        if active_method in ['ste', 'bste'] and block_size <= n_probes:
+            active_method = 'de'
+            
+        if active_method == 'de':
+            return compute_cov_correction_de(k, V_op, M_op, self.n_jobs, self.backend)
+        elif active_method == 'bste':
+            return compute_cov_correction_bste(k, V_op, M_op, n_probes, self.n_jobs, self.backend)
+        elif active_method == 'ste':
+            return compute_cov_correction_ste(k, V_op, M_op, n_probes, self.n_jobs, self.backend)
 
 def _generate_rademacher_probes(n_rows, n_probes, seed=42):
     rng = np.random.default_rng(seed)

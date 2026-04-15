@@ -89,14 +89,17 @@ class RandomEffectTerm:
 
     def marginal_cov(self, z: np.ndarray) -> np.ndarray:
         """
-        Compute the marginal covariance matrix (m x m) for a single sample
-        given its random effect covariate vector z.
+        Compute the marginal covariance matrix (m x m) for a single observation
+        given its random effect design matrix row (covariate vector) z.
 
         Parameters
         ----------
         z : np.ndarray
-            Covariate vector for the sample (shape: (q,)).
-            for example, for random intercept + slope, z = [1, x_slope].
+            Row of the random effects design matrix for a single observation
+            (1D array, shape: (q,)). Since it applies to a single observation 
+            (and thus a single group level), it reduces to a covariate vector 
+            containing the intercept (1.0) and any random slopes.
+            For example, for random intercept + one slope, z = [1.0, x_slope].
 
         Returns
         -------
@@ -104,6 +107,9 @@ class RandomEffectTerm:
             Marginal covariance matrix in observation space (shape: (m, m)).
         """
         z = np.asarray(z)
+        if z.ndim != 1:
+            raise ValueError(f"Covariate vector z must be 1D for a single observation, got shape {z.shape}")
+            
         Im_Z = np.kron(np.eye(self.m), z)
         return Im_Z @ self.cov @ Im_Z.T
 

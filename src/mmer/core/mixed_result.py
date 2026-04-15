@@ -1,5 +1,7 @@
 import numpy as np
 from .mixed_effect import MixedEffectRegressor
+from .inference import compute_random_effects_posterior
+from .terms import RealizedRandomEffect, RealizedResidual
 
 
 class MixedEffectResults:
@@ -27,9 +29,7 @@ class MixedEffectResults:
         History of log-likelihood values during training.
     """
     def __init__(self, mixed_model: MixedEffectRegressor):
-        self.model = mixed_model
-        
-        # Expose convenient attributes
+        # Expose convenient attributes directly, decoupling from regressor model state
         self.fe_model = mixed_model.fe_model
         self.m = mixed_model.m
         self.k = mixed_model.k
@@ -38,22 +38,45 @@ class MixedEffectResults:
         self.log_likelihood = mixed_model.log_likelihood
         self.is_converged = mixed_model._is_converged
         self.best_log_likelihood = mixed_model._best_log_likelihood
+        self.preconditioner = mixed_model.preconditioner
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         """
-        Predict target values using fixed effects only.
-
+        Predict using fixed effects component only.
+        
+        Makes predictions using only the learned fixed effects model, ignoring
+        random effects. For predictions that include random effects, use
+        compute_random_effects() and add the total effect to predictions.
+        
         Parameters
         ----------
         X : np.ndarray
-            Features, shape (n, p).
+            Covariates for prediction, shape (n, p).
 
         Returns
         -------
-        np.ndarray
-            Predicted values, shape (n, m).
+        predictions : np.ndarray
+            Predicted values from fixed effects only, shape (n, m).
+        
+        Notes
+        -----
+        Current implementation does not support random effects in prediction.
+        To obtain predictions including random effects:
+        
+        1. Call compute_random_effects() to get random effect estimates
+        2. Add total_effect to fixed effect predictions
+        
+        Examples
+        --------
+        >>> # Predict with fixed effects only
+        >>> y_pred = model.predict(X_new)
+        
+        >>> # Predict with both fixed and random effects
+        >>> y_fixed = model.predict(X_new)
+        >>> _, total_re, _ = model.compute_random_effects(X_new, y_new, groups_new)
+        >>> y_pred_full = y_fixed + total_re.reshape((-1, model.m))
         """
-        return self.model.predict(X)
+        return self.fe_model.predict(X)
     
     def compute_random_effects(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray):
         """
@@ -77,7 +100,67 @@ class MixedEffectResults:
         mu : tuple of np.ndarray
             Estimated random effects for each grouping factor.
         """
-        return self.model.compute_random_effects(X, y, groups)
+        if self.random_effect_terms is None:
+            raise RuntimeError("Model is not fitted.")
+            
+        n = X.shape[0]
+        realized_effects = tuple(RealizedRandomEffect(term, X, groups) for term in self.random_effect_terms)
+        realized_residual = RealizedResidual(self.residual_term, n)
+        
+        # Predict Fixed Effects
+        fx = self.fe_model.predict(X)
+        fx = fx if self.m != 1 else fx[:, None]
+        
+        return compute_random_effects_posterior(
+            realized_effects, realized_residual, y, fx,
+            self.random_effect_terms, self.preconditioner
+        )
+
+    @property
+    def residual_covariance(self) -> np.ndarray:
+        """Get the estimated residual covariance matrix."""
+        return self.residual_term.cov
+        
+    @property
+    def random_effects_covariances(self) -> list[np.ndarray]:
+        """Get the estimated covariance matrices for each random effect grouping factor."""
+        return [term.cov for term in self.random_effect_terms]
+
+    def get_marginal_covariance(self, slope_covariates: list[np.ndarray | None] | None = None) -> np.ndarray:
+        """
+        Compute the total marginal covariance matrix (m x m) for a single observation profile.
+        
+        Parameters
+        ----------
+        slope_covariates : list of np.ndarray or None, optional
+            List of 1D arrays containing random slope covariates for each grouping factor.
+            Omit the intercept (1.0) as it is automatically included. 
+            If a group has only a random intercept, pass None or an empty array for that group.
+            If entirely None, assumes random intercepts only for all groups.
+            
+        Returns
+        -------
+        cov : np.ndarray
+            Total marginal covariance matrix combining residuals and random effects.
+        """
+        cov = self.residual_covariance.copy()
+        if slope_covariates is None:
+            slope_covariates = [None] * self.k
+            
+        for k, term in enumerate(self.random_effect_terms):
+            slopes = slope_covariates[k]
+            if slopes is None or len(np.atleast_1d(slopes)) == 0:
+                z = np.array([1.0])
+            else:
+                slopes = np.atleast_1d(slopes)
+                z = np.concatenate(([1.0], slopes))
+                
+            if len(z) != term.q:
+                raise ValueError(f"Expected {term.q - 1} slope covariates for group {k+1}, got {len(z) - 1}.")
+                
+            cov += term.marginal_cov(z)
+            
+        return cov
 
     def summary(self):
         """

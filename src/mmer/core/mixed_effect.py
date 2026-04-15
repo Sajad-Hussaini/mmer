@@ -1,15 +1,12 @@
-import pickle
 import numpy as np
-from scipy.sparse.linalg import cg
-from scipy.linalg import solve
 from sklearn.base import RegressorMixin
 from sklearn.model_selection import GroupShuffleSplit
 from tqdm import tqdm
 from .operator import VLinearOperator, ResidualPreconditioner
-from .corrections import compute_cov_correction
+from .corrections import VarianceCorrection
 from .solver import SolverContext
 from .convergence import ConvergenceMonitor
-from .inference import InferenceEngine
+from .inference import aggregate_random_effects, compute_random_effects_posterior
 from ..lanczos_algorithm import slq
 from .terms import RandomEffectTerm, ResidualTerm, RealizedRandomEffect, RealizedResidual
 
@@ -33,12 +30,12 @@ class MixedEffectRegressor:
     patience : int, default=3
         Number of iterations to wait for likelihood improvement before early stopping.
         Setting to a high value effectively disables early stopping and relies solely on `tol`.
-    slq_steps : int, default=50
+    slq_steps : int, default=30
         Number of Lanczos steps for Stochastic Lanczos Quadrature (log-det estimation).
-        A range of 30-100 is typically sufficient. Higher values yield more accurate estimates but increase computation time.
-    slq_probes : int, default=50
-        Number of random probes for SLQ log-determinant estimation.
-        A range of 30-100 is typically sufficient. Higher values yield more accurate estimates but increase computation time.
+        A range of 30-50 is typically sufficient. Higher values yield slightly more accurate estimates but increase computation time and risk numerical instability.
+    n_probes : int, default=60
+        Number of random probes used for both SLQ log-determinant estimation and stochastic variance correction.
+        A fixed target around 50-60 is usually optimal independent of matrix dimension for O(1/sqrt(p)) error convergence.
     preconditioner : bool, default=True
         Whether to use residual-based preconditioner for CG solver.
     correction_method : str, default='bste'
@@ -78,23 +75,21 @@ class MixedEffectRegressor:
     >>> results = model.fit(X, y, groups, random_slopes=([0, 1], None))
     >>> predictions = model.predict(X_new)
     """
-    _VALID_CORRECTION_METHODS = ['ste', 'bste', 'de']
-
     def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 20, tol: float = 1e-6, patience: int = 3,
-                 slq_steps: int = 50, slq_probes: int = 50, preconditioner: bool = True, correction_method: str = 'bste',
+                 slq_steps: int = 30, n_probes: int = 60, preconditioner: bool = True, correction_method: str = 'bste',
                  n_jobs: int = -1, backend: str = 'loky'):
         self.fe_model = fixed_effects_model
         self.max_iter = max_iter
         self.tol = tol
         self.patience = max(1, patience)
         self.slq_steps = slq_steps
-        self.slq_probes = slq_probes
+        self.n_probes = n_probes
         self.preconditioner = preconditioner
-        self.correction_method = correction_method
         self.n_jobs = n_jobs
         self.backend = backend
 
         self.convergence_monitor = ConvergenceMonitor(tol=tol, patience=patience)
+        self.variance_corrector = VarianceCorrection(method=correction_method, n_jobs=n_jobs, backend=backend)
         
         # State: Terms
         self.random_effect_terms: tuple[RandomEffectTerm] = None # List[RandomEffectTerm]
@@ -160,7 +155,7 @@ class MixedEffectRegressor:
         self.residual_term = ResidualTerm(m=self.m)
         self.random_slopes = config_random_slopes
 
-    def _realize_objects(self, n: int, X: np.ndarray, groups: np.ndarray) -> tuple:
+    def _realize_objects(self, X: np.ndarray, groups: np.ndarray) -> tuple:
         """
         Factory method to create realized random effects and residual term.
         
@@ -180,6 +175,7 @@ class MixedEffectRegressor:
         realized_residual : RealizedResidual
             Realized residual term.
         """
+        n = X.shape[0]
         realized_effects = tuple(RealizedRandomEffect(term, X, groups) for term in self.random_effect_terms)
         realized_residual = RealizedResidual(self.residual_term, n)
         return realized_effects, realized_residual
@@ -228,7 +224,7 @@ class MixedEffectRegressor:
             self.has_validation = False
             
         # Instantiate Realized Objects (Transient)
-        realized_effects, realized_residual = self._realize_objects(self.n, X, groups)
+        realized_effects, realized_residual = self._realize_objects(X, groups)
         
         # Initial Marginal Residual
         marginal_residual = self._compute_marginal_residual(X, y, 0.0)
@@ -283,16 +279,16 @@ class MixedEffectRegressor:
             self._prepare_terms(y, groups, random_slopes)
         
         # Reset convergence monitor for new fit
-        self.convergence_monitor = ConvergenceMonitor(tol=self.tol, patience=self.patience)
+        self.convergence_monitor.reset()
             
         marginal_residual, realized_effects, realized_residual = self.prepare_data(X, y, groups, validation_split, validation_group)
         
-        pbar = tqdm(range(1, self.max_iter + 1), desc="Fitting Model", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
+        pbar = tqdm(range(1, self.max_iter + 1), desc="Running MMER | Model Fitting ...", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
         
         for _ in pbar:
             marginal_residual = self._run_em_iteration(X, y, marginal_residual, realized_effects, realized_residual)
             if self.convergence_monitor.is_converged:
-                pbar.set_description(f"Model Converged | Early stopping.")
+                pbar.set_description(f"Model Converged | Early stopping ...")
                 break
                 
         from .mixed_result import MixedEffectResults
@@ -332,7 +328,7 @@ class MixedEffectRegressor:
         if self.convergence_monitor.is_converged:
              return None, None, None, None
              
-        total_random_effect, mu = self._aggregate_random_effects(prec_resid, realized_effects)
+        total_random_effect, mu = aggregate_random_effects(prec_resid, realized_effects)
         return total_random_effect, mu, V_op, M_op
 
     def _m_step(self, marginal_residual: np.ndarray, total_random_effect: np.ndarray, mu: tuple[np.ndarray],
@@ -345,7 +341,7 @@ class MixedEffectRegressor:
         new_covs = []
         
         for k, re in enumerate(realized_effects):
-            T_k, W_k = compute_cov_correction(k, V_op, M_op, self.correction_method, self.n_jobs, self.backend)
+            T_k, W_k = self.variance_corrector.compute_correction(k, V_op, M_op, n_probes=self.n_probes)
             T_sum += T_k
             new_covs.append(re._compute_next_cov(mu[k], W_k))
 
@@ -383,118 +379,6 @@ class MixedEffectRegressor:
         """
         Compute log-likelihood.
         """
-        log_det_V = slq.logdet(V_op, self.slq_steps, self.slq_probes, self.n_jobs, self.backend)
+        log_det_V = slq.logdet(V_op, self.slq_steps, self.n_probes)
         log_likelihood = -(self.m * self.n * np.log(2 * np.pi) + log_det_V + marginal_residual.T @ prec_resid) / 2
         return log_likelihood
-
-    def _aggregate_random_effects(self, prec_resid: np.ndarray, realized_effects: tuple[RealizedRandomEffect]):
-        """
-        Aggregate random effects.
-        """
-        total_random_effect = np.zeros(self.m * self.n)
-        mu = []
-        for re in realized_effects:
-            mu.append(re._compute_mu(prec_resid))
-            total_random_effect += re._map_mu(mu[-1])
-        return total_random_effect, tuple(mu)
-
-    # ================= Public Inference Methods =================
-    
-    def compute_random_effects(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray):
-        """
-        Compute posterior mean of random effects for new data.
-        
-        Given a fitted model, computes the posterior distribution of random effects
-        and residuals for new observations. Useful for prediction and model diagnostics.
-        
-        Parameters
-        ----------
-        X : np.ndarray
-            Covariates for new data, shape (n_new, p).
-        y : np.ndarray
-            Observed targets for new data, shape (n_new, m).
-        groups : np.ndarray
-            Grouping factors for new data, shape (n_new, k).
-        
-        Returns
-        -------
-        residuals : np.ndarray
-            Final residuals after subtracting all effects, raveled shape (m*n_new,).
-        total_effect : np.ndarray
-            Sum of random effects across all terms, raveled shape (m*n_new,).
-        mu : tuple of np.ndarray
-            Posterior means for each random effect term. Each element corresponds
-            to one grouping factor.
-        
-        Raises
-        ------
-        RuntimeError
-            If model has not been fitted yet.
-        
-        Examples
-        --------
-        >>> residuals, total_re, mu = model.compute_random_effects(X_new, y_new, groups_new)
-        >>> # mu[0] contains random effects for first grouping factor
-        >>> # mu[1] contains random effects for second grouping factor (if present)
-        """
-        if self.random_effect_terms is None:
-            raise RuntimeError("Model is not fitted.")
-            
-        n, m = y.shape
-        realized_effects, realized_residual = self._realize_objects(n, X, groups)
-        
-        # Predict Fixed Effects
-        fx = self.fe_model.predict(X)
-        fx = fx if self.m != 1 else fx[:, None]
-        
-        # Use InferenceEngine to compute random effects
-        inference_engine = InferenceEngine(self.random_effect_terms, self.residual_term, n, self.preconditioner)
-        residuals, total_effect, mu = inference_engine.compute_random_effects(realized_effects, realized_residual, y, fx)
-        residuals_2d = residuals.reshape((self.m, -1)).T  # shape (n, m)
-        total_effect_2d = total_effect.reshape((self.m, -1)).T  # shape (n, m)
-
-        # Reshape mu for each random effect term: (m*q*o) -> (o, m, q)
-        mu_reshaped = []
-        for k, mu_k in enumerate(mu):
-            m, q = self.m, self.random_effect_terms[k].q
-            mu_reshaped.append(mu_k.reshape((m, q, -1)).transpose(2, 0, 1))  # (o, m, q)
-
-        return residuals_2d, total_effect_2d, tuple(mu_reshaped)
-
-    def predict(self, X: np.ndarray):
-        """
-        Predict using fixed effects component only.
-        
-        Makes predictions using only the learned fixed effects model, ignoring
-        random effects. For predictions that include random effects, use
-        compute_random_effects() and add the total effect to predictions.
-        
-        Parameters
-        ----------
-        X : np.ndarray
-            Covariates for prediction, shape (n, p).
-
-        Returns
-        -------
-        predictions : np.ndarray
-            Predicted values from fixed effects only, shape (n, m).
-        
-        Notes
-        -----
-        Current implementation does not support random effects in prediction.
-        To obtain predictions including random effects:
-        
-        1. Call compute_random_effects() to get random effect estimates
-        2. Add total_effect to fixed effect predictions
-        
-        Examples
-        --------
-        >>> # Predict with fixed effects only
-        >>> y_pred = model.predict(X_new)
-        
-        >>> # Predict with both fixed and random effects
-        >>> y_fixed = model.predict(X_new)
-        >>> _, total_re, _ = model.compute_random_effects(X_new, y_new, groups_new)
-        >>> y_pred_full = y_fixed + total_re.reshape((-1, model.m))
-        """
-        return self.fe_model.predict(X)

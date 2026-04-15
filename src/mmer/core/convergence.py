@@ -30,6 +30,10 @@ class ConvergenceMonitor:
     def __init__(self, tol: float = 1e-6, patience: int = 3):
         self.tol = tol
         self.patience = max(1, patience)
+        self.reset()
+        
+    def reset(self):
+        """Reset the convergence state for a new fitting run."""
         self.log_likelihood = []
         self.is_converged = False
         self._best_log_likelihood = -np.inf

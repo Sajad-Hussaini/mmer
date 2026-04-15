@@ -78,7 +78,7 @@ def slq_probe(V_op: VLinearOperator, lanczos_steps: int, seed: int):
     # The quadrature rule: sum of log(eigvals) weighted by squared first elements of eigenvectors
     return np.sum(np.log(eigvals) * (eigvecs[0, :] ** 2))
 
-def logdet(V_op: VLinearOperator, lanczos_steps: int, num_probes: int, n_jobs: int, backend: str, random_seed: int = 42):
+def logdet(V_op: VLinearOperator, lanczos_steps: int, num_probes: int, n_jobs: int = -1, backend: str = 'loky', random_seed: int = 42):
     """
     Estimate log-determinant using Stochastic Lanczos Quadrature (SLQ).
     
@@ -107,6 +107,21 @@ def logdet(V_op: VLinearOperator, lanczos_steps: int, num_probes: int, n_jobs: i
         Estimated log-determinant: log(det(V)).
     """
     dim = V_op.shape[0]
+    
+    # Mathematical Crossover for Lanczos Steps:
+    # A Krylov subspace spans at most the matrix dimension. 
+    # Any steps beyond 'dim' add zero information and risk numerical instability.
+    lanczos_steps = min(lanczos_steps, dim)
+    
+    # Mathematical Crossover for Probes:
+    # If the number of probes requested exceeds or equals the matrix dimension,
+    # it is computationally cheaper (and gives 0 variance) to do exact 
+    # Cholesky factorization rather than stochastic estimation.
+    # However, since V is an implicit LinearOperator, we can cap probes to dim
+    # but practically dim = n*m is usually huge (thousands+), so this rarely triggers
+    # on real data, but guarantees mathematical safety on toy datasets.
+    num_probes = min(num_probes, dim)
+
     # Create a sequence of independent random seeds for each parallel job
     # This ensures reproducibility while maintaining statistical independence.
     seeds = np.random.SeedSequence(random_seed).spawn(num_probes)
