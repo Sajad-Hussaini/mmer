@@ -4,8 +4,9 @@ from tqdm import tqdm
 from .convergence import ConvergenceMonitor
 from .fixed_effect import FixedEffectPipeline
 from .inference import InferenceEngine
+from .corrections import VarianceCorrection
 from .mixed_result import MixedEffectResults
-from .operator import VLinearOperator, ResidualPreconditioner, compute_cov_correction
+from .operator import VLinearOperator, ResidualPreconditioner
 from ..lanczos_algorithm import slq
 from .solver import SolverContext
 from .terms import RandomEffectTerm, ResidualTerm, RealizedRandomEffect, RealizedResidual
@@ -94,6 +95,14 @@ class MixedEffectRegressor:
         self.cg_rtol = cg_rtol
         self.cg_atol = cg_atol
         self.cg_maxiter = cg_maxiter
+        self.correction_engine = VarianceCorrection(
+            correction_method,
+            n_jobs=n_jobs,
+            backend=backend,
+            cg_rtol=cg_rtol,
+            cg_atol=cg_atol,
+            cg_maxiter=cg_maxiter,
+        )
 
         self.convergence_monitor = ConvergenceMonitor(tol=tol, patience=patience)
         self.fixed_effects = FixedEffectPipeline(self.fe_model)
@@ -354,17 +363,7 @@ class MixedEffectRegressor:
         new_covs = []
         
         for k, re in enumerate(realized_effects):
-            T_k, W_k = compute_cov_correction(
-                k,
-                V_op,
-                M_op,
-                self.correction_method,
-                self.n_jobs,
-                self.backend,
-                self.cg_rtol,
-                self.cg_atol,
-                self.cg_maxiter,
-            )
+            T_k, W_k = self.correction_engine.compute_correction(k, V_op, M_op)
             T_sum += T_k
             new_covs.append(re._compute_next_cov(mu[k], W_k))
 
