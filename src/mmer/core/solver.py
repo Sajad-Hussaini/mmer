@@ -1,5 +1,6 @@
 import numpy as np
-from scipy.sparse.linalg import cg
+from scipy import sparse
+from scipy.sparse.linalg import cg, spsolve
 from scipy.linalg import solve
 from .operator import VLinearOperator, ResidualPreconditioner
 from .terms import RealizedRandomEffect, RealizedResidual
@@ -110,10 +111,6 @@ class SolverContext:
         M_op : ResidualPreconditioner or None
             Preconditioner used (if any).
         """
-        import numpy as np
-        from scipy import sparse
-        from scipy.sparse.linalg import spsolve
-        
         m = self.m
         n = self.n
         R = getattr(self.realized_residual, 'cov', getattr(self.realized_residual.term, 'cov', None))

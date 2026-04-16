@@ -2,6 +2,7 @@ import numpy as np
 from scipy.sparse.linalg import cg
 from joblib import Parallel, delayed, parallel_config
 from typing import TYPE_CHECKING
+from .solver import SolverContext
 
 if TYPE_CHECKING:
     from .operator import VLinearOperator, ResidualPreconditioner
@@ -99,7 +100,6 @@ def compute_cov_correction_ste(k: int, V_op: 'VLinearOperator', M_op: 'ResidualP
     """
     Compute adaptive uncertainty correction terms (T, W) for covariance updates using Stochastic Trace Estimation (STE).
     """
-    from .solver import SolverContext
     m = V_op.m
     re = V_op.random_effects[k]
     q, o = re.q, re.o
@@ -155,7 +155,6 @@ def _cov_correction_per_response_bste(n_probes: int, k: int, V_op: 'VLinearOpera
     """
     Compute adaptive uncertainty correction terms (T, W) for covariance updates using Block Stochastic Trace Estimation (BSTE) for a single response.
     """
-    from .solver import SolverContext
     m = V_op.m
     re = V_op.random_effects[k]
     q, o = re.q, re.o
@@ -227,7 +226,6 @@ def _cov_correction_per_response_de(k: int, V_op: 'VLinearOperator', M_op: 'Resi
     """
     Compute adaptive uncertainty correction terms (T, W) for covariance updates using Deterministic Estimation (DE) for a single response.
     """
-    from .solver import SolverContext
     m = V_op.m
     re = V_op.random_effects[k]
     q, o = re.q, re.o
