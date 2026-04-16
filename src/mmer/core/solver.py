@@ -69,6 +69,7 @@ class SolverContext:
                 pass
         
         prec_resid, info = cg(A=V_op, b=marginal_residual, M=M_op)
+        # Todo: Using maxiter and tol to control convergence and avoid infinite loops.
         if info != 0:
             print(f"Warning: CG info={info}")
         
