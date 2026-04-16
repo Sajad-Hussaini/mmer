@@ -48,7 +48,7 @@ class SolverContext:
     
     def solve(self, marginal_residual: np.ndarray) -> tuple:
         """
-        Solve V * x = marginal_residual using conjugate gradient.
+        Solve V * x = marginal_residual natively switching between exact Woodbury and iterative conjugate gradient solvers.
         
         Parameters
         ----------
@@ -64,6 +64,11 @@ class SolverContext:
         M_op : ResidualPreconditioner or None
             Preconditioner used (if any).
         """
+        # Auto-switch to fast Woodbury direct solver if inner dimension is smaller than m*n
+        inner_dim = sum([re.o * re.q * self.m for re in self.realized_effects])
+        if inner_dim < self.m * self.n:
+            return self.solve_woodbury(marginal_residual)
+            
         V_op = VLinearOperator(self.realized_effects, self.realized_residual)
         M_op = None
         

@@ -108,10 +108,7 @@ def compute_cov_correction_ste(k: int, V_op: 'VLinearOperator', M_op: 'ResidualP
     v1 = re._kronZ_D_matvec(probe_vectors)
     
     ctx = SolverContext(V_op.random_effects, V_op.realized_residual, M_op is not None, cg_maxiter)
-    if hasattr(ctx, 'solve_woodbury'):
-        v2, _, _ = ctx.solve_woodbury(v1)
-    else:
-        v2, _, _ = ctx.solve(v1)
+    v2, _, _ = ctx.solve(v1)
         
     v3 = re._kronZ_D_T_matvec(v2)
     diag_C = (probe_vectors * v3).sum(axis=1) / n_probes
@@ -168,11 +165,7 @@ def _cov_correction_per_response_bste(n_probes: int, k: int, V_op: 'VLinearOpera
     
     vec_cg = re._kronZ_D_matvec(vec)
     ctx = SolverContext(V_op.random_effects, V_op.realized_residual, M_op is not None, cg_maxiter)
-    
-    if hasattr(ctx, 'solve_woodbury'):
-        vec_cg, _, _ = ctx.solve_woodbury(vec_cg)
-    else:
-        vec_cg, _, _ = ctx.solve(vec_cg)
+    vec_cg, _, _ = ctx.solve(vec_cg)
         
     lower_c = re._kronZ_D_T_matvec(vec_cg)[col * block_size:, :]
     # lower_c is (num_blocks * block_size, n_probes)
@@ -239,12 +232,7 @@ def _cov_correction_per_response_de(k: int, V_op: 'VLinearOperator', M_op: 'Resi
     
     vec_cg = re._kronZ_D_matvec(vec)
     ctx = SolverContext(V_op.random_effects, V_op.realized_residual, M_op is not None, cg_maxiter)
-    
-    # Try solve_woodbury first, fallback to solve
-    if hasattr(ctx, 'solve_woodbury'):
-        vec_cg, _, _ = ctx.solve_woodbury(vec_cg)
-    else:
-        vec_cg, _, _ = ctx.solve(vec_cg)
+    vec_cg, _, _ = ctx.solve(vec_cg)
 
     D_matvec_out = re._D_matvec(vec)
     kron_D_T_out = re._kronZ_D_T_matvec(vec_cg)
