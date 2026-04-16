@@ -102,6 +102,9 @@ class SolverContext:
         """
         Solve V * x = marginal_residual using Woodbury matrix identity.
         
+        This exact analytical solver avoids iterative conjugate gradient approximations
+        by factorizing the mathematically equivalent lower-dimensional inner matrix.
+        
         Parameters
         ----------
         marginal_residual : np.ndarray
