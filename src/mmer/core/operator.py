@@ -36,6 +36,16 @@ class VLinearOperator(LinearOperator):
             Vx += re._full_cov_matvec(x_vec)
         return Vx
 
+    def _matmat(self, x_mat: np.ndarray):
+        """Compute V @ x_mat."""
+        # Residual part
+        Vx = self.realized_residual._full_cov_matvec(x_mat)
+        
+        # Random Effects parts
+        for re in self.random_effects:
+            Vx += re._full_cov_matvec(x_mat)
+        return Vx
+
     def _adjoint(self):
         return self
     
@@ -53,10 +63,17 @@ class ResidualPreconditioner(LinearOperator):
         self.cov_inv = resid_cov_inv
         self.n = n
         self.m = m
+        # Set shape such that it supports matmat implicitly. However, scipy CG only accepts 1D usually.
+        # But we can test it. Actually we don't need to change shape, just `_matvec` or `_matmat`.
         super().__init__(dtype=np.float64, shape=(self.m * self.n, self.m * self.n))
 
     def _matvec(self, x_vec: np.ndarray):
         Px = (self.cov_inv @ x_vec.reshape((self.m, self.n))).ravel()
+        return Px
+        
+    def _matmat(self, x_mat: np.ndarray):
+        K = x_mat.shape[1]
+        Px = (self.cov_inv @ x_mat.reshape((self.m, self.n * K))).reshape((self.m, self.n, K)).reshape(self.m * self.n, K)
         return Px
     
     def _adjoint(self):

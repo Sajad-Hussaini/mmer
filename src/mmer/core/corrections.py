@@ -99,16 +99,23 @@ def compute_cov_correction_ste(k: int, V_op: 'VLinearOperator', M_op: 'ResidualP
     """
     Compute adaptive uncertainty correction terms (T, W) for covariance updates using Stochastic Trace Estimation (STE).
     """
+    from .solver import SolverContext
     m = V_op.m
     re = V_op.random_effects[k]
     q, o = re.q, re.o
-    diag_C = np.zeros(m * q * o)
-    with parallel_config(backend=backend, n_jobs=n_jobs):
-        pcp_gen = Parallel(return_as="generator")(delayed(_compute_C_probe)(i, k, V_op, M_op, cg_maxiter) for i in range(n_probes))
-        for diag_pcp in pcp_gen:
-            diag_C += diag_pcp
+    
+    probe_vectors = _generate_rademacher_probes(re.m * re.q * re.o, n_probes, 42)
+    v1 = re._kronZ_D_matvec(probe_vectors)
+    
+    ctx = SolverContext(V_op.random_effects, V_op.realized_residual, M_op is not None, cg_maxiter)
+    if hasattr(ctx, 'solve_woodbury'):
+        v2, _, _ = ctx.solve_woodbury(v1)
+    else:
+        v2, _, _ = ctx.solve(v1)
+        
+    v3 = re._kronZ_D_T_matvec(v2)
+    diag_C = (probe_vectors * v3).sum(axis=1) / n_probes
 
-    diag_C /= n_probes
     diag_sigma = np.repeat(np.diag(re.term.cov), o) 
     diag_sigma -= diag_C
 
@@ -118,22 +125,6 @@ def compute_cov_correction_ste(k: int, V_op: 'VLinearOperator', M_op: 'ResidualP
     T_diag = sigma_mat.dot(ZTZ_diag)
 
     return np.diag(T_diag), np.diag(W_diag)
-
-def _compute_C_probe(probe_index: int, k: int, V_op: 'VLinearOperator', M_op: 'ResidualPreconditioner', cg_maxiter: int):
-    """
-    Compute the C-probe for Stochastic Trace Estimation (STE).
-    """
-    seed = 42 + probe_index
-    re = V_op.random_effects[k]
-    probe_vector = _generate_rademacher_probes(re.m * re.q * re.o, 1, seed).ravel()
-    v1 = re._kronZ_D_matvec(probe_vector)
-    v2, info = cg(A=V_op, b=v1, M=M_op, maxiter=cg_maxiter)
-    if info > 0:
-        pass # Warning: CG solver (V⁻¹(Iₘ ⊗ Z)D) did not converge within maxiter.
-    elif info < 0:
-        print(f"Warning: CG solver (V⁻¹(Iₘ ⊗ Z)D) failed. Info={info}")
-    probe_vector *= re._kronZ_D_T_matvec(v2)
-    return probe_vector
 
 # ====================== Block Stochastic Trace Estimation ======================
 
@@ -164,27 +155,35 @@ def _cov_correction_per_response_bste(n_probes: int, k: int, V_op: 'VLinearOpera
     """
     Compute adaptive uncertainty correction terms (T, W) for covariance updates using Block Stochastic Trace Estimation (BSTE) for a single response.
     """
+    from .solver import SolverContext
     m = V_op.m
     re = V_op.random_effects[k]
     q, o = re.q, re.o
     block_size = q * o
     num_blocks = m - col
 
-    diag_C = np.zeros(num_blocks * block_size)
-    vec = np.zeros(m * block_size)
-    for i in range(n_probes):
-        seed = 42 + i
-        probe_vector = _generate_rademacher_probes(block_size, 1, seed).ravel()
-        vec[col * block_size : (col + 1) * block_size] = probe_vector
-        vec_cg = re._kronZ_D_matvec(vec)
-        vec_cg, info = cg(A=V_op, b=vec_cg, M=M_op, maxiter=cg_maxiter)
-        if info > 0:
-            pass # Warning: CG solver (V⁻¹(Iₘ ⊗ Z)D) did not converge within maxiter
-        elif info < 0:
-            print(f"Warning: CG solver (V⁻¹(Iₘ ⊗ Z)D) failed. Info={info}")
-        lower_c = re._kronZ_D_T_matvec(vec_cg)[col * block_size:]
-        vec[col * block_size : (col + 1) * block_size] = 0
-        diag_C += (lower_c.reshape(num_blocks, block_size) * probe_vector).ravel()
+    seed_base = 42
+    vec = np.zeros((m * block_size, n_probes))
+    probe_vectors = _generate_rademacher_probes(block_size, n_probes, seed_base)
+    vec[col * block_size : (col + 1) * block_size, :] = probe_vectors
+    
+    vec_cg = re._kronZ_D_matvec(vec)
+    ctx = SolverContext(V_op.random_effects, V_op.realized_residual, M_op is not None, cg_maxiter)
+    
+    if hasattr(ctx, 'solve_woodbury'):
+        vec_cg, _, _ = ctx.solve_woodbury(vec_cg)
+    else:
+        vec_cg, _, _ = ctx.solve(vec_cg)
+        
+    lower_c = re._kronZ_D_T_matvec(vec_cg)[col * block_size:, :]
+    # lower_c is (num_blocks * block_size, n_probes)
+    # probe_vectors is (block_size, n_probes)
+    # diag_C computation: 
+    # For each block block_size, dot elementwise with probe_vectors, then sum over probes.
+    # We want diag_C of length (num_blocks * block_size).
+    # Reshape to (num_blocks, block_size, n_probes) and multiply by probe_vectors (1, block_size, n_probes)
+    lower_c_reshaped = lower_c.reshape(num_blocks, block_size, n_probes)
+    diag_C = (lower_c_reshaped * probe_vectors[None, :, :]).sum(axis=2).ravel()
 
     diag_C /= n_probes
     sub_cov = re.term.cov[col*q:, col*q:(col+1)*q] # Use term.cov
@@ -228,24 +227,30 @@ def _cov_correction_per_response_de(k: int, V_op: 'VLinearOperator', M_op: 'Resi
     """
     Compute adaptive uncertainty correction terms (T, W) for covariance updates using Deterministic Estimation (DE) for a single response.
     """
+    from .solver import SolverContext
     m = V_op.m
     re = V_op.random_effects[k]
     q, o = re.q, re.o
     block_size = q * o
     num_blocks = m - col
-    lower_sigma = np.empty((num_blocks * block_size, block_size))
     base_idx = col * block_size
-    vec = np.zeros(m * block_size)
-    for i in range(block_size):
-        vec[base_idx + i] = 1.0
-        vec_cg = re._kronZ_D_matvec(vec)
-        vec_cg, info = cg(A=V_op, b=vec_cg, M=M_op, maxiter=cg_maxiter)
-        if info > 0:
-            pass # Warning: CG solver (V⁻¹(Iₘ ⊗ Z)D) did not converge within maxiter
-        elif info < 0:
-            print(f"Warning: CG solver (V⁻¹(Iₘ ⊗ Z)D) failed. Info={info}")
-        lower_sigma[:, i] = (re._D_matvec(vec) - re._kronZ_D_T_matvec(vec_cg))[col * block_size:]
-        vec[base_idx + i] = 0
+    
+    vec = np.zeros((m * block_size, block_size))
+    # Identity matrix block
+    vec[base_idx : base_idx + block_size, :] = np.eye(block_size)
+    
+    vec_cg = re._kronZ_D_matvec(vec)
+    ctx = SolverContext(V_op.random_effects, V_op.realized_residual, M_op is not None, cg_maxiter)
+    
+    # Try solve_woodbury first, fallback to solve
+    if hasattr(ctx, 'solve_woodbury'):
+        vec_cg, _, _ = ctx.solve_woodbury(vec_cg)
+    else:
+        vec_cg, _, _ = ctx.solve(vec_cg)
+
+    D_matvec_out = re._D_matvec(vec)
+    kron_D_T_out = re._kronZ_D_T_matvec(vec_cg)
+    lower_sigma = (D_matvec_out - kron_D_T_out)[col * block_size:]
 
     sigma_blocks = lower_sigma.reshape(num_blocks, block_size, block_size)
     elementwise_prod = re.ZTZ.multiply(sigma_blocks)

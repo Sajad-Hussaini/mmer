@@ -248,17 +248,51 @@ class RealizedRandomEffect(RealizedTermBase):
     
     def _kronZ_T_matvec(self, x_vec: np.ndarray):
         """(I_m ⊗ Z^T) @ x"""
-        A_k = (x_vec.reshape((self.m, self.n)) @ self.Z).ravel()
+        is_2d = x_vec.ndim == 2
+        K = x_vec.shape[1] if is_2d else 1
+        
+        if is_2d:
+            xr = x_vec.reshape((self.m, self.n, K))
+            # xr is (m, n, K). Z is (n, q*o). 
+            # We want to multiply Z.T (q*o, n) with each slice of xr.
+            # Z.T @ xr -> tensordot(Z.T, xr, axes=([1], [1])). Shape: (q*o, m, K).
+            # Transpose to (m, q*o, K)
+            A_k = (self.Z.T @ xr.transpose(1, 0, 2).reshape(self.n, self.m * K))
+            A_k = A_k.reshape(self.q * self.o, self.m, K).transpose(1, 0, 2).reshape(self.m * self.q * self.o, K)
+        else:
+            A_k = (x_vec.reshape((self.m, self.n)) @ self.Z).ravel()
         return A_k
     
     def _kronZ_matvec(self, x_vec: np.ndarray):
         """(I_m ⊗ Z) @ x"""
-        A_k = (self.Z @ x_vec.reshape((self.m, self.q * self.o)).T).T.ravel()
+        is_2d = x_vec.ndim == 2
+        K = x_vec.shape[1] if is_2d else 1
+        
+        if is_2d:
+            # x_vec is (m*q*o, K). Z is (n, q*o)
+            # xr is (m, q*o, K). Z @ xr -> tensordot(Z, xr, axes=([1], [1])). Shape: (n, m, K). Transpose to (m, n, K).
+            xr = x_vec.reshape((self.m, self.q * self.o, K))
+            A_k = (self.Z @ xr.transpose(1, 0, 2).reshape(self.q * self.o, self.m * K))
+            A_k = A_k.reshape(self.n, self.m, K).transpose(1, 0, 2).reshape(self.m * self.n, K)
+        else:
+            A_k = (self.Z @ x_vec.reshape((self.m, self.q * self.o)).T).T.ravel()
         return A_k
     
     def _D_matvec(self, x_vec: np.ndarray):
         """D @ x"""
-        Dx = (self.term.cov @ x_vec.reshape((self.m * self.q, self.o))).ravel()
+        is_2d = x_vec.ndim == 2
+        K = x_vec.shape[1] if is_2d else 1
+        
+        if is_2d:
+            # x_vec is (m*q*o, K). D is self.term.cov (m*q, m*q)
+            # We want to apply it over o blocks.
+            xr = x_vec.reshape((self.m * self.q, self.o, K))
+            # cov @ xr[..., K] for each K and o.
+            # D is (m*q, m*q). xr is (m*q, o*K).
+            xr_flat = xr.reshape((self.m * self.q, self.o * K))
+            Dx = (self.term.cov @ xr_flat).reshape((self.m * self.q, self.o, K)).reshape(self.m * self.q * self.o, K)
+        else:
+            Dx = (self.term.cov @ x_vec.reshape((self.m * self.q, self.o))).ravel()
         return Dx
     
     def _full_cov_matvec(self, x_vec: np.ndarray):
@@ -298,5 +332,12 @@ class RealizedResidual(RealizedTermBase):
         """
         Compute (R ⊗ I_n) @ x.
         """
-        # Using self.term.cov (phi)
-        return (self.term.cov @ x_vec.reshape((self.m, self.n))).ravel()
+        is_2d = x_vec.ndim == 2
+        K = x_vec.shape[1] if is_2d else 1
+        
+        if is_2d:
+            xr = x_vec.reshape((self.m, self.n * K))
+            ans = (self.term.cov @ xr).reshape((self.m, self.n, K)).reshape(self.m * self.n, K)
+        else:
+            ans = (self.term.cov @ x_vec.reshape((self.m, self.n))).ravel()
+        return ans

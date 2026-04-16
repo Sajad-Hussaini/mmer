@@ -4,6 +4,96 @@ from joblib import Parallel, delayed, parallel_config
 from ..core.operator import VLinearOperator
 
 
+def slq_probes_block(V_op: VLinearOperator, lanczos_steps: int, seeds: np.ndarray):
+    """
+    Multiple probes for SLQ logdet estimation using matrix-matrix operations.
+    
+    Performs Lanczos iteration to estimate log(det(V)) using multiple probe vectors
+    simultaneously to take advantage of V_op.matmat (block operations).
+    """
+    n_probes = len(seeds)
+    dim = V_op.shape[0]
+    
+    # Generate all probe vectors
+    V = np.empty((dim, n_probes), dtype=np.float64)
+    for i, seed in enumerate(seeds):
+        rng = np.random.default_rng(seed)
+        v = rng.integers(0, 2, size=dim, dtype=np.int8)
+        v *= 2
+        v -= 1
+        V[:, i] = v
+
+    # --- Block Lanczos Iteration ---
+    alphas = np.zeros((lanczos_steps, n_probes))
+    betas = np.zeros((lanczos_steps - 1, n_probes))
+    
+    Q_prev = np.zeros((dim, n_probes))
+    v_norms = np.linalg.norm(V, axis=0)
+    Q_cur = V / v_norms
+    
+    # Keep track of active probes to avoid division by zero on early termination
+    active_mask = np.ones(n_probes, dtype=bool)
+    
+    for j in range(lanczos_steps):
+        W = V_op @ Q_cur
+        
+        # alpha_j = np.sum(Q_cur * W, axis=0)
+        alphas[j, :] = np.sum(Q_cur * W, axis=0)
+        
+        if j < lanczos_steps - 1:
+            W -= alphas[j, :] * Q_cur
+            if j > 0:
+                W -= betas[j-1, :] * Q_prev
+                
+            beta_j = np.linalg.norm(W, axis=0)
+            
+            # Mask out probes that have converged
+            new_converged = (beta_j < 1e-12) & active_mask
+            if np.any(new_converged):
+                beta_j[new_converged] = 0.0
+                active_mask[new_converged] = False
+                
+            betas[j, :] = beta_j
+            
+            # Avoid division by zero
+            safe_beta = np.where(active_mask, beta_j, 1.0)
+            W /= safe_beta
+            W[:, ~active_mask] = 0.0
+            
+            Q_prev = Q_cur
+            Q_cur = W
+            
+            if not np.any(active_mask):
+                # All probes converged
+                alphas = alphas[:j+1, :]
+                betas = betas[:j, :]
+                lanczos_steps = j + 1
+                break
+
+    # Process each probe's tridiagonal matrix
+    total_est = 0.0
+    for i in range(n_probes):
+        try:
+            # For each probe, find the actual number of steps it took before converging
+            probe_steps = lanczos_steps
+            for j in range(lanczos_steps - 1):
+                if betas[j, i] < 1e-12:
+                    probe_steps = j + 1
+                    break
+                    
+            alpha_i = alphas[:probe_steps, i]
+            beta_i = betas[:probe_steps-1, i]
+            
+            eigvals, eigvecs = eigh_tridiagonal(alpha_i, beta_i, eigvals_only=False)
+            valid = eigvals > 0
+            if np.any(valid):
+                total_est += np.sum(np.log(eigvals[valid]) * (eigvecs[0, valid] ** 2))
+        except Exception:
+            pass
+
+    return total_est
+
+
 def slq_probe(V_op: VLinearOperator, lanczos_steps: int, seed: int):
     """
     Single probe for SLQ logdet estimation.
@@ -117,19 +207,26 @@ def logdet(V_op: VLinearOperator, lanczos_steps: int, n_probes: int, n_jobs: int
     lanczos_steps = min(lanczos_steps, dim)
     
     # Mathematical Crossover for Probes:
-    # If the number of probes requested exceeds or equals the matrix dimension,
-    # it is computationally cheaper (and gives 0 variance) to do exact 
-    # Cholesky factorization rather than stochastic estimation.
-    # However, since V is an implicit LinearOperator, we can cap probes to dim
-    # but practically dim = n*m is usually huge (thousands+), so this rarely triggers
-    # on real data, but guarantees mathematical safety on toy datasets.
     n_probes = min(n_probes, dim)
 
-    # Create a sequence of independent random seeds for each parallel job
-    # This ensures reproducibility while maintaining statistical independence.
-    seeds = np.random.SeedSequence(random_seed).spawn(n_probes)
-    with parallel_config(backend=backend, n_jobs=n_jobs):
-        result = Parallel(return_as="generator")(delayed(slq_probe)(V_op, lanczos_steps, int(s.generate_state(1)[0])) for s in seeds)
-        logdet_est = sum(result)
+    seeds = [int(s.generate_state(1)[0]) for s in np.random.SeedSequence(random_seed).spawn(n_probes)]
+    
+    # Process blocks directly using V_op.matmat (via block SLQ algorithm)
+    # Memory consideration: Q_cur, Q_prev and W take N x block_size memory.
+    # We slice probes into blocks (e.g., max 64 or 128 probes at once) to avoid memory issues.
+    block_size = min(32, n_probes)
+    logdet_est = 0.0
+
+    if block_size < 2:
+        # Fall back to single loop or Joblib
+        with parallel_config(backend=backend, n_jobs=n_jobs):
+            result = Parallel(return_as="generator")(delayed(slq_probe)(V_op, lanczos_steps, s) for s in seeds)
+            logdet_est = sum(result)
+    else:
+        # Block operation is beneficial
+        for start_idx in range(0, n_probes, block_size):
+            end_idx = min(start_idx + block_size, n_probes)
+            batch_seeds = seeds[start_idx:end_idx]
+            logdet_est += slq_probes_block(V_op, lanczos_steps, batch_seeds)
 
     return dim * logdet_est / n_probes
