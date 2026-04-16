@@ -19,6 +19,8 @@ class SolverContext:
         Realized residual term (for preconditioner).
     preconditioner : bool, default=True
         Whether to use preconditioner.
+    cg_maxiter : int, default=1000
+        Maximum iterations for conjugate gradient solver.
     
     Attributes
     ----------
@@ -32,13 +34,16 @@ class SolverContext:
         Number of outputs, extracted from realized_residual.
     use_preconditioner : bool
         Whether preconditioner will be applied.
+    cg_maxiter : int
+        Maximum iterations for CG.
     """
-    def __init__(self, realized_effects: tuple[RealizedRandomEffect], realized_residual: RealizedResidual, preconditioner: bool = True):
+    def __init__(self, realized_effects: tuple[RealizedRandomEffect], realized_residual: RealizedResidual, preconditioner: bool = True, cg_maxiter: int = 1000):
         self.realized_effects = realized_effects
         self.realized_residual = realized_residual
         self.n = realized_residual.n
         self.m = realized_residual.m
         self.use_preconditioner = preconditioner
+        self.cg_maxiter = cg_maxiter
     
     def solve(self, marginal_residual: np.ndarray) -> tuple:
         """
@@ -68,9 +73,11 @@ class SolverContext:
             except Exception:
                 pass
         
-        prec_resid, info = cg(A=V_op, b=marginal_residual, M=M_op)
+        prec_resid, info = cg(A=V_op, b=marginal_residual, M=M_op, maxiter=self.cg_maxiter)
         # Todo: Using maxiter and tol to control convergence and avoid infinite loops.
-        if info != 0:
+        if info > 0:
+            pass # Did not converge within maxiter
+        elif info < 0:
             print(f"Warning: CG info={info}")
         
         return prec_resid, V_op, M_op

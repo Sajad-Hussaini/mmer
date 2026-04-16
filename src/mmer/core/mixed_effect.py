@@ -77,7 +77,7 @@ class MixedEffectRegressor:
     """
     def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 30, tol: float = 1e-6, patience: int = 3,
                  slq_steps: int = 30, n_probes: int = 60, preconditioner: bool = True, correction_method: str = 'bste',
-                 n_jobs: int = -1, backend: str = 'loky'):
+                 cg_maxiter: int = 1000, n_jobs: int = -1, backend: str = 'loky'):
         self.fe_model = fixed_effects_model
         self.max_iter = max_iter
         self.tol = tol
@@ -85,11 +85,13 @@ class MixedEffectRegressor:
         self.slq_steps = slq_steps
         self.n_probes = n_probes
         self.preconditioner = preconditioner
+        self.correction_method = correction_method
+        self.cg_maxiter = cg_maxiter
         self.n_jobs = n_jobs
         self.backend = backend
 
         self.convergence_monitor = ConvergenceMonitor(tol=tol, patience=patience)
-        self.variance_corrector = VarianceCorrection(method=correction_method, n_jobs=n_jobs, backend=backend)
+        self.variance_corrector = VarianceCorrection(method=correction_method, cg_maxiter=cg_maxiter, n_jobs=n_jobs, backend=backend)
         
         # State: Terms
         self.random_effect_terms: tuple[RandomEffectTerm] = None # List[RandomEffectTerm]
@@ -312,7 +314,7 @@ class MixedEffectRegressor:
         """
         Run E-step.
         """
-        solver_ctx = SolverContext(realized_effects, realized_residual, self.preconditioner)
+        solver_ctx = SolverContext(realized_effects, realized_residual, self.preconditioner, self.cg_maxiter)
         prec_resid, V_op, M_op = solver_ctx.solve(marginal_residual)
         
         current_log_lh = self._compute_log_likelihood(marginal_residual, prec_resid, V_op)
