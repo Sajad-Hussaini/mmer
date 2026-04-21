@@ -40,7 +40,7 @@ def test_woodbury():
     
     x_exact = np.linalg.solve(V_mat, rhs)
     
-    x_woodbury, _, _ = solver.solve(rhs)
+    x_woodbury = solver.solve(rhs)
     
     diff = np.linalg.norm(x_exact - x_woodbury) / (np.linalg.norm(x_exact) + 1e-15)
     print(f"Relative error: {diff:.2e}")
@@ -79,12 +79,12 @@ def test_woodbury_large():
     rhs_2d = np.random.randn(m * n, 50)  # 50 simultaneous trace estimation probes
     
     t0 = time.time()
-    x_woodbury_1d, _, _ = solver.solve(rhs_1d)
+    x_woodbury_1d = solver.solve(rhs_1d)
     t1 = time.time()
     print(f"Woodbury 1D Solve Time (N={n}, m={m}): {t1 - t0:.4f}s")
     
     t0 = time.time()
-    x_woodbury_2d, _, _ = solver.solve(rhs_2d)
+    x_woodbury_2d = solver.solve(rhs_2d)
     t1 = time.time()
     print(f"Woodbury 2D Block Solve Time (50 probes): {t1 - t0:.4f}s")
 
@@ -121,12 +121,12 @@ def test_woodbury_huge():
     rhs_2d = np.random.randn(m * n, 50)        # 2D matrix of shape (10M, 50)
     
     t0 = time.time()
-    x_woodbury_1d, _, _ = solver.solve(rhs_1d)
+    x_woodbury_1d = solver.solve(rhs_1d)
     t1 = time.time()
     print(f"Woodbury 1D Solve Time (N={n}, m={m}): {t1 - t0:.4f}s")
     
     t0 = time.time()
-    x_woodbury_2d, _, _ = solver.solve(rhs_2d)
+    x_woodbury_2d = solver.solve(rhs_2d)
     t1 = time.time()
     print(f"Woodbury 2D Block Solve Time (5 probes): {t1 - t0:.4f}s")
 

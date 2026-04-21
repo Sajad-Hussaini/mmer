@@ -5,6 +5,13 @@ from scipy.linalg import solve
 from .operator import VLinearOperator, ResidualPreconditioner
 from .terms import RealizedRandomEffect, RealizedResidual
 
+def _invert_matrix(mat: np.ndarray) -> np.ndarray:
+    """Safely invert a symmetric matrix, falling back to standard inverse if Cholesky fails."""
+    try:
+        return solve(a=mat, b=np.eye(mat.shape[0]), assume_a='pos')
+    except Exception:
+        return np.linalg.inv(mat)
+
 class BaseSolver:
     """Base class for solvers."""
     def __init__(self, realized_effects: tuple[RealizedRandomEffect], realized_residual: RealizedResidual):
@@ -12,10 +19,11 @@ class BaseSolver:
         self.realized_residual = realized_residual
         self.n = realized_residual.n
         self.m = realized_residual.m
+        self.V_op = VLinearOperator(self.realized_effects, self.realized_residual)
 
-    def solve(self, marginal_residual: np.ndarray) -> tuple:
+    def solve(self, marginal_residual: np.ndarray) -> np.ndarray:
         raise NotImplementedError
-        
+
 class IterativeSolver(BaseSolver):
     """Iterative Conjugate Gradient Solver."""
     def __init__(self, realized_effects: tuple[RealizedRandomEffect], realized_residual: RealizedResidual, preconditioner: bool = True, cg_maxiter: int = 1000):
@@ -23,17 +31,15 @@ class IterativeSolver(BaseSolver):
         self.use_preconditioner = preconditioner
         self.cg_maxiter = cg_maxiter
         
-        self.V_op = VLinearOperator(self.realized_effects, self.realized_residual)
         self.M_op = None
         
         if self.use_preconditioner:
-            try:
-                resid_cov_inv = solve(a=self.realized_residual.cov, b=np.eye(self.m), assume_a='pos')
-                self.M_op = ResidualPreconditioner(resid_cov_inv, self.n, self.m)
-            except Exception:
-                pass
+            R = self.realized_residual.cov
+            # If the matrix is strictly singular, let it surface the error (consistent with WoodburySolver) and ask to disable preconditioning
+            R_inv = _invert_matrix(R)
+            self.M_op = ResidualPreconditioner(R_inv, self.n, self.m)
 
-    def solve(self, marginal_residual: np.ndarray) -> tuple:
+    def solve(self, marginal_residual: np.ndarray) -> np.ndarray:
         if marginal_residual.ndim == 2:
             K = marginal_residual.shape[1]
             prec_resid = np.empty_like(marginal_residual)
@@ -47,7 +53,7 @@ class IterativeSolver(BaseSolver):
             if info < 0:
                 print(f"Warning: CG info={info}")
         
-        return prec_resid, self.V_op, self.M_op
+        return prec_resid
 
 class WoodburySolver(BaseSolver):
     """Woodbury Matrix Identity Direct Solver."""
@@ -55,8 +61,8 @@ class WoodburySolver(BaseSolver):
         super().__init__(realized_effects, realized_residual)
         
         m = self.m
-        R = getattr(self.realized_residual, 'cov', getattr(self.realized_residual.term, 'cov', None))
-        self.R_inv = np.linalg.inv(R)
+        R = self.realized_residual.cov
+        self.R_inv = _invert_matrix(R)
         
         # Construct S matrix once
         S_blocks = []
@@ -67,7 +73,7 @@ class WoodburySolver(BaseSolver):
                 S_ij = sparse.kron(self.R_inv, Z_i_T_Z_j)
                 
                 if i == j:
-                    D_inv = np.linalg.inv(re_i.term.cov)
+                    D_inv = _invert_matrix(re_i.term.cov)
                     I_oi = sparse.eye(re_i.o)
                     C_inv_ii = sparse.kron(D_inv, I_oi)
                     S_ij = S_ij + C_inv_ii
@@ -80,9 +86,7 @@ class WoodburySolver(BaseSolver):
         else:
             self.S = None
 
-        self.V_op = VLinearOperator(self.realized_effects, self.realized_residual)
-
-    def solve(self, marginal_residual: np.ndarray) -> tuple:
+    def solve(self, marginal_residual: np.ndarray) -> np.ndarray:
         m = self.m
         n = self.n
         
@@ -148,7 +152,7 @@ class WoodburySolver(BaseSolver):
         else:
             prec_resid = A_inv_x
             
-        return prec_resid, self.V_op, None
+        return prec_resid
 
 def build_solver(realized_effects: tuple[RealizedRandomEffect], realized_residual: RealizedResidual, preconditioner: bool = True, cg_maxiter: int = 1000) -> BaseSolver:
     """Builds and returns the appropriate solver."""

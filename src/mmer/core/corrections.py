@@ -41,7 +41,7 @@ class VarianceCorrection:
         self.backend = backend
         self.cg_maxiter = cg_maxiter
     
-    def compute_correction(self, k: int, V_op: 'VLinearOperator', M_op: 'ResidualPreconditioner',
+    def compute_correction(self, k: int, solver: 'BaseSolver',
                           n_probes: int = None) -> tuple:
         """
         Compute adaptive uncertainty correction terms (T, W).
@@ -50,10 +50,8 @@ class VarianceCorrection:
         ----------
         k : int
             Index of random effect term.
-        V_op : VLinearOperator
-            Marginal covariance linear operator.
-        M_op : ResidualPreconditioner
-            Optional preconditioner.
+        solver : BaseSolver
+            Solver used for V@x updates.
         n_probes : int, optional
             Number of probes for stochastic methods. Auto-computed if None.
         
@@ -64,7 +62,7 @@ class VarianceCorrection:
         W : np.ndarray
             Covariance correction matrix.
         """
-        re = V_op.random_effects[k]
+        re = solver.realized_effects[k]
         block_size = re.q * re.o
         
         # Hutchinson's trace estimator variance decays as O(1/sqrt(n_probes))
@@ -81,11 +79,11 @@ class VarianceCorrection:
             active_method = 'de'
             
         if active_method == 'de':
-            return compute_cov_correction_de(k, V_op, M_op, self.cg_maxiter, self.n_jobs, self.backend)
+            return compute_cov_correction_de(k, solver, self.n_jobs, self.backend)
         elif active_method == 'bste':
-            return compute_cov_correction_bste(k, V_op, M_op, n_probes, self.cg_maxiter, self.n_jobs, self.backend)
+            return compute_cov_correction_bste(k, solver, n_probes, self.n_jobs, self.backend)
         elif active_method == 'ste':
-            return compute_cov_correction_ste(k, V_op, M_op, n_probes, self.cg_maxiter, self.n_jobs, self.backend)
+            return compute_cov_correction_ste(k, solver, n_probes, self.n_jobs, self.backend)
 
 def _generate_rademacher_probes(n_rows, n_probes, seed=42):
     rng = np.random.default_rng(seed)
@@ -96,19 +94,18 @@ def _generate_rademacher_probes(n_rows, n_probes, seed=42):
 
 # ====================== Stochastic Trace Estimation for Correction ======================
 
-def compute_cov_correction_ste(k: int, V_op: 'VLinearOperator', M_op: 'ResidualPreconditioner', n_probes: int, cg_maxiter: int, n_jobs: int, backend: str):
+def compute_cov_correction_ste(k: int, solver: 'BaseSolver', n_probes: int, n_jobs: int, backend: str):
     """
     Compute adaptive uncertainty correction terms (T, W) for covariance updates using Stochastic Trace Estimation (STE).
     """
-    m = V_op.m
-    re = V_op.random_effects[k]
+    m = solver.m
+    re = solver.realized_effects[k]
     q, o = re.q, re.o
     
     probe_vectors = _generate_rademacher_probes(re.m * re.q * re.o, n_probes, 42)
     v1 = re._kronZ_D_matvec(probe_vectors)
     
-    solver = build_solver(V_op.random_effects, V_op.realized_residual, M_op is not None, cg_maxiter)
-    v2, _, _ = solver.solve(v1)
+    v2 = solver.solve(v1)
         
     v3 = re._kronZ_D_T_matvec(v2)
     diag_C = (probe_vectors * v3).sum(axis=1) / n_probes
@@ -125,18 +122,17 @@ def compute_cov_correction_ste(k: int, V_op: 'VLinearOperator', M_op: 'ResidualP
 
 # ====================== Block Stochastic Trace Estimation ======================
 
-def compute_cov_correction_bste(k: int, V_op: 'VLinearOperator', M_op: 'ResidualPreconditioner', n_probes: int, cg_maxiter: int, n_jobs: int, backend: str):
+def compute_cov_correction_bste(k: int, solver: 'BaseSolver', n_probes: int, n_jobs: int, backend: str):
     """
     Compute adaptive uncertainty correction terms (T, W) for covariance updates using Block Stochastic Trace Estimation (BSTE).
     """
-    m = V_op.m
-    re = V_op.random_effects[k]
+    m = solver.m
+    re = solver.realized_effects[k]
     q = re.q 
     T = np.zeros((m, m))
     W = np.zeros((m * q, m * q))
-    solver = build_solver(V_op.random_effects, V_op.realized_residual, M_op is not None, cg_maxiter)
     with parallel_config(backend=backend, n_jobs=n_jobs):
-        results = Parallel(return_as="generator")(delayed(_cov_correction_per_response_bste)(solver, n_probes, k, V_op, col) for col in range(m))
+        results = Parallel(return_as="generator")(delayed(_cov_correction_per_response_bste)(solver, n_probes, k, col) for col in range(m))
 
         for col, T_lower_traces, W_lower_diags in results:
             for i, (trace, W_diag) in enumerate(zip(T_lower_traces, W_lower_diags)):
@@ -149,12 +145,12 @@ def compute_cov_correction_bste(k: int, V_op: 'VLinearOperator', M_op: 'Residual
                     np.fill_diagonal(W[c_slice, r_slice], W_diag)
     return T, W
 
-def _cov_correction_per_response_bste(solver, n_probes: int, k: int, V_op: 'VLinearOperator', col: int):
+def _cov_correction_per_response_bste(solver, n_probes: int, k: int, col: int):
     """
     Compute adaptive uncertainty correction terms (T, W) for covariance updates using Block Stochastic Trace Estimation (BSTE) for a single response.
     """
-    m = V_op.m
-    re = V_op.random_effects[k]
+    m = solver.m
+    re = solver.realized_effects[k]
     q, o = re.q, re.o
     block_size = q * o
     num_blocks = m - col
@@ -165,7 +161,7 @@ def _cov_correction_per_response_bste(solver, n_probes: int, k: int, V_op: 'VLin
     vec[col * block_size : (col + 1) * block_size, :] = probe_vectors
     
     vec_cg = re._kronZ_D_matvec(vec)
-    vec_cg, _, _ = solver.solve(vec_cg)
+    vec_cg = solver.solve(vec_cg)
         
     lower_c = re._kronZ_D_T_matvec(vec_cg)[col * block_size:, :]
     # lower_c is (num_blocks * block_size, n_probes)
@@ -192,18 +188,17 @@ def _cov_correction_per_response_bste(solver, n_probes: int, k: int, V_op: 'VLin
 
 # ====================== Deterministic Correction ======================
 
-def compute_cov_correction_de(k: int, V_op: 'VLinearOperator', M_op: 'ResidualPreconditioner', cg_maxiter: int, n_jobs: int, backend: str):
+def compute_cov_correction_de(k: int, solver: 'BaseSolver', n_jobs: int, backend: str):
     """
     Compute adaptive uncertainty correction terms (T, W) for covariance updates using Deterministic Estimation (DE).
     """
-    m = V_op.m
-    re = V_op.random_effects[k]
+    m = solver.m
+    re = solver.realized_effects[k]
     q = re.q
     T = np.zeros((m, m))
     W = np.zeros((m * q, m * q))
-    solver = build_solver(V_op.random_effects, V_op.realized_residual, M_op is not None, cg_maxiter)
     with parallel_config(backend=backend, n_jobs=n_jobs):
-        results = Parallel(return_as="generator")(delayed(_cov_correction_per_response_de)(solver, k, V_op, col) for col in range(m))
+        results = Parallel(return_as="generator")(delayed(_cov_correction_per_response_de)(solver, k, col) for col in range(m))
 
         for col, T_lower_traces, W_lower_blocks in results:
             for i, (trace, W_block) in enumerate(zip(T_lower_traces, W_lower_blocks)):
@@ -216,12 +211,12 @@ def compute_cov_correction_de(k: int, V_op: 'VLinearOperator', M_op: 'ResidualPr
                      W[c_slice, r_slice] = W_block.T
     return T, W
 
-def _cov_correction_per_response_de(solver, k: int, V_op: 'VLinearOperator', col: int):
+def _cov_correction_per_response_de(solver, k: int, col: int):
     """
     Compute adaptive uncertainty correction terms (T, W) for covariance updates using Deterministic Estimation (DE) for a single response.
     """
-    m = V_op.m
-    re = V_op.random_effects[k]
+    m = solver.m
+    re = solver.realized_effects[k]
     q, o = re.q, re.o
     block_size = q * o
     num_blocks = m - col
@@ -232,7 +227,7 @@ def _cov_correction_per_response_de(solver, k: int, V_op: 'VLinearOperator', col
     vec[base_idx : base_idx + block_size, :] = np.eye(block_size)
     
     vec_cg = re._kronZ_D_matvec(vec)
-    vec_cg, _, _ = solver.solve(vec_cg)
+    vec_cg = solver.solve(vec_cg)
 
     D_matvec_out = re._D_matvec(vec)
     kron_D_T_out = re._kronZ_D_T_matvec(vec_cg)

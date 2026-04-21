@@ -66,7 +66,7 @@ def compute_random_effects_posterior(realized_effects: tuple[RealizedRandomEffec
     
     # Solve for random effects
     solver = build_solver(realized_effects, realized_residual, preconditioner)
-    prec_resid, _, _ = solver.solve(marginal_resid)
+    prec_resid = solver.solve(marginal_resid)
     
     # Aggregate random effects
     total_random_effect, mu = aggregate_random_effects(prec_resid, realized_effects)

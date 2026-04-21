@@ -300,13 +300,13 @@ class MixedEffectRegressor:
         """
         Run one EM iteration.
         """
-        total_random_effect, mu, V_op, M_op = self._e_step(marginal_residual, realized_effects, realized_residual)
+        total_random_effect, mu, solver = self._e_step(marginal_residual, realized_effects, realized_residual)
         
         if self.convergence_monitor.is_converged:
             return marginal_residual
             
         marginal_residual = self._compute_marginal_residual(X, y, total_random_effect.reshape((self.m, self.n)).T)
-        self._m_step(marginal_residual, total_random_effect, mu, realized_effects, realized_residual, V_op, M_op)
+        self._m_step(marginal_residual, total_random_effect, mu, realized_effects, realized_residual, solver)
         
         return marginal_residual
 
@@ -315,9 +315,9 @@ class MixedEffectRegressor:
         Run E-step.
         """
         solver = build_solver(realized_effects, realized_residual, self.preconditioner, self.cg_maxiter)
-        prec_resid, V_op, M_op = solver.solve(marginal_residual)
+        prec_resid = solver.solve(marginal_residual)
         
-        current_log_lh = self._compute_log_likelihood(marginal_residual, prec_resid, V_op)
+        current_log_lh = self._compute_log_likelihood(marginal_residual, prec_resid, solver.V_op)
         
         # Update convergence monitor
         current_state = {
@@ -328,13 +328,13 @@ class MixedEffectRegressor:
         self.convergence_monitor.update(current_log_lh, current_state)
         
         if self.convergence_monitor.is_converged:
-             return None, None, None, None
+             return None, None, None
              
         total_random_effect, mu = aggregate_random_effects(prec_resid, realized_effects)
-        return total_random_effect, mu, V_op, M_op
+        return total_random_effect, mu, solver
 
     def _m_step(self, marginal_residual: np.ndarray, total_random_effect: np.ndarray, mu: tuple[np.ndarray],
-                realized_effects: tuple[RealizedRandomEffect], realized_residual: RealizedResidual, V_op: VLinearOperator, M_op: ResidualPreconditioner):
+                realized_effects: tuple[RealizedRandomEffect], realized_residual: RealizedResidual, solver):
         """
         Run M-step.
         """
@@ -343,7 +343,7 @@ class MixedEffectRegressor:
         new_covs = []
         
         for k, re in enumerate(realized_effects):
-            T_k, W_k = self.variance_corrector.compute_correction(k, V_op, M_op, n_probes=self.n_probes)
+            T_k, W_k = self.variance_corrector.compute_correction(k, solver, n_probes=self.n_probes)
             T_sum += T_k
             new_covs.append(re._compute_next_cov(mu[k], W_k))
 
