@@ -35,9 +35,9 @@ class MixedEffectResults:
         self.k = mixed_model.k
         self.random_effect_terms = mixed_model.random_effect_terms
         self.residual_term = mixed_model.residual_term
-        self.log_likelihood = mixed_model.log_likelihood
-        self.is_converged = mixed_model._is_converged
-        self.best_log_likelihood = mixed_model._best_log_likelihood
+        self.log_likelihood = mixed_model.convergence_monitor.log_likelihood
+        self.is_converged = mixed_model.convergence_monitor.is_converged
+        self.best_log_likelihood = mixed_model.convergence_monitor._best_log_likelihood
         self.preconditioner = mixed_model.preconditioner
 
     def predict(self, X: np.ndarray) -> np.ndarray:

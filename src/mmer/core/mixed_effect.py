@@ -2,11 +2,10 @@ import numpy as np
 from sklearn.base import RegressorMixin
 from sklearn.model_selection import GroupShuffleSplit
 from tqdm import tqdm
-from .operator import VLinearOperator, ResidualPreconditioner
 from .corrections import VarianceCorrection
 from .solver import build_solver
 from .convergence import ConvergenceMonitor
-from .inference import aggregate_random_effects, compute_random_effects_posterior
+from .inference import aggregate_random_effects
 from ..lanczos_algorithm import slq
 from .terms import RandomEffectTerm, ResidualTerm, RealizedRandomEffect, RealizedResidual
 
@@ -96,42 +95,6 @@ class MixedEffectRegressor:
         # State: Terms
         self.random_effect_terms: tuple[RandomEffectTerm] = None # List[RandomEffectTerm]
         self.residual_term: ResidualTerm = None # ResidualTerm
-    
-    @property
-    def log_likelihood(self):
-        """
-        Log-likelihood history from convergence monitor.
-        
-        Returns
-        -------
-        list of float
-            Log-likelihood values for each EM iteration.
-        """
-        return self.convergence_monitor.log_likelihood
-    
-    @property
-    def _is_converged(self):
-        """
-        Convergence status from convergence monitor.
-        
-        Returns
-        -------
-        bool
-            Whether the model has converged.
-        """
-        return self.convergence_monitor.is_converged
-    
-    @property
-    def _best_log_likelihood(self):
-        """
-        Best log-likelihood value encountered during fitting.
-        
-        Returns
-        -------
-        float
-            Maximum log-likelihood achieved.
-        """
-        return self.convergence_monitor._best_log_likelihood
 
     def _prepare_terms(self, y: np.ndarray, groups: np.ndarray, random_slopes: tuple[list[int] | None] | None):
         """

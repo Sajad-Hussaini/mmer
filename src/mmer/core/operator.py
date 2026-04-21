@@ -63,8 +63,6 @@ class ResidualPreconditioner(LinearOperator):
         self.cov_inv = resid_cov_inv
         self.n = n
         self.m = m
-        # Set shape such that it supports matmat implicitly. However, scipy CG only accepts 1D usually.
-        # But we can test it. Actually we don't need to change shape, just `_matvec` or `_matmat`.
         super().__init__(dtype=np.float64, shape=(self.m * self.n, self.m * self.n))
 
     def _matvec(self, x_vec: np.ndarray):

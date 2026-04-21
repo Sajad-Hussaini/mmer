@@ -3,42 +3,6 @@ from scipy import sparse
 from abc import ABC, abstractmethod
 
 
-class RealizedTermBase(ABC):
-    """
-    Abstract base class for realized terms (random effects and residuals).
-    
-    Provides common interface for posterior computation and matrix-vector operations
-    on data-specific realizations of learned terms.
-    """
-    
-    def __init__(self, term, n: int):
-        """
-        Initialize realized term.
-        
-        Parameters
-        ----------
-        term : RandomEffectTerm or ResidualTerm
-            Learned state (contains covariance).
-        n : int
-            Dataset size.
-        """
-        self.term = term
-        self.n = n
-        self.m = term.m
-    
-    @abstractmethod
-    def _full_cov_matvec(self, x_vec: np.ndarray) -> np.ndarray:
-        """Compute full covariance matrix-vector product."""
-        pass
-    
-    def _compute_next_cov(self, *args, **kwargs):
-        """
-        Estimate new covariance (EM M-step).
-        Subclasses override with specific logic.
-        """
-        raise NotImplementedError
-
-
 class RandomEffectTerm:
     """
     Learned state of a random effect component.
@@ -104,7 +68,7 @@ class RandomEffectTerm:
 
 class ResidualTerm:
     """
-    Learned state of the residual error.
+    Learned state of the residual component.
 
     Stores the residual covariance matrix for the multi-response system.
 
@@ -130,6 +94,40 @@ class ResidualTerm:
             raise ValueError(f"Residual covariance shape mismatch. Expected {(self.m, self.m)}, got {new_cov.shape}")
         self.cov = new_cov
 
+class RealizedTermBase(ABC):
+    """
+    Abstract base class for realized terms (random effects and residuals).
+    
+    Provides common interface for posterior computation and matrix-vector operations
+    on data-specific realizations of learned terms.
+    """
+    
+    def __init__(self, term, n: int):
+        """
+        Initialize realized term.
+        
+        Parameters
+        ----------
+        term : RandomEffectTerm or ResidualTerm
+            Learned state (contains covariance).
+        n : int
+            Dataset size.
+        """
+        self.term = term
+        self.n = n
+        self.m = term.m
+    
+    @abstractmethod
+    def _full_cov_matvec(self, x_vec: np.ndarray) -> np.ndarray:
+        """Compute full covariance matrix-vector product."""
+        pass
+    
+    def _compute_next_cov(self, *args, **kwargs):
+        """
+        Estimate new covariance (EM M-step).
+        Subclasses override with specific logic.
+        """
+        raise NotImplementedError
 
 class RealizedRandomEffect(RealizedTermBase):
     """
@@ -147,7 +145,7 @@ class RealizedRandomEffect(RealizedTermBase):
     groups : np.ndarray
         Grouping factors of shape (n, k).
     """
-    def __init__(self, term: "RandomEffectTerm", X: np.ndarray, groups: np.ndarray):
+    def __init__(self, term: RandomEffectTerm, X: np.ndarray, groups: np.ndarray):
         n = X.shape[0]
         super().__init__(term, n)
         
@@ -253,10 +251,6 @@ class RealizedRandomEffect(RealizedTermBase):
         
         if is_2d:
             xr = x_vec.reshape((self.m, self.n, K))
-            # xr is (m, n, K). Z is (n, q*o). 
-            # We want to multiply Z.T (q*o, n) with each slice of xr.
-            # Z.T @ xr -> tensordot(Z.T, xr, axes=([1], [1])). Shape: (q*o, m, K).
-            # Transpose to (m, q*o, K)
             A_k = (self.Z.T @ xr.transpose(1, 0, 2).reshape(self.n, self.m * K))
             A_k = A_k.reshape(self.q * self.o, self.m, K).transpose(1, 0, 2).reshape(self.m * self.q * self.o, K)
         else:
@@ -269,8 +263,6 @@ class RealizedRandomEffect(RealizedTermBase):
         K = x_vec.shape[1] if is_2d else 1
         
         if is_2d:
-            # x_vec is (m*q*o, K). Z is (n, q*o)
-            # xr is (m, q*o, K). Z @ xr -> tensordot(Z, xr, axes=([1], [1])). Shape: (n, m, K). Transpose to (m, n, K).
             xr = x_vec.reshape((self.m, self.q * self.o, K))
             A_k = (self.Z @ xr.transpose(1, 0, 2).reshape(self.q * self.o, self.m * K))
             A_k = A_k.reshape(self.n, self.m, K).transpose(1, 0, 2).reshape(self.m * self.n, K)
@@ -284,11 +276,7 @@ class RealizedRandomEffect(RealizedTermBase):
         K = x_vec.shape[1] if is_2d else 1
         
         if is_2d:
-            # x_vec is (m*q*o, K). D is self.term.cov (m*q, m*q)
-            # We want to apply it over o blocks.
             xr = x_vec.reshape((self.m * self.q, self.o, K))
-            # cov @ xr[..., K] for each K and o.
-            # D is (m*q, m*q). xr is (m*q, o*K).
             xr_flat = xr.reshape((self.m * self.q, self.o * K))
             Dx = (self.term.cov @ xr_flat).reshape((self.m * self.q, self.o, K)).reshape(self.m * self.q * self.o, K)
         else:

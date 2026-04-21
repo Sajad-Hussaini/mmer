@@ -90,7 +90,7 @@ class WoodburySolver(BaseSolver):
         is_2d = x.ndim == 2
         K = x.shape[1] if is_2d else 1
         
-        if is_2d:
+        if is_2d:  # multiple independent RHS columns not a 2D marginal residual vector
             x_mat = x.reshape((self.m, self.n * K))
             return (self.R_inv @ x_mat).reshape((self.m, self.n, K)).reshape(self.m * self.n, K)
         else:
@@ -111,13 +111,13 @@ class WoodburySolver(BaseSolver):
             # Construct v1 = Z^T A^{-1} x
             v1_list = []
             for re_i in self.realized_effects:
-                if is_2d:
+                if is_2d:  # multiple independent RHS columns not a 2D marginal residual vector
                     Z_T_blk = sparse.kron(sparse.eye(m), re_i.Z.T)
                     v1_list.append(Z_T_blk @ A_inv_x)
                 else:
                     v1_list.append(re_i._kronZ_T_matvec(A_inv_x))
             
-            if is_2d:
+            if is_2d:  # multiple independent RHS columns not a 2D marginal residual vector
                 v1 = np.vstack(v1_list)
             else:
                 v1 = np.concatenate(v1_list)
@@ -128,7 +128,7 @@ class WoodburySolver(BaseSolver):
                 v2 = v2.ravel()
             
             # 4. Compute v3 = Z v2
-            if is_2d:
+            if is_2d:  # multiple independent RHS columns not a 2D marginal residual vector
                 v3 = np.zeros((m * n, K))
                 offset = 0
                 for re_i in self.realized_effects:
