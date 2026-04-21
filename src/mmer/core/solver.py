@@ -34,7 +34,7 @@ class IterativeSolver(BaseSolver):
         self.M_op = None
         
         if self.use_preconditioner:
-            R = getattr(self.realized_residual, 'cov', getattr(self.realized_residual.term, 'cov', None))
+            R = self.realized_residual.term.cov
             # If the matrix is strictly singular, let it surface the error (consistent with WoodburySolver) and ask to disable preconditioning
             R_inv = _invert_matrix(R)
             self.M_op = ResidualPreconditioner(R_inv, self.n, self.m)
@@ -60,7 +60,7 @@ class WoodburySolver(BaseSolver):
     def __init__(self, realized_effects: tuple[RealizedRandomEffect], realized_residual: RealizedResidual):
         super().__init__(realized_effects, realized_residual)
 
-        R = getattr(self.realized_residual, 'cov', getattr(self.realized_residual.term, 'cov', None))
+        R = self.realized_residual.term.cov
         self.R_inv = _invert_matrix(R)
         
         # Construct S matrix once
@@ -72,8 +72,7 @@ class WoodburySolver(BaseSolver):
                 S_ij = sparse.kron(self.R_inv, Z_i_T_Z_j)
                 
                 if i == j:
-                    D = getattr(re_i, 'cov', getattr(re_i.term, 'cov', None))
-                    D_inv = _invert_matrix(D)
+                    D_inv = _invert_matrix(re_i.term.cov)
                     I_oi = sparse.eye(re_i.o)
                     C_inv_ii = sparse.kron(D_inv, I_oi)
                     S_ij = S_ij + C_inv_ii
