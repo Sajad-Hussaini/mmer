@@ -1,5 +1,5 @@
 import numpy as np
-from .solver import SolverContext
+from .solver import build_solver
 from .terms import RealizedRandomEffect, RealizedResidual
 
 def aggregate_random_effects(prec_resid: np.ndarray, realized_effects: tuple[RealizedRandomEffect]) -> tuple:
@@ -65,8 +65,8 @@ def compute_random_effects_posterior(realized_effects: tuple[RealizedRandomEffec
     marginal_resid = (y - fe_predictions).T.ravel()
     
     # Solve for random effects
-    solver_ctx = SolverContext(realized_effects, realized_residual, preconditioner)
-    prec_resid, _, _ = solver_ctx.solve(marginal_resid)
+    solver = build_solver(realized_effects, realized_residual, preconditioner)
+    prec_resid, _, _ = solver.solve(marginal_resid)
     
     # Aggregate random effects
     total_random_effect, mu = aggregate_random_effects(prec_resid, realized_effects)

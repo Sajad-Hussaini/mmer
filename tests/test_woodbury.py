@@ -1,7 +1,7 @@
 import numpy as np
 from scipy import sparse
 from mmer.core.terms import RandomEffectTerm, ResidualTerm, RealizedRandomEffect, RealizedResidual
-from mmer.core.solver import SolverContext
+from mmer.core.solver import build_solver
 from mmer.core.operator import VLinearOperator
 import time
 
@@ -32,7 +32,7 @@ def test_woodbury():
     rhs = np.random.randn(m * n)
     
     # Initialize SolverContext
-    ctx = SolverContext((re_realized,), res_realized, preconditioner=False)
+    solver = build_solver((re_realized,), res_realized, preconditioner=False)
     
     # Compare with scipy.sparse.linalg.cg using VLinearOperator
     V_op = VLinearOperator((re_realized,), res_realized)
@@ -40,7 +40,7 @@ def test_woodbury():
     
     x_exact = np.linalg.solve(V_mat, rhs)
     
-    x_woodbury, _, _ = ctx.solve_woodbury(rhs)
+    x_woodbury, _, _ = solver.solve(rhs)
     
     diff = np.linalg.norm(x_exact - x_woodbury) / (np.linalg.norm(x_exact) + 1e-15)
     print(f"Relative error: {diff:.2e}")
@@ -70,8 +70,8 @@ def test_woodbury_large():
     re_realized = RealizedRandomEffect(re_term, X, groups)
     res_realized = RealizedResidual(res_term, n)
     
-    # Initialize SolverContext
-    ctx = SolverContext((re_realized,), res_realized, preconditioner=True, cg_maxiter=100)
+    # Initialize solver
+    solver = build_solver((re_realized,), res_realized, preconditioner=True, cg_maxiter=100)
     
     # Random RHS vector (1D) and matrix (2D blocks for STE probes)
     np.random.seed(42)
@@ -79,12 +79,12 @@ def test_woodbury_large():
     rhs_2d = np.random.randn(m * n, 50)  # 50 simultaneous trace estimation probes
     
     t0 = time.time()
-    x_woodbury_1d, _, _ = ctx.solve_woodbury(rhs_1d)
+    x_woodbury_1d, _, _ = solver.solve(rhs_1d)
     t1 = time.time()
     print(f"Woodbury 1D Solve Time (N={n}, m={m}): {t1 - t0:.4f}s")
     
     t0 = time.time()
-    x_woodbury_2d, _, _ = ctx.solve_woodbury(rhs_2d)
+    x_woodbury_2d, _, _ = solver.solve(rhs_2d)
     t1 = time.time()
     print(f"Woodbury 2D Block Solve Time (50 probes): {t1 - t0:.4f}s")
 
@@ -112,21 +112,21 @@ def test_woodbury_huge():
     re_realized = RealizedRandomEffect(re_term, X, groups)
     res_realized = RealizedResidual(res_term, n)
     
-    # Initialize SolverContext
-    ctx = SolverContext((re_realized,), res_realized, preconditioner=True, cg_maxiter=100)
+    # Initialize solver
+    solver = build_solver((re_realized,), res_realized, preconditioner=True, cg_maxiter=100)
     
     # Random RHS vector (1D) and matrix (2D blocks for STE probes)
     np.random.seed(42)
     rhs_1d = np.random.randn(m * n)            # 1D vector of length 10,000,000
-    rhs_2d = np.random.randn(m * n, 5)         # 2D matrix (5 simultaneous probes)
+    rhs_2d = np.random.randn(m * n, 50)        # 2D matrix of shape (10M, 50)
     
     t0 = time.time()
-    x_woodbury_1d, _, _ = ctx.solve_woodbury(rhs_1d)
+    x_woodbury_1d, _, _ = solver.solve(rhs_1d)
     t1 = time.time()
-    print(f"Woodbury 1D Solve Time (N={n}, m={m}, DOF={m*n}): {t1 - t0:.4f}s")
+    print(f"Woodbury 1D Solve Time (N={n}, m={m}): {t1 - t0:.4f}s")
     
     t0 = time.time()
-    x_woodbury_2d, _, _ = ctx.solve_woodbury(rhs_2d)
+    x_woodbury_2d, _, _ = solver.solve(rhs_2d)
     t1 = time.time()
     print(f"Woodbury 2D Block Solve Time (5 probes): {t1 - t0:.4f}s")
 

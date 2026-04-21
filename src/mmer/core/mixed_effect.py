@@ -4,7 +4,7 @@ from sklearn.model_selection import GroupShuffleSplit
 from tqdm import tqdm
 from .operator import VLinearOperator, ResidualPreconditioner
 from .corrections import VarianceCorrection
-from .solver import SolverContext
+from .solver import build_solver
 from .convergence import ConvergenceMonitor
 from .inference import aggregate_random_effects, compute_random_effects_posterior
 from ..lanczos_algorithm import slq
@@ -314,8 +314,8 @@ class MixedEffectRegressor:
         """
         Run E-step.
         """
-        solver_ctx = SolverContext(realized_effects, realized_residual, self.preconditioner, self.cg_maxiter)
-        prec_resid, V_op, M_op = solver_ctx.solve(marginal_residual)
+        solver = build_solver(realized_effects, realized_residual, self.preconditioner, self.cg_maxiter)
+        prec_resid, V_op, M_op = solver.solve(marginal_residual)
         
         current_log_lh = self._compute_log_likelihood(marginal_residual, prec_resid, V_op)
         

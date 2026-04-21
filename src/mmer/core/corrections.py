@@ -2,7 +2,7 @@ import numpy as np
 from scipy.sparse.linalg import cg
 from joblib import Parallel, delayed, parallel_config
 from typing import TYPE_CHECKING
-from .solver import SolverContext
+from .solver import build_solver
 
 if TYPE_CHECKING:
     from .operator import VLinearOperator, ResidualPreconditioner
@@ -107,8 +107,8 @@ def compute_cov_correction_ste(k: int, V_op: 'VLinearOperator', M_op: 'ResidualP
     probe_vectors = _generate_rademacher_probes(re.m * re.q * re.o, n_probes, 42)
     v1 = re._kronZ_D_matvec(probe_vectors)
     
-    ctx = SolverContext(V_op.random_effects, V_op.realized_residual, M_op is not None, cg_maxiter)
-    v2, _, _ = ctx.solve(v1)
+    solver = build_solver(V_op.random_effects, V_op.realized_residual, M_op is not None, cg_maxiter)
+    v2, _, _ = solver.solve(v1)
         
     v3 = re._kronZ_D_T_matvec(v2)
     diag_C = (probe_vectors * v3).sum(axis=1) / n_probes
@@ -134,8 +134,9 @@ def compute_cov_correction_bste(k: int, V_op: 'VLinearOperator', M_op: 'Residual
     q = re.q 
     T = np.zeros((m, m))
     W = np.zeros((m * q, m * q))
+    solver = build_solver(V_op.random_effects, V_op.realized_residual, M_op is not None, cg_maxiter)
     with parallel_config(backend=backend, n_jobs=n_jobs):
-        results = Parallel(return_as="generator")(delayed(_cov_correction_per_response_bste)(n_probes, k, V_op, M_op, cg_maxiter, col) for col in range(m))
+        results = Parallel(return_as="generator")(delayed(_cov_correction_per_response_bste)(solver, n_probes, k, V_op, col) for col in range(m))
 
         for col, T_lower_traces, W_lower_diags in results:
             for i, (trace, W_diag) in enumerate(zip(T_lower_traces, W_lower_diags)):
@@ -148,7 +149,7 @@ def compute_cov_correction_bste(k: int, V_op: 'VLinearOperator', M_op: 'Residual
                     np.fill_diagonal(W[c_slice, r_slice], W_diag)
     return T, W
 
-def _cov_correction_per_response_bste(n_probes: int, k: int, V_op: 'VLinearOperator', M_op: 'ResidualPreconditioner', cg_maxiter: int, col: int):
+def _cov_correction_per_response_bste(solver, n_probes: int, k: int, V_op: 'VLinearOperator', col: int):
     """
     Compute adaptive uncertainty correction terms (T, W) for covariance updates using Block Stochastic Trace Estimation (BSTE) for a single response.
     """
@@ -164,8 +165,7 @@ def _cov_correction_per_response_bste(n_probes: int, k: int, V_op: 'VLinearOpera
     vec[col * block_size : (col + 1) * block_size, :] = probe_vectors
     
     vec_cg = re._kronZ_D_matvec(vec)
-    ctx = SolverContext(V_op.random_effects, V_op.realized_residual, M_op is not None, cg_maxiter)
-    vec_cg, _, _ = ctx.solve(vec_cg)
+    vec_cg, _, _ = solver.solve(vec_cg)
         
     lower_c = re._kronZ_D_T_matvec(vec_cg)[col * block_size:, :]
     # lower_c is (num_blocks * block_size, n_probes)
@@ -201,8 +201,9 @@ def compute_cov_correction_de(k: int, V_op: 'VLinearOperator', M_op: 'ResidualPr
     q = re.q
     T = np.zeros((m, m))
     W = np.zeros((m * q, m * q))
+    solver = build_solver(V_op.random_effects, V_op.realized_residual, M_op is not None, cg_maxiter)
     with parallel_config(backend=backend, n_jobs=n_jobs):
-        results = Parallel(return_as="generator")(delayed(_cov_correction_per_response_de)(k, V_op, M_op, cg_maxiter, col) for col in range(m))
+        results = Parallel(return_as="generator")(delayed(_cov_correction_per_response_de)(solver, k, V_op, col) for col in range(m))
 
         for col, T_lower_traces, W_lower_blocks in results:
             for i, (trace, W_block) in enumerate(zip(T_lower_traces, W_lower_blocks)):
@@ -215,7 +216,7 @@ def compute_cov_correction_de(k: int, V_op: 'VLinearOperator', M_op: 'ResidualPr
                      W[c_slice, r_slice] = W_block.T
     return T, W
 
-def _cov_correction_per_response_de(k: int, V_op: 'VLinearOperator', M_op: 'ResidualPreconditioner', cg_maxiter: int, col: int):
+def _cov_correction_per_response_de(solver, k: int, V_op: 'VLinearOperator', col: int):
     """
     Compute adaptive uncertainty correction terms (T, W) for covariance updates using Deterministic Estimation (DE) for a single response.
     """
@@ -231,8 +232,7 @@ def _cov_correction_per_response_de(k: int, V_op: 'VLinearOperator', M_op: 'Resi
     vec[base_idx : base_idx + block_size, :] = np.eye(block_size)
     
     vec_cg = re._kronZ_D_matvec(vec)
-    ctx = SolverContext(V_op.random_effects, V_op.realized_residual, M_op is not None, cg_maxiter)
-    vec_cg, _, _ = ctx.solve(vec_cg)
+    vec_cg, _, _ = solver.solve(vec_cg)
 
     D_matvec_out = re._D_matvec(vec)
     kron_D_T_out = re._kronZ_D_T_matvec(vec_cg)
