@@ -7,7 +7,7 @@ class VLinearOperator(LinearOperator):
     Linear Operator for the marginal covariance matrix V.
 
     Represents the matrix-vector product with:
-    V = S (I_m ? Z_k) D_k (I_m ? Z_k)^T + R
+    V = S (I_m \\otimes Z_k) D_k (I_m \\otimes Z_k)^T + R
 
     Wraps 'RealizedRandomEffect' and 'RealizedResidual' objects to compute
     V @ x efficiently without forming the dense matrix V.
@@ -28,7 +28,7 @@ class VLinearOperator(LinearOperator):
 
     def _matvec(self, x_vec: np.ndarray):
         """Compute V @ x_vec."""
-        # Residual part: (R ? I_n) x
+        # Residual part: (R \\otimes I_n) x
         Vx = self.realized_residual._full_cov_matvec(x_vec)
         
         # Random Effects parts
@@ -57,7 +57,7 @@ class ResidualPreconditioner(LinearOperator):
     Preconditioner based on the Residual covariance (R).
 
     Computes M^{-1} @ x, where M approximation is R.
-    P^{-1} = R^{-1} = f^{-1} ? I_n.
+    P^{-1} = R^{-1} = R_{cov}^{-1} \\otimes I_n.
     """
     def __init__(self, resid_cov_inv: np.ndarray, n: int, m: int):
         self.cov_inv = resid_cov_inv

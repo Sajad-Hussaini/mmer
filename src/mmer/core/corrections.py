@@ -2,42 +2,40 @@ import numpy as np
 from joblib import Parallel, delayed, parallel_config
 from .solver import BaseSolver
 
-
 # ====================== Variance Correction ======================
 
 class VarianceCorrection:
     """
     Variance correction computations.
     
-    Provides unified interface for STE, BSTE, and DE correction methods,
+    Provides unified interface for BSTE and DE correction methods,
     eliminating need for explicit method dispatch in M-step.
     """
-    _VALID_METHODS = {'ste', 'bste', 'de'}
+    _VALID_METHODS = {'bste', 'de'}
     
-    def __init__(self, method: str, cg_maxiter: int = 1000, n_jobs: int = -1, backend: str = 'loky'):
+    def __init__(self, method: str, cg_maxiter: int = 1000, n_jobs: int = -1, backend: str = 'threading'):
         """
         Initialize orchestrator.
         
         Parameters
         ----------
         method : str
-            Correction method: 'ste', 'bste', or 'de'.
+            Correction method: 'bste' or 'de'.
         cg_maxiter : int, default=1000
             Maximum iterations for conjugate gradient solver.
         n_jobs : int, default=-1
             Number of parallel jobs to use.
-        backend : str, default='loky'
-            Joblib backend.
+        backend : str, default='threading'
+            Joblib backend. 'threading' avoids memory duplication for sparse matrices.
         """
         if method not in self._VALID_METHODS:
             raise ValueError(f"Method must be one of {self._VALID_METHODS}, got {method}")
         self.method = method
+        self.cg_maxiter = cg_maxiter
         self.n_jobs = n_jobs
         self.backend = backend
-        self.cg_maxiter = cg_maxiter
     
-    def compute_correction(self, k: int, solver: BaseSolver,
-                          n_probes: int = None) -> tuple:
+    def compute_correction(self, k: int, solver: BaseSolver, n_probes: int = None) -> tuple:
         """
         Compute adaptive uncertainty correction terms (T, W).
         
@@ -70,15 +68,13 @@ class VarianceCorrection:
         # of stochastic probes, Deterministic Estimation (de) requires FEWER 
         # linear solves (exactly `block_size` solves) and has ZERO variance!
         active_method = self.method
-        if active_method in ['ste', 'bste'] and block_size <= n_probes:
+        if active_method == 'bste' and block_size <= n_probes:
             active_method = 'de'
             
         if active_method == 'de':
             return compute_cov_correction_de(k, solver, self.n_jobs, self.backend)
         elif active_method == 'bste':
             return compute_cov_correction_bste(k, solver, n_probes, self.n_jobs, self.backend)
-        elif active_method == 'ste':
-            return compute_cov_correction_ste(k, solver, n_probes, self.n_jobs, self.backend)
 
 def _generate_rademacher_probes(n_rows, n_probes, seed=42):
     rng = np.random.default_rng(seed)
@@ -86,34 +82,6 @@ def _generate_rademacher_probes(n_rows, n_probes, seed=42):
     probes *= 2
     probes -= 1
     return probes.astype(np.float64)
-
-# ====================== Stochastic Trace Estimation for Correction ======================
-
-def compute_cov_correction_ste(k: int, solver: BaseSolver, n_probes: int, n_jobs: int, backend: str):
-    """
-    Compute adaptive uncertainty correction terms (T, W) for covariance updates using Stochastic Trace Estimation (STE).
-    """
-    m = solver.m
-    re = solver.realized_effects[k]
-    q, o = re.q, re.o
-    
-    probe_vectors = _generate_rademacher_probes(re.m * re.q * re.o, n_probes, 42)
-    v1 = re._kronZ_D_matvec(probe_vectors)
-    
-    v2 = solver.solve(v1)
-        
-    v3 = re._kronZ_D_T_matvec(v2)
-    diag_C = (probe_vectors * v3).sum(axis=1) / n_probes
-
-    diag_sigma = np.repeat(np.diag(re.term.cov), o) 
-    diag_sigma -= diag_C
-
-    W_diag = diag_sigma.reshape((m, q, o)).sum(axis=2).ravel()
-    sigma_mat  = diag_sigma.reshape(m, q * o)
-    ZTZ_diag = re.ZTZ.diagonal()
-    T_diag = sigma_mat.dot(ZTZ_diag)
-
-    return np.diag(T_diag), np.diag(W_diag)
 
 # ====================== Block Stochastic Trace Estimation ======================
 
@@ -229,8 +197,8 @@ def _cov_correction_per_response_de(solver, k: int, col: int):
     lower_sigma = (D_matvec_out - kron_D_T_out)[col * block_size:]
 
     sigma_blocks = lower_sigma.reshape(num_blocks, block_size, block_size)
-    ztz = re.ZTZ.toarray()
-    T_traces = np.einsum('ij,kij->k', ztz, sigma_blocks)
+    elementwise_prod = re.ZTZ.multiply(sigma_blocks)
+    T_traces = elementwise_prod.sum(axis=(1, 2))
     W_blocks = lower_sigma.reshape(num_blocks, q, o, q, o).sum(axis=(2, 4))
     
     return col, T_traces, W_blocks

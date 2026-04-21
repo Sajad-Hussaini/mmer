@@ -39,6 +39,7 @@ class MixedEffectResults:
         self.is_converged = mixed_model.convergence_monitor.is_converged
         self.best_log_likelihood = mixed_model.convergence_monitor._best_log_likelihood
         self.preconditioner = mixed_model.preconditioner
+        self.cg_maxiter = mixed_model.cg_maxiter
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         """
@@ -69,12 +70,12 @@ class MixedEffectResults:
         Examples
         --------
         >>> # Predict with fixed effects only
-        >>> y_pred = model.predict(X_new)
+        >>> y_pred = results.predict(X_new)
         
         >>> # Predict with both fixed and random effects
-        >>> y_fixed = model.predict(X_new)
-        >>> _, total_re, _ = model.compute_random_effects(X_new, y_new, groups_new)
-        >>> y_pred_full = y_fixed + total_re.reshape((-1, model.m))
+        >>> y_fixed = results.predict(X_new)
+        >>> _, total_re, _ = results.compute_random_effects(X_new, y_new, groups_new)
+        >>> y_pred_full = y_fixed + total_re
         """
         return self.fe_model.predict(X)
     
@@ -111,10 +112,8 @@ class MixedEffectResults:
         fx = self.fe_model.predict(X)
         fx = fx if self.m != 1 else fx[:, None]
         
-        return compute_random_effects_posterior(
-            realized_effects, realized_residual, y, fx,
-            self.random_effect_terms, self.preconditioner
-        )
+        return compute_random_effects_posterior(realized_effects, realized_residual, y, fx,
+                                                self.preconditioner, self.cg_maxiter)
 
     @property
     def residual_covariance(self) -> np.ndarray:
@@ -199,40 +198,53 @@ class MixedEffectResults:
             
         return cov
 
-    def summary(self):
+    def summary(self) -> str:
         """
-        Display a summary of the fitted multivariate mixed effects model.
+        Generate a comprehensive text summary of the fitted multivariate mixed effects model.
+        
+        Returns
+        -------
+        str
+            A formatted string containing model metadata and variance estimates.
         """
-        indent0 = ""
-        indent1 = "   "
-        indent2 = "       "
+        lines = []
+        indent1 = "  "
+        indent2 = "      "
 
-        print("\n" + indent0 + "Multivariate Mixed Effects Model Summary")
-        print("=" * 50)
-        print(indent1 + f"FE Model: {type(self.fe_model).__name__}")
-        print(indent1 + f"Iterations: {len(self.log_likelihood)}")
-        print(indent1 + f"Converged: {self.is_converged}")
-        print(indent1 + f"Log-Likelihood: {self.best_log_likelihood:.3f}")
-        print(indent1 + f"No. Outputs: {self.m}")
-        print(indent1 + f"No. Grouping Factors: {self.k}")
-        print("-" * 50)
-        print(indent1 + f"Unexplained Residual Variances")
-        print(indent2 + "{:<10} {:>10}".format("Response", "Variance"))
+        lines.append("\nMultivariate Mixed Effects Model Summary")
+        lines.append("=" * 60)
+        lines.append(indent1 + f"FE Model:             {type(self.fe_model).__name__}")
+        lines.append(indent1 + f"Iterations:           {len(self.log_likelihood)}")
+        lines.append(indent1 + f"Converged:            {self.is_converged}")
+        lines.append(indent1 + f"Log-Likelihood:       {self.best_log_likelihood:.3f}")
+        lines.append(indent1 + f"No. Outputs (m):      {self.m}")
+        lines.append(indent1 + f"No. Grouping Factors: {self.k}")
+        
+        lines.append("-" * 60)
+        lines.append(indent1 + "Unexplained Residual Variances")
+        lines.append(indent2 + "{:<10} {:>12}".format("Response", "Variance"))
         for m in range(self.m):
-            print(indent2 + "{:<10} {:>10.4f}".format(m + 1, self.residual_term.cov[m, m]))
-        print("-" * 50)
-        print(indent1 + f"Random Effects Variances")
-        print(indent2 + "{:<8} {:<10} {:<15} {:>10}".format("Group", "Response", "Random Effect", "Variance"))
+            lines.append(indent2 + "{:<10} {:>12.4f}".format(m + 1, self.residual_term.cov[m, m]))
+            
+        lines.append("-" * 60)
+        lines.append(indent1 + "Random Effects Variances (Diagonal)")
+        lines.append(indent2 + "{:<8} {:<10} {:<15} {:>12}".format("Group", "Response", "Random Effect", "Variance"))
         
         for k, term in enumerate(self.random_effect_terms):
-            # q is term.q (1 + number of slopes)
-            # term.cov is (m*q, m*q)
             q = term.q
             for i in range(self.m):
                 for j in range(q):
                     idx = i * q + j
                     effect_name = "Intercept" if j == 0 else f"Slope {j}"
-                    # Access diagonal element
                     var = term.cov[idx, idx]
-                    print(indent2 + "{:<8} {:<10} {:<15} {:>10.4f}".format(k + 1, i + 1, effect_name, var))
-        print("\n")
+                    lines.append(indent2 + "{:<8} {:<10} {:<15} {:>12.4f}".format(k + 1, i + 1, effect_name, var))
+                    
+        lines.append("-" * 60)
+        lines.append(indent1 + "* Note: To view full covariance/correlation matrices (including off-diagonals),")
+        lines.append(indent1 + "  use `.residual_covariance`, `.random_effects_covariances`,")
+        lines.append(indent1 + "  or their `_correlation` properties on this results object.")
+        lines.append("=" * 60)
+        
+        summary_str = "\n".join(lines)
+        print(summary_str)
+        return summary_str

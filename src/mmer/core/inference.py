@@ -31,8 +31,8 @@ def aggregate_random_effects(prec_resid: np.ndarray, realized_effects: tuple[Rea
 def compute_random_effects_posterior(realized_effects: tuple[RealizedRandomEffect, ...],
                                      realized_residual: RealizedResidual,
                                      y: np.ndarray, fe_predictions: np.ndarray,
-                                     terms: tuple,
-                                     preconditioner: bool = True) -> tuple:
+                                     preconditioner: bool = True,
+                                     cg_maxiter: int = 1000) -> tuple:
     """
     Compute posterior mean random effects and residuals for a given dataset.
     
@@ -46,10 +46,10 @@ def compute_random_effects_posterior(realized_effects: tuple[RealizedRandomEffec
         Target values, shape (n, m).
     fe_predictions : np.ndarray
         Fixed effect predictions, shape (n, m).
-    terms : tuple of RandomEffectTerm
-        Learned random effect terms.
     preconditioner : bool, default=True
         Whether to use preconditioner in solver.
+    cg_maxiter : int, default=1000
+        Maximum number of conjugate gradient iterations.
     
     Returns
     -------
@@ -65,7 +65,7 @@ def compute_random_effects_posterior(realized_effects: tuple[RealizedRandomEffec
     marginal_resid = (y - fe_predictions).T.ravel()
     
     # Solve for random effects
-    solver = build_solver(realized_effects, realized_residual, preconditioner)
+    solver = build_solver(realized_effects, realized_residual, preconditioner, cg_maxiter)
     prec_resid = solver.solve(marginal_resid)
     
     # Aggregate random effects
@@ -79,7 +79,7 @@ def compute_random_effects_posterior(realized_effects: tuple[RealizedRandomEffec
 
     mu_reshaped = []
     for k, mu_k in enumerate(mu):
-        q = terms[k].q
+        q = realized_effects[k].q
         mu_reshaped.append(mu_k.reshape((m, q, -1)).transpose(2, 0, 1))
         
     return residuals_2d, total_effect_2d, tuple(mu_reshaped)

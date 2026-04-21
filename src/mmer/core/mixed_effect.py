@@ -40,15 +40,15 @@ class MixedEffectRegressor:
     correction_method : str, default='bste'
         Method for variance correction in M-step:
         
-        - 'ste': stochastic trace estimation
         - 'bste': block stochastic trace estimation
         - 'de': deterministic estimation
     n_jobs : int, default=-1
         Number of parallel jobs for SLQ and trace estimation (-1 uses all cores).
         Setting to number of outputs (`m`) is recommended for optimal performance.
-    backend : str, default='loky'
-        Joblib parallel backend ('loky', 'threading').
-        Setting to 'loky' is recommended for CPU-bound tasks.
+    backend : str, default='threading'
+        Joblib parallel backend ('threading', 'loky').
+        Setting to 'threading' is highly recommended as almsot always the solver is Woodbury-based.
+        Setting to 'loky' can be used rarely for cg-based solvers under very specific conditions of large `m` and small `n`  where woodbury is not beneficial.
     
     Attributes
     ----------
@@ -76,7 +76,7 @@ class MixedEffectRegressor:
     """
     def __init__(self, fixed_effects_model: RegressorMixin, max_iter: int = 30, tol: float = 1e-6, patience: int = 3,
                  slq_steps: int = 30, n_probes: int = 60, preconditioner: bool = True, correction_method: str = 'bste',
-                 cg_maxiter: int = 1000, n_jobs: int = -1, backend: str = 'loky'):
+                 cg_maxiter: int = 1000, n_jobs: int = -1, backend: str = 'threading'):
         self.fe_model = fixed_effects_model
         self.max_iter = max_iter
         self.tol = tol
@@ -347,6 +347,6 @@ class MixedEffectRegressor:
         """
         Compute log-likelihood.
         """
-        log_det_V = slq.logdet(V_op, self.slq_steps, self.n_probes)
+        log_det_V = slq.logdet(V_op, self.slq_steps, self.n_probes, self.n_jobs, self.backend)
         log_likelihood = -(self.m * self.n * np.log(2 * np.pi) + log_det_V + marginal_residual.T @ prec_resid) / 2
         return log_likelihood

@@ -171,12 +171,12 @@ def slq_probe(V_op: VLinearOperator, lanczos_steps: int, seed: int):
     # The quadrature rule: sum of log(eigvals) weighted by squared first elements of eigenvectors
     return np.sum(np.log(eigvals[valid]) * (eigvecs[0, valid] ** 2))
 
-def logdet(V_op: VLinearOperator, lanczos_steps: int, n_probes: int, n_jobs: int = -1, backend: str = 'loky', random_seed: int = 42):
+def logdet(V_op: VLinearOperator, lanczos_steps: int, n_probes: int, n_jobs: int = -1, backend: str = 'threading', random_seed: int = 42):
     """
     Estimate log-determinant using Stochastic Lanczos Quadrature (SLQ).
     
     Computes log(det(V)) using parallelized SLQ with multiple probe vectors.
-    Estimate: log(det(V)) ≈ (n/m) * sum_{i=1}^m probe_i where n is dimension
+    Estimate: log(det(V)) \\approx (n/m) * sum_{i=1}^m probe_i where n is dimension
     and m is number of probes.
     
     Parameters
@@ -189,8 +189,9 @@ def logdet(V_op: VLinearOperator, lanczos_steps: int, n_probes: int, n_jobs: int
         Number of probe vectors m.
     n_jobs : int
         Number of parallel jobs.
-    backend : str
-        Joblib parallel backend (e.g., 'loky', 'threading').
+    backend : str, default='threading'
+        Joblib parallel backend (e.g., 'threading', 'loky').
+        'threading' is recommended to avoid heavy memory copying.
     random_seed : int, optional
         Random seed for reproducibility. Default is 42.
     
@@ -223,10 +224,12 @@ def logdet(V_op: VLinearOperator, lanczos_steps: int, n_probes: int, n_jobs: int
             result = Parallel(return_as="generator")(delayed(slq_probe)(V_op, lanczos_steps, s) for s in seeds)
             logdet_est = sum(result)
     else:
-        # Block operation is beneficial
-        for start_idx in range(0, n_probes, block_size):
-            end_idx = min(start_idx + block_size, n_probes)
-            batch_seeds = seeds[start_idx:end_idx]
-            logdet_est += slq_probes_block(V_op, lanczos_steps, batch_seeds)
+        # Block operation is beneficial, run blocks in parallel
+        with parallel_config(backend=backend, n_jobs=n_jobs):
+            batches = [seeds[i:min(i + block_size, n_probes)] for i in range(0, n_probes, block_size)]
+            result = Parallel(return_as="generator")(
+                delayed(slq_probes_block)(V_op, lanczos_steps, batch) for batch in batches
+            )
+            logdet_est = sum(result)
 
     return dim * logdet_est / n_probes

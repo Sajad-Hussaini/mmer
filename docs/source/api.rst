@@ -10,4 +10,3 @@ Official API documentation for the ``mmer`` package. This lists only public clas
 
    mixedeffectregressor
    mixedeffectresult
-   multioutput

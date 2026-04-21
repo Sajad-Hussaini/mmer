@@ -1,6 +1,6 @@
 import numpy as np
 from scipy import sparse
-from scipy.sparse.linalg import cg, spsolve
+from scipy.sparse.linalg import cg, splu
 from scipy.linalg import solve
 import warnings
 from .operator import VLinearOperator, ResidualPreconditioner
@@ -79,11 +79,44 @@ class WoodburySolver(BaseSolver):
                     
                 row_blocks.append(S_ij)
             S_blocks.append(row_blocks)
-            
+
         if S_blocks:
-            self.S = sparse.bmat(S_blocks, format='csc')
+            S_mat = sparse.bmat(S_blocks, format='csc')
+            # Factorize once and reuse solves across E/M-step calls.
+            # Repeated fresh spsolve calls refactorize internally and can trigger large memory spikes.
+            self.S_factor = splu(S_mat)
         else:
-            self.S = None
+            self.S_factor = None
+
+    def _build_v1(self, A_inv_x: np.ndarray, is_2d: bool) -> np.ndarray:
+        """Compute v1 = Z^T A^{-1} x for all random-effect terms."""
+        v1_list = []
+        for re_i in self.realized_effects:
+            if is_2d:
+                z_t_blk = sparse.kron(sparse.eye(self.m), re_i.Z.T)
+                v1_list.append(z_t_blk @ A_inv_x)
+            else:
+                v1_list.append(re_i._kronZ_T_matvec(A_inv_x))
+        return np.vstack(v1_list) if is_2d else np.concatenate(v1_list)
+
+    def _build_v3(self, v2: np.ndarray, is_2d: bool, K: int) -> np.ndarray:
+        """Compute v3 = Z v2 for all random-effect terms."""
+        if is_2d:
+            v3 = np.zeros((self.m * self.n, K))
+        else:
+            v3 = np.zeros(self.m * self.n)
+
+        offset = 0
+        for re_i in self.realized_effects:
+            size_i = self.m * re_i.q * re_i.o
+            v2_i = v2[offset:offset + size_i]
+            if is_2d:
+                z_blk = sparse.kron(sparse.eye(self.m), re_i.Z)
+                v3 += z_blk @ v2_i
+            else:
+                v3 += re_i._kronZ_matvec(v2_i)
+            offset += size_i
+        return v3
 
     def _apply_R_inv_kron(self, x: np.ndarray) -> np.ndarray:
         r"""Computes (R^{-1} \otimes I_n) x efficiently for 1D or 2D arrays."""
@@ -98,52 +131,23 @@ class WoodburySolver(BaseSolver):
             return (self.R_inv @ x_mat).ravel()
 
     def solve(self, marginal_residual: np.ndarray) -> np.ndarray:
-        m = self.m
-        n = self.n
         is_2d = marginal_residual.ndim == 2
         K = marginal_residual.shape[1] if is_2d else 1
 
         # 1. Compute A^{-1} x = (R^{-1} \otimes I_n) x
         A_inv_x = self._apply_R_inv_kron(marginal_residual)
         
-        if self.S is not None:
-            # Construct v1 = Z^T A^{-1} x
-            v1_list = []
-            for re_i in self.realized_effects:
-                if is_2d:  # multiple independent RHS columns not a 2D marginal residual vector
-                    Z_T_blk = sparse.kron(sparse.eye(m), re_i.Z.T)
-                    v1_list.append(Z_T_blk @ A_inv_x)
-                else:
-                    v1_list.append(re_i._kronZ_T_matvec(A_inv_x))
-            
-            if is_2d:
-                v1 = np.vstack(v1_list)
-            else:
-                v1 = np.concatenate(v1_list)
+        if self.S_factor is not None:
+            # 2. Construct v1 = Z^T A^{-1} x
+            v1 = self._build_v1(A_inv_x, is_2d)
             
             # 3. Solve S v2 = v1
-            v2 = spsolve(self.S, v1)
+            v2 = self.S_factor.solve(v1)
             if not is_2d and v2.ndim == 2 and v2.shape[1] == 1:
                 v2 = v2.ravel()
             
             # 4. Compute v3 = Z v2
-            if is_2d:
-                v3 = np.zeros((m * n, K))
-                offset = 0
-                for re_i in self.realized_effects:
-                    size_i = m * re_i.q * re_i.o
-                    v2_i = v2[offset:offset+size_i]
-                    Z_blk = sparse.kron(sparse.eye(m), re_i.Z)
-                    v3 += Z_blk @ v2_i
-                    offset += size_i
-            else:
-                v3 = np.zeros(m * n)
-                offset = 0
-                for re_i in self.realized_effects:
-                    size_i = m * re_i.q * re_i.o
-                    v2_i = v2[offset:offset+size_i]
-                    v3 += re_i._kronZ_matvec(v2_i)
-                    offset += size_i
+            v3 = self._build_v3(v2, is_2d, K)
                 
             # 5. Compute v4 = A^{-1} v3
             v4 = self._apply_R_inv_kron(v3)
