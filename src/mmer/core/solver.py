@@ -40,27 +40,17 @@ class IterativeSolver(BaseSolver):
             self.M_op = ResidualPreconditioner(R_inv, self.n, self.m)
 
     def solve(self, marginal_residual: np.ndarray) -> np.ndarray:
-        if marginal_residual.ndim == 2:
-            K = marginal_residual.shape[1]
-            prec_resid = np.empty_like(marginal_residual)
-            for i in range(K):
-                sol, info = cg(A=self.V_op, b=marginal_residual[:, i], M=self.M_op, maxiter=self.cg_maxiter)
-                if info < 0:
-                    print(f"Warning: CG info={info}")
-                prec_resid[:, i] = sol
-        else:
-            prec_resid, info = cg(A=self.V_op, b=marginal_residual, M=self.M_op, maxiter=self.cg_maxiter)
-            if info < 0:
-                print(f"Warning: CG info={info}")
-        
+        prec_resid, info = cg(A=self.V_op, b=marginal_residual, M=self.M_op, maxiter=self.cg_maxiter)
+        if info < 0:
+            print(f"Warning: CG info={info}")
+    
         return prec_resid
 
 class WoodburySolver(BaseSolver):
     """Woodbury Matrix Identity Direct Solver."""
     def __init__(self, realized_effects: tuple[RealizedRandomEffect], realized_residual: RealizedResidual):
         super().__init__(realized_effects, realized_residual)
-        
-        m = self.m
+
         R = self.realized_residual.cov
         self.R_inv = _invert_matrix(R)
         
@@ -73,7 +63,7 @@ class WoodburySolver(BaseSolver):
                 S_ij = sparse.kron(self.R_inv, Z_i_T_Z_j)
                 
                 if i == j:
-                    D_inv = _invert_matrix(re_i.term.cov)
+                    D_inv = _invert_matrix(re_i.cov)
                     I_oi = sparse.eye(re_i.o)
                     C_inv_ii = sparse.kron(D_inv, I_oi)
                     S_ij = S_ij + C_inv_ii
@@ -89,69 +79,40 @@ class WoodburySolver(BaseSolver):
     def solve(self, marginal_residual: np.ndarray) -> np.ndarray:
         m = self.m
         n = self.n
-        
-        is_2d = marginal_residual.ndim == 2
-        K = marginal_residual.shape[1] if is_2d else 1
-        
+
         # 1. Compute A^{-1} x = (R^{-1} \otimes I_n) x
-        if is_2d:
-            x_mat = marginal_residual.reshape((m, n * K))
-            A_inv_x = (self.R_inv @ x_mat).reshape((m, n, K)).reshape(m * n, K)
-        else:
-            x_mat = marginal_residual.reshape((m, n))
-            A_inv_x = (self.R_inv @ x_mat).ravel()
+        x_mat = marginal_residual.reshape((m, n))
+        A_inv_x = (self.R_inv @ x_mat).ravel()
         
         if self.S is not None:
             # Construct v1 = Z^T A^{-1} x
             v1_list = []
             for re_i in self.realized_effects:
-                if is_2d:
-                    Z_T_blk = sparse.kron(sparse.eye(m), re_i.Z.T)
-                    v1_list.append(Z_T_blk @ A_inv_x)
-                else:
-                    v1_list.append(re_i._kronZ_T_matvec(A_inv_x))
-            
-            if is_2d:
-                v1 = np.vstack(v1_list)
-            else:
+                v1_list.append(re_i._kronZ_T_matvec(A_inv_x))
                 v1 = np.concatenate(v1_list)
             
             # 3. Solve S v2 = v1
             v2 = spsolve(self.S, v1)
-            if not is_2d and v2.ndim == 2 and v2.shape[1] == 1:
+            if v2.ndim == 2 and v2.shape[1] == 1:
                 v2 = v2.ravel()
             
             # 4. Compute v3 = Z v2
-            if is_2d:
-                v3 = np.zeros((m * n, K))
-                offset = 0
-                for re_i in self.realized_effects:
-                    size_i = m * re_i.q * re_i.o
-                    v2_i = v2[offset:offset+size_i]
-                    Z_blk = sparse.kron(sparse.eye(m), re_i.Z)
-                    v3 += Z_blk @ v2_i
-                    offset += size_i
-            else:
-                v3 = np.zeros(m * n)
-                offset = 0
-                for re_i in self.realized_effects:
-                    size_i = m * re_i.q * re_i.o
-                    v2_i = v2[offset:offset+size_i]
-                    v3 += re_i._kronZ_matvec(v2_i)
-                    offset += size_i
+            v3 = np.zeros(m * n)
+            offset = 0
+            for re_i in self.realized_effects:
+                size_i = m * re_i.q * re_i.o
+                v2_i = v2[offset:offset+size_i]
+                v3 += re_i._kronZ_matvec(v2_i)
+                offset += size_i
                 
             # 5. Compute v4 = A^{-1} v3
-            if is_2d:
-                v3_mat = v3.reshape((m, n * K))
-                v4 = (self.R_inv @ v3_mat).reshape((m, n, K)).reshape(m * n, K)
-            else:
-                v3_mat = v3.reshape((m, n))
-                v4 = (self.R_inv @ v3_mat).ravel()
-            
+            v3_mat = v3.reshape((m, n))
+            v4 = (self.R_inv @ v3_mat).ravel()
+        
             prec_resid = A_inv_x - v4
         else:
             prec_resid = A_inv_x
-            
+
         return prec_resid
 
 def build_solver(realized_effects: tuple[RealizedRandomEffect], realized_residual: RealizedResidual, preconditioner: bool = True, cg_maxiter: int = 1000) -> BaseSolver:
