@@ -93,10 +93,13 @@ class MixedEffectRegressor:
         self.variance_corrector = VarianceCorrection(method=correction_method, cg_maxiter=cg_maxiter, n_jobs=n_jobs, backend=backend)
         
         # State: Terms
-        self.random_effect_terms: tuple[RandomEffectTerm] = None # List[RandomEffectTerm]
-        self.residual_term: ResidualTerm = None # ResidualTerm
+        self.random_effect_terms: list[RandomEffectTerm] | None = None
+        self.residual_term: ResidualTerm | None = None
+        self.has_validation = False
+        self.train_idx: np.ndarray | None = None
+        self.val_idx: np.ndarray | None = None
 
-    def _prepare_terms(self, y: np.ndarray, groups: np.ndarray, random_slopes: tuple[list[int] | None] | None):
+    def _prepare_terms(self, y: np.ndarray, groups: np.ndarray, random_slopes: tuple[list[int] | None, ...] | None):
         """
         Initialize state RandomEffect and Residual Terms if not present.
         """
@@ -196,7 +199,7 @@ class MixedEffectRegressor:
         
         return marginal_residual, realized_effects, realized_residual
 
-    def fit(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, random_slopes: None | tuple[list[int]] = None,
+    def fit(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, random_slopes: tuple[list[int] | None, ...] | None = None,
             validation_split: float = 0.0, validation_group: int = 0):
         """
         Fit the MMER model using the EM algorithm.
@@ -296,8 +299,8 @@ class MixedEffectRegressor:
         total_random_effect, mu = aggregate_random_effects(prec_resid, realized_effects)
         return total_random_effect, mu, solver
 
-    def _m_step(self, marginal_residual: np.ndarray, total_random_effect: np.ndarray, mu: tuple[np.ndarray],
-                realized_effects: tuple[RealizedRandomEffect], realized_residual: RealizedResidual, solver):
+    def _m_step(self, marginal_residual: np.ndarray, total_random_effect: np.ndarray, mu: tuple[np.ndarray, ...],
+                realized_effects: tuple[RealizedRandomEffect, ...], realized_residual: RealizedResidual, solver):
         """
         Run M-step.
         """

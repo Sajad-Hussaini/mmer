@@ -1,4 +1,4 @@
-import pickle
+import copy
 import numpy as np
 
 class ConvergenceMonitor:
@@ -64,7 +64,9 @@ class ConvergenceMonitor:
         
         # Check relative change convergence
         if len(self.log_likelihood) >= 2:
-            change = np.abs((self.log_likelihood[-1] - self.log_likelihood[-2]) / self.log_likelihood[-2])
+            prev = self.log_likelihood[-2]
+            denom = max(np.abs(prev), np.finfo(float).eps)
+            change = np.abs((self.log_likelihood[-1] - prev) / denom)
             if change <= self.tol:
                 self.is_converged = True
         
@@ -72,8 +74,10 @@ class ConvergenceMonitor:
         if current_log_likelihood > self._best_log_likelihood:
             self._best_log_likelihood = current_log_likelihood
             self._no_improvement_count = 0
-            self._best_state = {k: v.copy() if isinstance(v, np.ndarray) else pickle.loads(pickle.dumps(v)) 
-                               for k, v in current_state.items()}
+            self._best_state = {
+                key: value.copy() if isinstance(value, np.ndarray) else copy.deepcopy(value)
+                for key, value in current_state.items()
+            }
         else:
             self._no_improvement_count += 1
         

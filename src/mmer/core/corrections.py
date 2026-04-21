@@ -1,11 +1,6 @@
 import numpy as np
-from scipy.sparse.linalg import cg
 from joblib import Parallel, delayed, parallel_config
-from typing import TYPE_CHECKING
-from .solver import build_solver
-
-if TYPE_CHECKING:
-    from .operator import VLinearOperator, ResidualPreconditioner
+from .solver import BaseSolver
 
 
 # ====================== Variance Correction ======================
@@ -41,7 +36,7 @@ class VarianceCorrection:
         self.backend = backend
         self.cg_maxiter = cg_maxiter
     
-    def compute_correction(self, k: int, solver: 'BaseSolver',
+    def compute_correction(self, k: int, solver: BaseSolver,
                           n_probes: int = None) -> tuple:
         """
         Compute adaptive uncertainty correction terms (T, W).
@@ -94,7 +89,7 @@ def _generate_rademacher_probes(n_rows, n_probes, seed=42):
 
 # ====================== Stochastic Trace Estimation for Correction ======================
 
-def compute_cov_correction_ste(k: int, solver: 'BaseSolver', n_probes: int, n_jobs: int, backend: str):
+def compute_cov_correction_ste(k: int, solver: BaseSolver, n_probes: int, n_jobs: int, backend: str):
     """
     Compute adaptive uncertainty correction terms (T, W) for covariance updates using Stochastic Trace Estimation (STE).
     """
@@ -122,7 +117,7 @@ def compute_cov_correction_ste(k: int, solver: 'BaseSolver', n_probes: int, n_jo
 
 # ====================== Block Stochastic Trace Estimation ======================
 
-def compute_cov_correction_bste(k: int, solver: 'BaseSolver', n_probes: int, n_jobs: int, backend: str):
+def compute_cov_correction_bste(k: int, solver: BaseSolver, n_probes: int, n_jobs: int, backend: str):
     """
     Compute adaptive uncertainty correction terms (T, W) for covariance updates using Block Stochastic Trace Estimation (BSTE).
     """
@@ -188,7 +183,7 @@ def _cov_correction_per_response_bste(solver, n_probes: int, k: int, col: int):
 
 # ====================== Deterministic Correction ======================
 
-def compute_cov_correction_de(k: int, solver: 'BaseSolver', n_jobs: int, backend: str):
+def compute_cov_correction_de(k: int, solver: BaseSolver, n_jobs: int, backend: str):
     """
     Compute adaptive uncertainty correction terms (T, W) for covariance updates using Deterministic Estimation (DE).
     """
@@ -234,8 +229,8 @@ def _cov_correction_per_response_de(solver, k: int, col: int):
     lower_sigma = (D_matvec_out - kron_D_T_out)[col * block_size:]
 
     sigma_blocks = lower_sigma.reshape(num_blocks, block_size, block_size)
-    elementwise_prod = re.ZTZ.multiply(sigma_blocks)
-    T_traces = elementwise_prod.sum(axis=(1, 2))
+    ztz = re.ZTZ.toarray()
+    T_traces = np.einsum('ij,kij->k', ztz, sigma_blocks)
     W_blocks = lower_sigma.reshape(num_blocks, q, o, q, o).sum(axis=(2, 4))
     
     return col, T_traces, W_blocks

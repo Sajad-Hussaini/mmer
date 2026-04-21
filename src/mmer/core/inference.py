@@ -2,7 +2,7 @@ import numpy as np
 from .solver import build_solver
 from .terms import RealizedRandomEffect, RealizedResidual
 
-def aggregate_random_effects(prec_resid: np.ndarray, realized_effects: tuple[RealizedRandomEffect]) -> tuple:
+def aggregate_random_effects(prec_resid: np.ndarray, realized_effects: tuple[RealizedRandomEffect, ...]) -> tuple:
     """
     Aggregate posterior mean random effects across all terms.
     
@@ -28,7 +28,7 @@ def aggregate_random_effects(prec_resid: np.ndarray, realized_effects: tuple[Rea
         total_random_effect += re._map_mu(val)
     return total_random_effect, tuple(mu)
 
-def compute_random_effects_posterior(realized_effects: tuple[RealizedRandomEffect],
+def compute_random_effects_posterior(realized_effects: tuple[RealizedRandomEffect, ...],
                                      realized_residual: RealizedResidual,
                                      y: np.ndarray, fe_predictions: np.ndarray,
                                      terms: tuple,

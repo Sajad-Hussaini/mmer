@@ -2,6 +2,7 @@ import numpy as np
 from scipy import sparse
 from scipy.sparse.linalg import cg, spsolve
 from scipy.linalg import solve
+import warnings
 from .operator import VLinearOperator, ResidualPreconditioner
 from .terms import RealizedRandomEffect, RealizedResidual
 
@@ -14,7 +15,7 @@ def _invert_matrix(mat: np.ndarray) -> np.ndarray:
 
 class BaseSolver:
     """Base class for solvers."""
-    def __init__(self, realized_effects: tuple[RealizedRandomEffect], realized_residual: RealizedResidual):
+    def __init__(self, realized_effects: tuple[RealizedRandomEffect, ...], realized_residual: RealizedResidual):
         self.realized_effects = realized_effects
         self.realized_residual = realized_residual
         self.n = realized_residual.n
@@ -26,7 +27,7 @@ class BaseSolver:
 
 class IterativeSolver(BaseSolver):
     """Iterative Conjugate Gradient Solver."""
-    def __init__(self, realized_effects: tuple[RealizedRandomEffect], realized_residual: RealizedResidual, preconditioner: bool = True, cg_maxiter: int = 1000):
+    def __init__(self, realized_effects: tuple[RealizedRandomEffect, ...], realized_residual: RealizedResidual, preconditioner: bool = True, cg_maxiter: int = 1000):
         super().__init__(realized_effects, realized_residual)
         self.use_preconditioner = preconditioner
         self.cg_maxiter = cg_maxiter
@@ -41,23 +42,22 @@ class IterativeSolver(BaseSolver):
 
     def solve(self, marginal_residual: np.ndarray) -> np.ndarray:
         if marginal_residual.ndim == 2:
-            K = marginal_residual.shape[1]
             prec_resid = np.empty_like(marginal_residual)
-            for i in range(K):
-                sol, info = cg(A=self.V_op, b=marginal_residual[:, i], M=self.M_op, maxiter=self.cg_maxiter)
+            for i, rhs in enumerate(marginal_residual.T):
+                sol, info = cg(A=self.V_op, b=rhs, M=self.M_op, maxiter=self.cg_maxiter)
                 if info < 0:
-                    print(f"Warning: CG info={info}")
+                    warnings.warn(f"CG info={info}", RuntimeWarning, stacklevel=2)
                 prec_resid[:, i] = sol
         else:
             prec_resid, info = cg(A=self.V_op, b=marginal_residual, M=self.M_op, maxiter=self.cg_maxiter)
             if info < 0:
-                print(f"Warning: CG info={info}")
+                warnings.warn(f"CG info={info}", RuntimeWarning, stacklevel=2)
         
         return prec_resid
 
 class WoodburySolver(BaseSolver):
     """Woodbury Matrix Identity Direct Solver."""
-    def __init__(self, realized_effects: tuple[RealizedRandomEffect], realized_residual: RealizedResidual):
+    def __init__(self, realized_effects: tuple[RealizedRandomEffect, ...], realized_residual: RealizedResidual):
         super().__init__(realized_effects, realized_residual)
 
         R = self.realized_residual.term.cov
@@ -100,7 +100,6 @@ class WoodburySolver(BaseSolver):
     def solve(self, marginal_residual: np.ndarray) -> np.ndarray:
         m = self.m
         n = self.n
-        
         is_2d = marginal_residual.ndim == 2
         K = marginal_residual.shape[1] if is_2d else 1
 
@@ -117,7 +116,7 @@ class WoodburySolver(BaseSolver):
                 else:
                     v1_list.append(re_i._kronZ_T_matvec(A_inv_x))
             
-            if is_2d:  # multiple independent RHS columns not a 2D marginal residual vector
+            if is_2d:
                 v1 = np.vstack(v1_list)
             else:
                 v1 = np.concatenate(v1_list)
@@ -128,7 +127,7 @@ class WoodburySolver(BaseSolver):
                 v2 = v2.ravel()
             
             # 4. Compute v3 = Z v2
-            if is_2d:  # multiple independent RHS columns not a 2D marginal residual vector
+            if is_2d:
                 v3 = np.zeros((m * n, K))
                 offset = 0
                 for re_i in self.realized_effects:
@@ -155,7 +154,7 @@ class WoodburySolver(BaseSolver):
 
         return prec_resid
 
-def build_solver(realized_effects: tuple[RealizedRandomEffect], realized_residual: RealizedResidual, preconditioner: bool = True, cg_maxiter: int = 1000) -> BaseSolver:
+def build_solver(realized_effects: tuple[RealizedRandomEffect, ...], realized_residual: RealizedResidual, preconditioner: bool = True, cg_maxiter: int = 1000) -> BaseSolver:
     """Builds and returns the appropriate solver."""
     m = realized_residual.m
     n = realized_residual.n
