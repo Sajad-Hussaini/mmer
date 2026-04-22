@@ -250,7 +250,7 @@ class MixedEffectRegressor:
             
         marginal_residual, realized_effects, realized_residual = self.prepare_data(X, y, groups, validation_split, validation_group)
         
-        pbar = tqdm(range(1, self.max_iter + 1), desc="Running MMER | Model Fitting ...", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
+        pbar = tqdm(range(1, self.max_iter + 1), desc="Running MMER Framework | Fitting Model ...", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
         
         for _ in pbar:
             marginal_residual = self._run_em_iteration(X, y, marginal_residual, realized_effects, realized_residual)
@@ -286,12 +286,7 @@ class MixedEffectRegressor:
         current_log_lh = self._compute_log_likelihood(marginal_residual, prec_resid, solver)
         
         # Update convergence monitor
-        current_state = {
-            're_covs': [term.cov for term in self.random_effect_terms],
-            'resid_cov': self.residual_term.cov,
-            'fe_model': self.fe_model,
-        }
-        self.convergence_monitor.update(current_log_lh, current_state)
+        self.convergence_monitor.update(current_log_lh, self)
         
         if self.convergence_monitor.is_converged:
              return None, None, None
@@ -350,11 +345,6 @@ class MixedEffectRegressor:
         Routes to exact Matrix Determinant Lemma (when WoodburySolver is active)
         or Stochastic Lanczos Quadrature (when IterativeSolver is active).
         """
-        log_det_V = solver.logdet(
-            slq_steps=self.slq_steps,
-            n_probes=self.n_probes,
-            n_jobs=self.n_jobs,
-            backend=self.backend,
-        )
+        log_det_V = solver.logdet(slq_steps=self.slq_steps, n_probes=self.n_probes, n_jobs=self.n_jobs, backend=self.backend)
         log_likelihood = -(self.m * self.n * np.log(2 * np.pi) + log_det_V + marginal_residual.T @ prec_resid) / 2
         return log_likelihood

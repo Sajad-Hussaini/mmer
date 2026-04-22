@@ -28,18 +28,19 @@ class MixedEffectResults:
     log_likelihood : list
         History of log-likelihood values during training.
     """
-    def __init__(self, mixed_model: MixedEffectRegressor):
+    def __init__(self, model: MixedEffectRegressor):
         # Expose convenient attributes directly, decoupling from regressor model state
-        self.fe_model = mixed_model.fe_model
-        self.m = mixed_model.m
-        self.k = mixed_model.k
-        self.random_effect_terms = mixed_model.random_effect_terms
-        self.residual_term = mixed_model.residual_term
-        self.log_likelihood = mixed_model.convergence_monitor.log_likelihood
-        self.is_converged = mixed_model.convergence_monitor.is_converged
-        self.best_log_likelihood = mixed_model.convergence_monitor._best_log_likelihood
-        self.preconditioner = mixed_model.preconditioner
-        self.cg_maxiter = mixed_model.cg_maxiter
+        self.fe_model = model.fe_model
+        self.m = model.m
+        self.k = model.k
+        self.random_effect_terms = model.random_effect_terms
+        self.residual_term = model.residual_term
+        self.log_likelihood = model.convergence_monitor.log_likelihood
+        self.is_converged = model.convergence_monitor.is_converged
+        self.is_early_stopped = model.convergence_monitor.is_early_stopped
+        self.best_log_likelihood = model.convergence_monitor._best_log_likelihood
+        self.preconditioner = model.preconditioner
+        self.cg_maxiter = model.cg_maxiter
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         """
@@ -215,7 +216,8 @@ class MixedEffectResults:
         lines.append("=" * 60)
         lines.append(indent1 + f"FE Model:             {type(self.fe_model).__name__}")
         lines.append(indent1 + f"Iterations:           {len(self.log_likelihood)}")
-        lines.append(indent1 + f"Converged:            {self.is_converged}")
+        status = "Yes (Early Stopped)" if self.is_early_stopped else ("Yes" if self.is_converged else "No")
+        lines.append(indent1 + f"Converged:            {status}")
         lines.append(indent1 + f"Log-Likelihood:       {self.best_log_likelihood:.3f}")
         lines.append(indent1 + f"No. Outputs (m):      {self.m}")
         lines.append(indent1 + f"No. Grouping Factors: {self.k}")

@@ -42,6 +42,8 @@ class ConvergenceMonitor:
         History of log-likelihood values across iterations.
     is_converged : bool
         Whether convergence criteria have been met.
+    is_early_stopped : bool
+        Whether the model training was stopped early due to patience threshold.
     """
     def __init__(self, tol: float = 1e-6, patience: int = 3):
         self.tol = tol
@@ -52,11 +54,12 @@ class ConvergenceMonitor:
         """Reset the convergence state for a new fitting run."""
         self.log_likelihood = []
         self.is_converged = False
+        self.is_early_stopped = False
         self._best_log_likelihood = -np.inf
         self._no_improvement_count = 0
         self._best_state = None
     
-    def update(self, current_log_likelihood: float, current_state: dict) -> bool:
+    def update(self, current_log_likelihood: float, model) -> bool:
         """
         Update convergence monitor with new log-likelihood value.
         
@@ -67,9 +70,8 @@ class ConvergenceMonitor:
         ----------
         current_log_likelihood : float
             Current iteration's log-likelihood value.
-        current_state : dict
-            Current model state containing 're_covs', 'resid_cov', and 'fe_model'
-            to save if this is the best state so far.
+        model : MixedEffectRegressor
+            The model instance being optimized to read and save the best state from.
         
         Returns
         -------
@@ -91,9 +93,9 @@ class ConvergenceMonitor:
             self._best_log_likelihood = current_log_likelihood
             self._no_improvement_count = 0
             self._best_state = {
-                're_covs': [cov.copy() for cov in current_state['re_covs']],
-                'resid_cov': current_state['resid_cov'].copy(),
-                'fe_model': _copy_model(current_state['fe_model']),
+                're_covs': [term.cov.copy() for term in model.random_effect_terms],
+                'resid_cov': model.residual_term.cov.copy(),
+                'fe_model': _copy_model(model.fe_model),
             }
         else:
             self._no_improvement_count += 1
@@ -101,8 +103,9 @@ class ConvergenceMonitor:
         # Check patience stopping
         if self._no_improvement_count >= self.patience:
             self.is_converged = True
+            self.is_early_stopped = True
         
-        return self.is_converged
+        return self
 
     def restore_best_state(self, model) -> bool:
         """

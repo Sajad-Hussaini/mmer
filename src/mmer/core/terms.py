@@ -122,12 +122,7 @@ class RealizedTermBase(ABC):
         """Compute full covariance matrix-vector product."""
         pass
     
-    def _compute_next_cov(self, *args, **kwargs):
-        """
-        Estimate new covariance (EM M-step).
-        Subclasses override with specific logic.
-        """
-        raise NotImplementedError
+
 
 class RealizedRandomEffect(RealizedTermBase):
     """

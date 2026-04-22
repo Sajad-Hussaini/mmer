@@ -197,8 +197,7 @@ def _cov_correction_per_response_de(solver, k: int, col: int):
     lower_sigma = (D_matvec_out - kron_D_T_out)[col * block_size:]
 
     sigma_blocks = lower_sigma.reshape(num_blocks, block_size, block_size)
-    elementwise_prod = re.ZTZ.multiply(sigma_blocks)
-    T_traces = elementwise_prod.sum(axis=(1, 2))
+    T_traces = np.array([re.ZTZ.multiply(sb).sum() for sb in sigma_blocks])
     W_blocks = lower_sigma.reshape(num_blocks, q, o, q, o).sum(axis=(2, 4))
     
     return col, T_traces, W_blocks
