@@ -3,6 +3,7 @@ from scipy import sparse
 from scipy.sparse.linalg import cg, splu
 from scipy.linalg import solve
 import warnings
+from ..lanczos_algorithm import slq
 from .operator import VLinearOperator, ResidualPreconditioner
 from .terms import RealizedRandomEffect, RealizedResidual
 
@@ -23,6 +24,10 @@ class BaseSolver:
         self.V_op = VLinearOperator(self.realized_effects, self.realized_residual)
 
     def solve(self, marginal_residual: np.ndarray) -> np.ndarray:
+        raise NotImplementedError
+
+    def logdet(self, **kwargs) -> float:
+        """Compute or estimate log det(V)."""
         raise NotImplementedError
 
 class IterativeSolver(BaseSolver):
@@ -54,6 +59,10 @@ class IterativeSolver(BaseSolver):
                 warnings.warn(f"CG info={info}", RuntimeWarning, stacklevel=2)
         
         return prec_resid
+
+    def logdet(self, slq_steps: int, n_probes: int, n_jobs: int = -1, backend: str = 'threading') -> float:
+        """Estimate log det(V) via Stochastic Lanczos Quadrature."""
+        return slq.logdet(self.V_op, slq_steps, n_probes, n_jobs, backend)
 
 class WoodburySolver(BaseSolver):
     """Woodbury Matrix Identity Direct Solver."""
@@ -157,6 +166,44 @@ class WoodburySolver(BaseSolver):
             prec_resid = A_inv_x
 
         return prec_resid
+
+    def logdet(self, **kwargs) -> float:
+        """
+        Compute exact log det(V) via the Matrix Determinant Lemma.
+
+        Uses the identity (analogue of the Woodbury solve):
+
+            log det(V) = log det(R⊗I_n) + log det(C) + log det(S)
+
+        where:
+          - log det(R⊗I_n) = n * log det(R)          — trivial, R is m×m
+          - log det(C)      = Σ_k o_k * log det(D_k)  — trivial, D_k is (mq)×(mq)
+          - log det(S)      = Σ log|diag(U_factor)|    — free, S already LU-factorized
+
+        This is exact and deterministic; no SLQ probes needed.
+        """
+        n = self.n
+        # --- Term 1: log det(R ⊗ I_n) = n * log det(R) ---
+        R = self.realized_residual.term.cov
+        _, log_det_R = np.linalg.slogdet(R)
+        log_det_A = n * log_det_R
+
+        # --- Term 2: log det(C) = Σ_k o_k * log det(D_k) ---
+        log_det_C = 0.0
+        for re in self.realized_effects:
+            _, log_det_Dk = np.linalg.slogdet(re.term.cov)
+            log_det_C += re.o * log_det_Dk
+
+        # --- Term 3: log det(S) from the LU upper-triangular factor ---
+        # S is PD so all U-diagonal entries are positive; abs() guards numerics.
+        if self.S_factor is not None:
+            U_diag = self.S_factor.U.diagonal()
+            log_det_S = np.sum(np.log(np.abs(U_diag)))
+        else:
+            # No random effects: V = R ⊗ I_n, already fully captured by Term 1.
+            log_det_S = 0.0
+
+        return log_det_A + log_det_C + log_det_S
 
 def build_solver(realized_effects: tuple[RealizedRandomEffect, ...], realized_residual: RealizedResidual, preconditioner: bool = True, cg_maxiter: int = 1000) -> BaseSolver:
     """Builds and returns the appropriate solver."""

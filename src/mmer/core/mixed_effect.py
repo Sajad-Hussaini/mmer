@@ -6,7 +6,6 @@ from .corrections import VarianceCorrection
 from .solver import build_solver
 from .convergence import ConvergenceMonitor
 from .inference import aggregate_random_effects
-from ..lanczos_algorithm import slq
 from .terms import RandomEffectTerm, ResidualTerm, RealizedRandomEffect, RealizedResidual
 
 
@@ -284,7 +283,7 @@ class MixedEffectRegressor:
         solver = build_solver(realized_effects, realized_residual, self.preconditioner, self.cg_maxiter)
         prec_resid = solver.solve(marginal_residual)
         
-        current_log_lh = self._compute_log_likelihood(marginal_residual, prec_resid, solver.V_op)
+        current_log_lh = self._compute_log_likelihood(marginal_residual, prec_resid, solver)
         
         # Update convergence monitor
         current_state = {
@@ -344,10 +343,18 @@ class MixedEffectRegressor:
 
         return (y - fx).T.ravel()
 
-    def _compute_log_likelihood(self, marginal_residual, prec_resid, V_op):
+    def _compute_log_likelihood(self, marginal_residual, prec_resid, solver):
         """
         Compute log-likelihood.
+
+        Routes to exact Matrix Determinant Lemma (when WoodburySolver is active)
+        or Stochastic Lanczos Quadrature (when IterativeSolver is active).
         """
-        log_det_V = slq.logdet(V_op, self.slq_steps, self.n_probes, self.n_jobs, self.backend)
+        log_det_V = solver.logdet(
+            slq_steps=self.slq_steps,
+            n_probes=self.n_probes,
+            n_jobs=self.n_jobs,
+            backend=self.backend,
+        )
         log_likelihood = -(self.m * self.n * np.log(2 * np.pi) + log_det_V + marginal_residual.T @ prec_resid) / 2
         return log_likelihood
