@@ -1,5 +1,21 @@
 import copy
+import pickle
 import numpy as np
+
+
+def _copy_model(model):
+    """
+    Create a safe snapshot of a fitted model.
+
+    Tries pickle round-trip first (the standard serialization path used by
+    PyTorch, sklearn, and most custom parametric classes), then falls back to
+    copy.deepcopy for objects that are copyable but not picklable (e.g. objects
+    containing lambda functions or open file handles).
+    """
+    try:
+        return pickle.loads(pickle.dumps(model))
+    except Exception:
+        return copy.deepcopy(model)
 
 class ConvergenceMonitor:
     """
@@ -75,8 +91,9 @@ class ConvergenceMonitor:
             self._best_log_likelihood = current_log_likelihood
             self._no_improvement_count = 0
             self._best_state = {
-                key: value.copy() if isinstance(value, np.ndarray) else copy.deepcopy(value)
-                for key, value in current_state.items()
+                're_covs': [cov.copy() for cov in current_state['re_covs']],
+                'resid_cov': current_state['resid_cov'].copy(),
+                'fe_model': _copy_model(current_state['fe_model']),
             }
         else:
             self._no_improvement_count += 1
@@ -86,3 +103,31 @@ class ConvergenceMonitor:
             self.is_converged = True
         
         return self.is_converged
+
+    def restore_best_state(self, model) -> bool:
+        """
+        Restore model parameters to the best observed state.
+
+        Applies the covariance matrices and fixed-effects model that produced
+        the highest log-likelihood seen during the EM run back onto *model*.
+        Should be called immediately after the EM loop exits.
+
+        Parameters
+        ----------
+        model : MixedEffectRegressor
+            The regressor whose internal state will be overwritten.
+
+        Returns
+        -------
+        restored : bool
+            ``True`` if a best state was available and was applied,
+            ``False`` if no update had ever been recorded (should not happen
+            in practice after at least one iteration).
+        """
+        if self._best_state is None:
+            return False
+        for k, cov in enumerate(self._best_state['re_covs']):
+            model.random_effect_terms[k].set_cov(cov)
+        model.residual_term.set_cov(self._best_state['resid_cov'])
+        model.fe_model = self._best_state['fe_model']
+        return True

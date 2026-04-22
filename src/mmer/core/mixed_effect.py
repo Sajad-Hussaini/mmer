@@ -260,6 +260,7 @@ class MixedEffectRegressor:
                 break
                 
         from .mixed_result import MixedEffectResults
+        self.convergence_monitor.restore_best_state(self)
         return MixedEffectResults(self)
 
     def _run_em_iteration(self, X, y, marginal_residual, realized_effects, realized_residual):
@@ -287,9 +288,9 @@ class MixedEffectRegressor:
         
         # Update convergence monitor
         current_state = {
-            're_covs': [term.cov.copy() for term in self.random_effect_terms],
-            'resid_cov': self.residual_term.cov.copy(),
-            'fe_model': self.fe_model
+            're_covs': [term.cov for term in self.random_effect_terms],
+            'resid_cov': self.residual_term.cov,
+            'fe_model': self.fe_model,
         }
         self.convergence_monitor.update(current_log_lh, current_state)
         
