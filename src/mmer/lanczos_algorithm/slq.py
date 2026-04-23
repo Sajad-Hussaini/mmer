@@ -65,9 +65,10 @@ def slq_probes_block(V_op: VLinearOperator, lanczos_steps: int, seeds: np.ndarra
             
             if not np.any(active_mask):
                 # All probes converged
-                alphas = alphas[:j+1, :]
-                betas = betas[:j, :]
-                lanczos_steps = j + 1
+                actual_steps = j + 1
+                alphas = alphas[:actual_steps, :]
+                betas = betas[:actual_steps - 1, :]
+                lanczos_steps = actual_steps
                 break
 
     # Process each probe's tridiagonal matrix

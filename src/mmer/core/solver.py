@@ -1,7 +1,7 @@
 import numpy as np
 from scipy import sparse
 from scipy.sparse.linalg import cg, splu
-from scipy.linalg import solve
+from scipy.linalg import solve, LinAlgError
 import warnings
 from ..lanczos_algorithm import slq
 from .operator import VLinearOperator, ResidualPreconditioner
@@ -11,7 +11,7 @@ def _invert_matrix(mat: np.ndarray) -> np.ndarray:
     """Safely invert a symmetric matrix, falling back to standard inverse if Cholesky fails."""
     try:
         return solve(a=mat, b=np.eye(mat.shape[0]), assume_a='pos')
-    except Exception:
+    except LinAlgError:
         return np.linalg.inv(mat)
 
 class BaseSolver:
@@ -71,26 +71,27 @@ class WoodburySolver(BaseSolver):
 
         R = self.realized_residual.term.cov
         self.R_inv = _invert_matrix(R)
-        
+        R_inv_sp = sparse.csr_array(self.R_inv)
+
         # Construct S matrix once
         S_blocks = []
         for i, re_i in enumerate(self.realized_effects):
             row_blocks = []
             for j, re_j in enumerate(self.realized_effects):
-                Z_i_T_Z_j = re_i.Z.T @ re_j.Z
-                S_ij = sparse.kron(self.R_inv, Z_i_T_Z_j)
-                
+                Z_i_T_Z_j = re_i.ZTZ if i == j else re_i.Z.T @ re_j.Z
+                S_ij = sparse.kron(R_inv_sp, Z_i_T_Z_j)
+
                 if i == j:
                     D_inv = _invert_matrix(re_i.term.cov)
-                    I_oi = sparse.eye(re_i.o)
-                    C_inv_ii = sparse.kron(D_inv, I_oi)
+                    I_oi = sparse.eye_array(re_i.o, format='csr')
+                    C_inv_ii = sparse.kron(sparse.csr_array(D_inv), I_oi)
                     S_ij = S_ij + C_inv_ii
-                    
+
                 row_blocks.append(S_ij)
             S_blocks.append(row_blocks)
 
         if S_blocks:
-            S_mat = sparse.bmat(S_blocks, format='csc')
+            S_mat = sparse.block_array(S_blocks, format='csc')
             # Factorize once and reuse solves across E/M-step calls.
             # Repeated fresh spsolve calls refactorize internally and can trigger large memory spikes.
             self.S_factor = splu(S_mat)
@@ -98,18 +99,12 @@ class WoodburySolver(BaseSolver):
             self.S_factor = None
 
     def _build_v1(self, A_inv_x: np.ndarray, is_2d: bool) -> np.ndarray:
-        """Compute v1 = Z^T A^{-1} x for all random-effect terms."""
-        v1_list = []
-        for re_i in self.realized_effects:
-            if is_2d:
-                z_t_blk = sparse.kron(sparse.eye(self.m), re_i.Z.T)
-                v1_list.append(z_t_blk @ A_inv_x)
-            else:
-                v1_list.append(re_i._kronZ_T_matvec(A_inv_x))
+        """Compute v1 = (I_m ⊗ Z^T) A^{-1} x for all random-effect terms."""
+        v1_list = [re_i._kronZ_T_matvec(A_inv_x) for re_i in self.realized_effects]
         return np.vstack(v1_list) if is_2d else np.concatenate(v1_list)
 
     def _build_v3(self, v2: np.ndarray, is_2d: bool, K: int) -> np.ndarray:
-        """Compute v3 = Z v2 for all random-effect terms."""
+        """Compute v3 = (I_m ⊗ Z) v2 for all random-effect terms."""
         if is_2d:
             v3 = np.zeros((self.m * self.n, K))
         else:
@@ -119,11 +114,7 @@ class WoodburySolver(BaseSolver):
         for re_i in self.realized_effects:
             size_i = self.m * re_i.q * re_i.o
             v2_i = v2[offset:offset + size_i]
-            if is_2d:
-                z_blk = sparse.kron(sparse.eye(self.m), re_i.Z)
-                v3 += z_blk @ v2_i
-            else:
-                v3 += re_i._kronZ_matvec(v2_i)
+            v3 += re_i._kronZ_matvec(v2_i)
             offset += size_i
         return v3
 
@@ -185,13 +176,23 @@ class WoodburySolver(BaseSolver):
         n = self.n
         # --- Term 1: log det(R ⊗ I_n) = n * log det(R) ---
         R = self.realized_residual.term.cov
-        _, log_det_R = np.linalg.slogdet(R)
+        sign_R, log_det_R = np.linalg.slogdet(R)
+        if sign_R <= 0:
+            raise RuntimeError(
+                "Residual covariance R is not positive definite (slogdet sign ≤ 0). "
+                "Check your M-step covariance updates."
+            )
         log_det_A = n * log_det_R
 
         # --- Term 2: log det(C) = Σ_k o_k * log det(D_k) ---
         log_det_C = 0.0
         for re in self.realized_effects:
-            _, log_det_Dk = np.linalg.slogdet(re.term.cov)
+            sign_Dk, log_det_Dk = np.linalg.slogdet(re.term.cov)
+            if sign_Dk <= 0:
+                raise RuntimeError(
+                    f"Random effect covariance D_{re.term.group_id} is not positive definite "
+                    f"(slogdet sign ≤ 0). Check your M-step covariance updates."
+                )
             log_det_C += re.o * log_det_Dk
 
         # --- Term 3: log det(S) from the LU upper-triangular factor ---

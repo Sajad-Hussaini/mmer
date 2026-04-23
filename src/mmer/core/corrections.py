@@ -118,7 +118,7 @@ def _cov_correction_per_response_bste(solver, n_probes: int, k: int, col: int):
     block_size = q * o
     num_blocks = m - col
 
-    seed_base = 42
+    seed_base = 42 + col
     vec = np.zeros((m * block_size, n_probes))
     probe_vectors = _generate_rademacher_probes(block_size, n_probes, seed_base)
     vec[col * block_size : (col + 1) * block_size, :] = probe_vectors

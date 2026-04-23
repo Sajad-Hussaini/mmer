@@ -130,8 +130,6 @@ class MixedEffectRegressor:
         ----------
         X : np.ndarray
             Covariates, shape (n, p).
-        y : np.ndarray
-            Multi-output targets, shape (n, m).
         groups : np.ndarray
             Grouping factors, shape (n, k).
         

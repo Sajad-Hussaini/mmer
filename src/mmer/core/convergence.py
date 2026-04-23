@@ -59,7 +59,7 @@ class ConvergenceMonitor:
         self._no_improvement_count = 0
         self._best_state = None
     
-    def update(self, current_log_likelihood: float, model) -> bool:
+    def update(self, current_log_likelihood: float, model) -> "ConvergenceMonitor":
         """
         Update convergence monitor with new log-likelihood value.
         
@@ -75,8 +75,8 @@ class ConvergenceMonitor:
         
         Returns
         -------
-        is_converged : bool
-            Whether model has converged based on tolerance or patience.
+        self : ConvergenceMonitor
+            The monitor instance (for chaining or inspection).
         """
         self.log_likelihood.append(current_log_likelihood)
         

@@ -222,7 +222,8 @@ class RealizedRandomEffect(RealizedTermBase):
         tau = mur @ mur.T
         tau += W
         tau /= self.o
-        tau[np.diag_indices_from(tau)] += 1e-5
+        jitter = 1e-8 * np.trace(tau) / tau.shape[0]
+        tau[np.diag_indices_from(tau)] += jitter
         return tau
 
 # ====================== Matrix-Vector Operations ======================
@@ -308,7 +309,8 @@ class RealizedResidual(RealizedTermBase):
         phi = epsr @ epsr.T
         phi += T_sum
         phi /= self.n
-        phi[np.diag_indices_from(phi)] += 1e-5
+        jitter = 1e-8 * np.trace(phi) / phi.shape[0]
+        phi[np.diag_indices_from(phi)] += jitter
         return phi
     
     def _full_cov_matvec(self, x_vec: np.ndarray):
