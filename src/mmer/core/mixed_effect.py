@@ -278,10 +278,16 @@ class MixedEffectRegressor:
         """
         Run E-step.
         """
-        solver = build_solver(realized_effects, realized_residual, self.preconditioner, self.cg_maxiter)
-        prec_resid = solver.solve(marginal_residual)
-        
-        current_log_lh = self._compute_log_likelihood(marginal_residual, prec_resid, solver)
+        try:
+            solver = build_solver(realized_effects, realized_residual, self.preconditioner, self.cg_maxiter)
+            prec_resid = solver.solve(marginal_residual)
+            
+            current_log_lh = self._compute_log_likelihood(marginal_residual, prec_resid, solver)
+        except (np.linalg.LinAlgError, RuntimeError, ValueError) as e:
+            import warnings
+            warnings.warn(f"Numerical instability in E-step: {e}. Rejecting this EM step.", RuntimeWarning, stacklevel=2)
+            current_log_lh = -np.inf
+            solver = None
         
         # Update convergence monitor
         self.convergence_monitor.update(current_log_lh, self)

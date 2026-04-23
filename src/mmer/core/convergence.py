@@ -80,6 +80,12 @@ class ConvergenceMonitor:
         """
         self.log_likelihood.append(current_log_likelihood)
         
+        # Abort immediately if the model step failed (e.g. non-PD covariance)
+        if np.isinf(current_log_likelihood) and current_log_likelihood < 0:
+            self.is_converged = True
+            self.is_early_stopped = True
+            return self
+            
         # Check relative change convergence
         if len(self.log_likelihood) >= 2:
             prev = self.log_likelihood[-2]

@@ -51,12 +51,12 @@ class IterativeSolver(BaseSolver):
             for i, rhs in enumerate(marginal_residual.T):
                 sol, info = cg(A=self.V_op, b=rhs, M=self.M_op, maxiter=self.cg_maxiter)
                 if info < 0:
-                    warnings.warn(f"CG info={info}", RuntimeWarning, stacklevel=2)
+                    raise RuntimeError(f"Conjugate Gradient breakdown (info={info}).")
                 prec_resid[:, i] = sol
         else:
             prec_resid, info = cg(A=self.V_op, b=marginal_residual, M=self.M_op, maxiter=self.cg_maxiter)
             if info < 0:
-                warnings.warn(f"CG info={info}", RuntimeWarning, stacklevel=2)
+                raise RuntimeError(f"Conjugate Gradient breakdown (info={info}).")
         
         return prec_resid
 
@@ -178,10 +178,11 @@ class WoodburySolver(BaseSolver):
         R = self.realized_residual.term.cov
         sign_R, log_det_R = np.linalg.slogdet(R)
         if sign_R <= 0:
-            raise RuntimeError(
+            warnings.warn(
                 "Residual covariance R is not positive definite (slogdet sign ≤ 0). "
-                "Check your M-step covariance updates."
+                "Rejecting this EM step.", RuntimeWarning, stacklevel=2
             )
+            return np.inf
         log_det_A = n * log_det_R
 
         # --- Term 2: log det(C) = Σ_k o_k * log det(D_k) ---
@@ -189,10 +190,11 @@ class WoodburySolver(BaseSolver):
         for re in self.realized_effects:
             sign_Dk, log_det_Dk = np.linalg.slogdet(re.term.cov)
             if sign_Dk <= 0:
-                raise RuntimeError(
+                warnings.warn(
                     f"Random effect covariance D_{re.term.group_id} is not positive definite "
-                    f"(slogdet sign ≤ 0). Check your M-step covariance updates."
+                    f"(slogdet sign ≤ 0). Rejecting this EM step.", RuntimeWarning, stacklevel=2
                 )
+                return np.inf
             log_det_C += re.o * log_det_Dk
 
         # --- Term 3: log det(S) from the LU upper-triangular factor ---
