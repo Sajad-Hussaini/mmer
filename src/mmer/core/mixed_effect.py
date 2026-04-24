@@ -279,11 +279,7 @@ class MixedEffectRegressor:
             marginal_residual = self._compute_marginal_residual(X, y, total_random_effect.reshape((self.m, self.n)).T)
             self._m_step(marginal_residual, total_random_effect, mu, realized_effects, realized_residual, solver)
         except (np.linalg.LinAlgError, RuntimeError, ValueError) as e:
-            import warnings
-            warnings.warn(
-                "Numerical instability encountered during M-step. "
-                "Reverting to the best valid state. ", RuntimeWarning, stacklevel=2
-            )
+            print("\n Numerical instability encountered during M-step. Reverting to the best valid state. \n")
             self.convergence_monitor.update(-np.inf, self)
         
         return marginal_residual
@@ -298,11 +294,7 @@ class MixedEffectRegressor:
             
             current_log_lh = self._compute_log_likelihood(marginal_residual, prec_resid, solver)
         except (np.linalg.LinAlgError, RuntimeError, ValueError) as e:
-            import warnings
-            warnings.warn(
-                "Numerical instability encountered during E-step. "
-                "Reverting to the best valid state. ", RuntimeWarning, stacklevel=2
-            )
+            print("\n Numerical instability encountered during E-step. Reverting to the best valid state. \n")
             current_log_lh = -np.inf
             solver = None
         

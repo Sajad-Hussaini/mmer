@@ -2,7 +2,6 @@ import numpy as np
 from scipy import sparse
 from scipy.sparse.linalg import cg, splu
 from scipy.linalg import solve, LinAlgError
-import warnings
 from ..lanczos_algorithm import slq
 from .operator import VLinearOperator, ResidualPreconditioner
 from .terms import RealizedRandomEffect, RealizedResidual
@@ -178,10 +177,7 @@ class WoodburySolver(BaseSolver):
         R = self.realized_residual.term.cov
         sign_R, log_det_R = np.linalg.slogdet(R)
         if sign_R <= 0:
-            warnings.warn(
-                "Non-positive definite covariance for residual term. "
-                "Using best valid state. ", RuntimeWarning, stacklevel=2
-            )
+            print("\n Non-positive definite covariance for residual term. Using best valid state. \n",)
             return np.inf
         log_det_A = n * log_det_R
 
@@ -190,10 +186,7 @@ class WoodburySolver(BaseSolver):
         for re in self.realized_effects:
             sign_Dk, log_det_Dk = np.linalg.slogdet(re.term.cov)
             if sign_Dk <= 0:
-                warnings.warn(
-                    f"Non-positive definite covariance for random effect term {re.term.group_id}). "
-                    "Using best valid state. ", RuntimeWarning, stacklevel=2
-                )
+                print(f"\n Non-positive definite covariance for random effect term {re.term.group_id}. Using best valid state. \n",)
                 return np.inf
             log_det_C += re.o * log_det_Dk
 
