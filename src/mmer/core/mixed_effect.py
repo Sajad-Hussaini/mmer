@@ -253,7 +253,13 @@ class MixedEffectRegressor:
         for _ in pbar:
             marginal_residual = self._run_em_iteration(X, y, marginal_residual, realized_effects, realized_residual)
             if self.convergence_monitor.is_converged:
-                pbar.set_description(f"Model Converged | Early stopping ...")
+                if self.convergence_monitor.is_early_stopped:
+                    if np.isinf(self.convergence_monitor.log_likelihood[-1]):
+                        pbar.set_description("Finished: numerical limits reached")
+                    else:
+                        pbar.set_description("Finished: no further improvement")
+                else:
+                    pbar.set_description("Converged: tolerance reached")
                 break
                 
         from .mixed_result import MixedEffectResults
@@ -269,8 +275,16 @@ class MixedEffectRegressor:
         if self.convergence_monitor.is_converged:
             return marginal_residual
             
-        marginal_residual = self._compute_marginal_residual(X, y, total_random_effect.reshape((self.m, self.n)).T)
-        self._m_step(marginal_residual, total_random_effect, mu, realized_effects, realized_residual, solver)
+        try:
+            marginal_residual = self._compute_marginal_residual(X, y, total_random_effect.reshape((self.m, self.n)).T)
+            self._m_step(marginal_residual, total_random_effect, mu, realized_effects, realized_residual, solver)
+        except (np.linalg.LinAlgError, RuntimeError, ValueError) as e:
+            import warnings
+            warnings.warn(
+                "Numerical instability encountered during M-step. "
+                "Reverting to the best valid state. ", RuntimeWarning, stacklevel=2
+            )
+            self.convergence_monitor.update(-np.inf, self)
         
         return marginal_residual
 
@@ -285,7 +299,10 @@ class MixedEffectRegressor:
             current_log_lh = self._compute_log_likelihood(marginal_residual, prec_resid, solver)
         except (np.linalg.LinAlgError, RuntimeError, ValueError) as e:
             import warnings
-            warnings.warn(f"Numerical instability in E-step: {e}. Rejecting this EM step.", RuntimeWarning, stacklevel=2)
+            warnings.warn(
+                "Numerical instability encountered during E-step. "
+                "Reverting to the best valid state. ", RuntimeWarning, stacklevel=2
+            )
             current_log_lh = -np.inf
             solver = None
         

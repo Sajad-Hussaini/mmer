@@ -179,8 +179,8 @@ class WoodburySolver(BaseSolver):
         sign_R, log_det_R = np.linalg.slogdet(R)
         if sign_R <= 0:
             warnings.warn(
-                "Residual covariance R is not positive definite (slogdet sign ≤ 0). "
-                "Rejecting this EM step.", RuntimeWarning, stacklevel=2
+                "Non-positive definite covariance for residual term. "
+                "Using best valid state. ", RuntimeWarning, stacklevel=2
             )
             return np.inf
         log_det_A = n * log_det_R
@@ -191,8 +191,8 @@ class WoodburySolver(BaseSolver):
             sign_Dk, log_det_Dk = np.linalg.slogdet(re.term.cov)
             if sign_Dk <= 0:
                 warnings.warn(
-                    f"Random effect covariance D_{re.term.group_id} is not positive definite "
-                    f"(slogdet sign ≤ 0). Rejecting this EM step.", RuntimeWarning, stacklevel=2
+                    f"Non-positive definite covariance for random effect term {re.term.group_id}). "
+                    "Using best valid state. ", RuntimeWarning, stacklevel=2
                 )
                 return np.inf
             log_det_C += re.o * log_det_Dk
