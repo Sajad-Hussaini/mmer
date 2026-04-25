@@ -122,7 +122,7 @@ class MixedEffectResults:
         return self.residual_term.cov
         
     @property
-    def random_effects_covariances(self) -> list[np.ndarray]:
+    def random_effects_covariances(self) -> tuple[np.ndarray]:
         """Get the estimated covariance matrices for each random effect grouping factor."""
         return [term.cov for term in self.random_effect_terms]
 
@@ -142,11 +142,11 @@ class MixedEffectResults:
         return self.cov_to_corr(self.residual_covariance)
         
     @property
-    def random_effects_correlations(self) -> list[np.ndarray]:
+    def random_effects_correlations(self) -> tuple[np.ndarray]:
         """Get the estimated correlation matrices for each random effect grouping factor."""
         return [self.cov_to_corr(cov) for cov in self.random_effects_covariances]
 
-    def get_marginal_correlation(self, slope_covariates: list[np.ndarray | None] | None = None) -> np.ndarray:
+    def get_marginal_correlation(self, slope_covariates: tuple[np.ndarray | None] | None = None) -> np.ndarray:
         """
         Compute the total marginal correlation matrix (m x m) for a single observation profile.
         
@@ -163,7 +163,7 @@ class MixedEffectResults:
         """
         return self.cov_to_corr(self.get_marginal_covariance(slope_covariates))
 
-    def get_marginal_covariance(self, slope_covariates: list[np.ndarray | None] | None = None) -> np.ndarray:
+    def get_marginal_covariance(self, slope_covariates: tuple[np.ndarray | None] | None = None) -> np.ndarray:
         """
         Compute the total marginal covariance matrix (m x m) for a single observation profile.
         
@@ -247,6 +247,203 @@ class MixedEffectResults:
         lines.append(indent1 + "  or their `_correlation` properties on this results object.")
         lines.append("=" * 60)
         
+        summary_str = "\n".join(lines)
+        print(summary_str)
+        return summary_str
+
+
+class EnsembleMixedEffectResults:
+    """
+    Deep Ensemble of MixedEffectResults models.
+    
+    Uses Welford's online algorithm and memory preallocation to compute epistemic 
+    uncertainty (mean and standard deviation) with strictly O(1) memory scaling 
+    with respect to the number of ensemble models.
+    
+    Attributes
+    ----------
+    results : list of MixedEffectResults
+        The list of fitted single-seed model results.
+    n_models : int
+        The number of models in the ensemble.
+    m : int
+        Number of output responses.
+    k : int
+        Number of grouping factors.
+    """
+    def __init__(self, models: tuple[MixedEffectResults, ...]):
+        if not models:
+            raise ValueError("models cannot be empty.")
+        self.models = models
+        self.n_models = len(models)
+        self.m = self.models[0].m
+        self.k = self.models[0].k
+
+    def predict(self, X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Predict using the ensemble with O(1) memory scaling.
+        Uses Welford's algorithm to compute mean and standard deviation in-place.
+        """
+        n_samples = X.shape[0]
+        
+        # Initialize running aggregators
+        mean_pred = np.zeros((n_samples, self.m), dtype=np.float64)
+        M2_pred = np.zeros((n_samples, self.m), dtype=np.float64) # Sum of squares of differences
+        
+        for i, res in enumerate(self.models):
+            pred = res.predict(X)
+            
+            # Welford's online variance calculation (In-place mutation)
+            delta = pred - mean_pred
+            mean_pred += delta / (i + 1)
+            delta2 = pred - mean_pred
+            M2_pred += delta * delta2
+            
+        # Population standard deviation (ddof=0 matches np.std)
+        std_pred = np.sqrt(M2_pred / self.n_models)
+        
+        return mean_pred, std_pred
+
+    def compute_random_effects(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray) -> tuple:
+        """
+        Estimate posterior random effects efficiently using Welford's algorithm.
+        """
+        # Run the first model to get exact array shapes and initialize accumulators
+        # first sample and zero variance
+        r0, tot0, mu0 = self.models[0].compute_random_effects(X, y, groups)
+        
+        mean_res, M2_res = r0.copy(), np.zeros_like(r0)
+        mean_tot, M2_tot = tot0.copy(), np.zeros_like(tot0)
+        
+        mean_mu = [m.copy() for m in mu0]
+        M2_mu = [np.zeros_like(m) for m in mu0]
+        
+        # Stream the remaining models
+        for i in range(1, self.n_models):
+            r, tot, mu = self.models[i].compute_random_effects(X, y, groups)
+            
+            # Accumulate Residuals
+            delta_res = r - mean_res
+            mean_res += delta_res / (i + 1)
+            M2_res += delta_res * (r - mean_res)
+            
+            # Accumulate Total Effects
+            delta_tot = tot - mean_tot
+            mean_tot += delta_tot / (i + 1)
+            M2_tot += delta_tot * (tot - mean_tot)
+            
+            # Accumulate Grouping Factors (mu)
+            for k in range(self.k):
+                delta_mu = mu[k] - mean_mu[k]
+                mean_mu[k] += delta_mu / (i + 1)
+                M2_mu[k] += delta_mu * (mu[k] - mean_mu[k])
+                
+        # Finalize standard deviations
+        std_res = np.sqrt(M2_res / self.n_models)
+        std_tot = np.sqrt(M2_tot / self.n_models)
+        std_mu = tuple(np.sqrt(M2 / self.n_models) for M2 in M2_mu)
+        
+        return mean_res, std_res, mean_tot, std_tot, tuple(mean_mu), std_mu
+
+    @property
+    def residual_covariance(self) -> np.ndarray:
+        """Expected residual covariance matrix (Memory Preallocated)."""
+        covs = np.empty((self.n_models, self.m, self.m), dtype=np.float64)
+        for i, res in enumerate(self.models):
+            covs[i] = res.residual_covariance
+        return np.mean(covs, axis=0)
+
+    @property
+    def residual_covariance_std(self) -> np.ndarray:
+        """Epistemic uncertainty of residual covariance matrix."""
+        covs = np.empty((self.n_models, self.m, self.m), dtype=np.float64)
+        for i, res in enumerate(self.models):
+            covs[i] = res.residual_covariance
+        return np.std(covs, axis=0)
+
+    @property
+    def random_effects_covariances(self) -> tuple[np.ndarray]:
+        """Expected covariance matrices for each grouping factor."""
+        avg_covs = []
+        for k in range(self.k):
+            q = self.models[0].random_effect_terms[k].q
+            covs = np.empty((self.n_models, q * self.m, q * self.m), dtype=np.float64)
+            for i, res in enumerate(self.models):
+                covs[i] = res.random_effects_covariances[k]
+            avg_covs.append(np.mean(covs, axis=0))
+        return avg_covs
+
+    @property
+    def random_effects_covariances_std(self) -> tuple[np.ndarray]:
+        """Epistemic uncertainty of the covariance matrices."""
+        std_covs = []
+        for k in range(self.k):
+            q = self.models[0].random_effect_terms[k].q
+            covs = np.empty((self.n_models, q * self.m, q * self.m), dtype=np.float64)
+            for i, res in enumerate(self.models):
+                covs[i] = res.random_effects_covariances[k]
+            std_covs.append(np.std(covs, axis=0))
+        return std_covs
+
+    def get_marginal_covariance(self, slope_covariates: tuple[np.ndarray] = None) -> np.ndarray:
+        """Compute the expected total marginal covariance matrix."""
+        covs = np.empty((self.n_models, self.m, self.m), dtype=np.float64)
+        for i, res in enumerate(self.models):
+            covs[i] = res.get_marginal_covariance(slope_covariates)
+        return np.mean(covs, axis=0)
+
+    def get_marginal_covariance_std(self, slope_covariates: tuple[np.ndarray] = None) -> np.ndarray:
+        """Compute the epistemic uncertainty of the marginal covariance matrix."""
+        covs = np.empty((self.n_models, self.m, self.m), dtype=np.float64)
+        for i, res in enumerate(self.models):
+            covs[i] = res.get_marginal_covariance(slope_covariates)
+        return np.std(covs, axis=0)
+
+    def summary(self) -> str:
+        """Generate a comprehensive text summary of the ensemble model."""
+        lines = []
+        indent1 = "  "
+        indent2 = "      "
+
+        lines.append("\nDeep Ensemble Mixed Effects Model Summary")
+        lines.append("=" * 60)
+        lines.append(indent1 + f"Ensemble Size:          {self.n_models} models")
+        lines.append(indent1 + f"No. Outputs (m):        {self.m}")
+        lines.append(indent1 + f"No. Grouping Factors:   {self.k}")
+        
+        avg_ll = np.mean([res.best_log_likelihood for res in self.models])
+        lines.append(indent1 + f"Expected Log-Likelihood:{avg_ll:.3f}")
+        
+        lines.append("-" * 60)
+        lines.append(indent1 + "Expected Unexplained Residual Variances (Diagonal)")
+        lines.append(indent2 + "{:<10} {:>12} {:>12}".format("Response", "Mean Var", "Epistemic SD"))
+        
+        mean_res_cov = self.residual_covariance
+        std_res_cov = self.residual_covariance_std
+        for m in range(self.m):
+            lines.append(indent2 + "{:<10} {:>12.4f} {:>12.4f}".format(
+                m + 1, mean_res_cov[m, m], std_res_cov[m, m]))
+            
+        lines.append("-" * 60)
+        lines.append(indent1 + "Expected Random Effects Variances (Diagonal)")
+        lines.append(indent2 + "{:<8} {:<10} {:<15} {:>12} {:>12}".format(
+            "Group", "Response", "Random Effect", "Mean Var", "Epistemic SD"))
+        
+        mean_re_covs = self.random_effects_covariances
+        std_re_covs = self.random_effects_covariances_std
+        
+        for k in range(self.k):
+            q = self.models[0].random_effect_terms[k].q
+            for i in range(self.m):
+                for j in range(q):
+                    idx = i * q + j
+                    effect_name = "Intercept" if j == 0 else f"Slope {j}"
+                    mean_var = mean_re_covs[k][idx, idx]
+                    std_var = std_re_covs[k][idx, idx]
+                    lines.append(indent2 + "{:<8} {:<10} {:<15} {:>12.4f} {:>12.4f}".format(
+                        k + 1, i + 1, effect_name, mean_var, std_var))
+                    
+        lines.append("=" * 60)
         summary_str = "\n".join(lines)
         print(summary_str)
         return summary_str
