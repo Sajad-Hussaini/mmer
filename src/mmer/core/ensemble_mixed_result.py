@@ -9,7 +9,8 @@ class EnsembleMixedEffectResults:
     independently fitted ``MixedEffectResults``.
 
     It uses Welford's online algorithm to compute ensemble means and epistemic standard deviations
-    for predictions, residuals, and covariance matrices in a single pass through the models.
+    for predictions, residuals, and covariance matrices in a single pass through the models, 
+    ensuring O(1) memory scaling.
 
     Parameters
     ----------
@@ -82,39 +83,15 @@ class EnsembleMixedEffectResults:
         """
         Estimate expected value and epistemic std of the residuals, total random effect,
         and posterior random effects across the ensemble.
-
-        Parameters
-        ----------
-        X : np.ndarray
-            Features, shape ``(n, p)``.
-        y : np.ndarray
-            Targets, shape ``(n, m)``.
-        groups : np.ndarray
-            Grouping factors, shape ``(n, k)``.
-
-        Returns
-        -------
-        mean_res : np.ndarray
-            Mean residuals after accounting for all effects, shape ``(n, m)``.
-        std_res : np.ndarray
-            Epistemic std of residuals, shape ``(n, m)``.
-        mean_tot : np.ndarray
-            Mean total random effect, shape ``(n, m)``.
-        std_tot : np.ndarray
-            Epistemic std of total random effect, shape ``(n, m)``.
-        mean_mu : tuple of np.ndarray
-            Mean posterior random effects per grouping factor,
-            each of shape ``(groups, m, q)``.
-        std_mu : tuple of np.ndarray
-            Epistemic std of posterior random effects per grouping factor.
         """
         # Bootstrap from the first model to obtain shapes, then accumulate
         r0, tot0, mu0 = self.models[0].compute_random_effects(X, y, groups)
 
-        mean_res, M2_res = r0.copy(),   np.zeros_like(r0)
-        mean_tot, M2_tot = tot0.copy(), np.zeros_like(tot0)
-        mean_mu = [m.copy() for m in mu0]
-        M2_mu   = [np.zeros_like(m) for m in mu0]
+        # Force float64 to prevent truncation errors during Welford accumulation
+        mean_res, M2_res = r0.astype(np.float64),   np.zeros_like(r0, dtype=np.float64)
+        mean_tot, M2_tot = tot0.astype(np.float64), np.zeros_like(tot0, dtype=np.float64)
+        mean_mu = [m.astype(np.float64) for m in mu0]
+        M2_mu   = [np.zeros_like(m, dtype=np.float64) for m in mu0]
 
         for i in range(1, self.n_models):
             r, tot, mu = self.models[i].compute_random_effects(X, y, groups)
@@ -128,7 +105,7 @@ class EnsembleMixedEffectResults:
             M2_tot    += delta_tot * (tot - mean_tot)
 
             for k in range(self.k):
-                delta_mu      = mu[k] - mean_mu[k]
+                delta_mu       = mu[k] - mean_mu[k]
                 mean_mu[k]   += delta_mu / (i + 1)
                 M2_mu[k]     += delta_mu * (mu[k] - mean_mu[k])
 
@@ -143,14 +120,7 @@ class EnsembleMixedEffectResults:
     # ------------------------------------------------------------------
 
     def _welford_residual_cov(self) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Compute ensemble mean and std of the residual covariance in one pass.
-
-        Returns
-        -------
-        mean : np.ndarray, shape (m, m)
-        std  : np.ndarray, shape (m, m)
-        """
+        """Compute ensemble mean and std of the residual covariance in one pass."""
         mean = np.zeros((self.m, self.m), dtype=np.float64)
         M2   = np.zeros((self.m, self.m), dtype=np.float64)
         for i, res in enumerate(self.models):
@@ -161,20 +131,11 @@ class EnsembleMixedEffectResults:
         return mean, np.sqrt(M2 / self.n_models)
 
     def _welford_re_covs(self) -> tuple[list[np.ndarray], list[np.ndarray]]:
-        """
-        Compute ensemble mean and std of every RE covariance matrix in one pass.
-
-        Returns
-        -------
-        means : list of np.ndarray
-            One ``(q*m, q*m)`` mean matrix per grouping factor.
-        stds : list of np.ndarray
-            One ``(q*m, q*m)`` std matrix per grouping factor.
-        """
-        qs    = [self.models[0].random_effect_terms[k].q for k in range(self.k)]
-        dims  = [q * self.m for q in qs]
-        means = [np.zeros((d, d), dtype=np.float64) for d in dims]
-        M2s   = [np.zeros((d, d), dtype=np.float64) for d in dims]
+        """Compute ensemble mean and std of every RE covariance matrix in one pass."""
+        # Dynamically infer shapes to prevent dimension bugs
+        shapes = [self.models[0].random_effects_covariances[k].shape for k in range(self.k)]
+        means = [np.zeros(shape, dtype=np.float64) for shape in shapes]
+        M2s   = [np.zeros(shape, dtype=np.float64) for shape in shapes]
 
         for i, res in enumerate(self.models):
             covs = res.random_effects_covariances
@@ -188,14 +149,7 @@ class EnsembleMixedEffectResults:
     def _welford_marginal_cov(
         self, slope_covariates: tuple[np.ndarray | None] | None = None
     ) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Compute ensemble mean and std of the marginal covariance in one pass.
-
-        Returns
-        -------
-        mean : np.ndarray, shape (m, m)
-        std  : np.ndarray, shape (m, m)
-        """
+        """Compute ensemble mean and std of the marginal covariance in one pass."""
         mean = np.zeros((self.m, self.m), dtype=np.float64)
         M2   = np.zeros((self.m, self.m), dtype=np.float64)
         for i, res in enumerate(self.models):
@@ -206,7 +160,7 @@ class EnsembleMixedEffectResults:
         return mean, np.sqrt(M2 / self.n_models)
 
     # ------------------------------------------------------------------
-    # Public covariance properties (delegate to single-pass helpers)
+    # Public properties
     # ------------------------------------------------------------------
 
     @property
@@ -218,6 +172,12 @@ class EnsembleMixedEffectResults:
     def residual_covariance_std(self) -> np.ndarray:
         """Epistemic std of the residual covariance matrix, shape ``(m, m)``."""
         return self._welford_residual_cov()[1]
+        
+    @property
+    def residual_correlation(self) -> np.ndarray:
+        """Expected residual correlation matrix."""
+        # Math Safe: Calculate correlation FROM the averaged covariance
+        return self.models[0].cov_to_corr(self.residual_covariance)
 
     @property
     def random_effects_covariances(self) -> list[np.ndarray]:
@@ -228,55 +188,36 @@ class EnsembleMixedEffectResults:
     def random_effects_covariances_std(self) -> list[np.ndarray]:
         """Epistemic std of covariance matrices for each grouping factor."""
         return self._welford_re_covs()[1]
+        
+    @property
+    def random_effects_correlations(self) -> list[np.ndarray]:
+        """Expected correlation matrices for each grouping factor."""
+        return [self.models[0].cov_to_corr(cov) for cov in self.random_effects_covariances]
 
     def get_marginal_covariance(
         self, slope_covariates: tuple[np.ndarray | None] | None = None
     ) -> np.ndarray:
-        """
-        Compute the ensemble mean of the total marginal covariance matrix.
-
-        Parameters
-        ----------
-        slope_covariates : list of array-like or None, optional
-            Random slope covariates per grouping factor (see
-            ``MixedEffectResults.get_marginal_covariance``).
-
-        Returns
-        -------
-        mean_cov : np.ndarray, shape ``(m, m)``
-        """
+        """Compute the ensemble mean of the total marginal covariance matrix."""
         return self._welford_marginal_cov(slope_covariates)[0]
 
     def get_marginal_covariance_std(
         self, slope_covariates: tuple[np.ndarray | None] | None = None
     ) -> np.ndarray:
-        """
-        Compute the epistemic std of the total marginal covariance matrix.
-
-        Parameters
-        ----------
-        slope_covariates : list of array-like or None, optional
-            Random slope covariates per grouping factor.
-
-        Returns
-        -------
-        std_cov : np.ndarray, shape ``(m, m)``
-        """
+        """Compute the epistemic std of the total marginal covariance matrix."""
         return self._welford_marginal_cov(slope_covariates)[1]
+        
+    def get_marginal_correlation(
+        self, slope_covariates: tuple[np.ndarray | None] | None = None
+    ) -> np.ndarray:
+        """Compute the expected total marginal correlation matrix."""
+        return self.models[0].cov_to_corr(self.get_marginal_covariance(slope_covariates))
 
     # ------------------------------------------------------------------
     # Summary
     # ------------------------------------------------------------------
 
     def summary(self) -> str:
-        """
-        Generate a text summary of the deep ensemble mixed effects model.
-
-        Returns
-        -------
-        summary_str : str
-            Formatted summary string (also printed to stdout).
-        """
+        """Generate a text summary of the deep ensemble mixed effects model."""
         lines = []
         indent1 = "  "
         indent2 = "      "
