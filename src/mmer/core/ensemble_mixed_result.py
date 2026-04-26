@@ -41,10 +41,10 @@ class EnsembleMixedEffectResults:
     def __init__(self, models: tuple[MixedEffectResults, ...]):
         if not models:
             raise ValueError("models cannot be empty.")
-        self.models   = models
+        self.models = models
         self.n_models = len(models)
-        self.m        = models[0].m
-        self.k        = models[0].k
+        self.m = models[0].m
+        self.k = models[0].k
 
     def __len__(self) -> int:
         return self.n_models
@@ -77,15 +77,15 @@ class EnsembleMixedEffectResults:
         """
         n = X.shape[0]
         mean = np.zeros((n, self.m), dtype=np.float64)
-        M2   = np.zeros((n, self.m), dtype=np.float64)
+        M2 = np.zeros((n, self.m), dtype=np.float64)
 
         for i, res in enumerate(self.models):
             pred = res.predict(X)
             if pred.ndim == 1:
                 pred = pred[:, None]
-            delta  = pred - mean
-            mean  += delta / (i + 1)
-            M2    += delta * (pred - mean)
+            delta = pred - mean
+            mean += delta / (i + 1)
+            M2 += delta * (pred - mean)
 
         return mean, np.sqrt(M2 / self.n_models)
 
@@ -122,31 +122,31 @@ class EnsembleMixedEffectResults:
         r0, tot0, mu0 = self.models[0].compute_random_effects(X, y, groups)
 
         mean_res = r0.astype(np.float64)
-        M2_res   = np.zeros_like(mean_res)
+        M2_res = np.zeros_like(mean_res)
         mean_tot = tot0.astype(np.float64)
-        M2_tot   = np.zeros_like(mean_tot)
-        mean_mu  = [m.astype(np.float64) for m in mu0]
-        M2_mu    = [np.zeros_like(m, dtype=np.float64) for m in mu0]
+        M2_tot = np.zeros_like(mean_tot)
+        mean_mu = [m.astype(np.float64) for m in mu0]
+        M2_mu = [np.zeros_like(m, dtype=np.float64) for m in mu0]
 
         for i in range(1, self.n_models):
             r, tot, mu = self.models[i].compute_random_effects(X, y, groups)
 
-            delta    = r - mean_res
+            delta = r - mean_res
             mean_res += delta / (i + 1)
-            M2_res  += delta * (r - mean_res)
+            M2_res += delta * (r - mean_res)
 
-            delta    = tot - mean_tot
+            delta = tot - mean_tot
             mean_tot += delta / (i + 1)
-            M2_tot  += delta * (tot - mean_tot)
+            M2_tot += delta * (tot - mean_tot)
 
             for k in range(self.k):
-                delta       = mu[k] - mean_mu[k]
+                delta = mu[k] - mean_mu[k]
                 mean_mu[k] += delta / (i + 1)
-                M2_mu[k]   += delta * (mu[k] - mean_mu[k])
+                M2_mu[k] += delta * (mu[k] - mean_mu[k])
 
         std_res = np.sqrt(M2_res / self.n_models)
         std_tot = np.sqrt(M2_tot / self.n_models)
-        std_mu  = tuple(np.sqrt(M2 / self.n_models) for M2 in M2_mu)
+        std_mu = tuple(np.sqrt(M2 / self.n_models) for M2 in M2_mu)
 
         return mean_res, std_res, mean_tot, std_tot, tuple(mean_mu), std_mu
 
@@ -157,17 +157,17 @@ class EnsembleMixedEffectResults:
     def _welford_matrix(self, values) -> tuple[np.ndarray, np.ndarray]:
         """Return the mean and population std over an iterable of equal-shape arrays."""
         mean = None
-        M2   = None
-        n    = 0
+        M2 = None
+        n = 0
         for x in values:
             x = np.asarray(x, dtype=np.float64)
             if mean is None:
                 mean = np.zeros_like(x)
-                M2   = np.zeros_like(x)
-            n    += 1
+                M2 = np.zeros_like(x)
+            n += 1
             delta = x - mean
             mean += delta / n
-            M2   += delta * (x - mean)
+            M2 += delta * (x - mean)
         return mean, np.sqrt(M2 / n)
 
     def _welford_residual_cov(self) -> tuple[np.ndarray, np.ndarray]:
@@ -176,40 +176,43 @@ class EnsembleMixedEffectResults:
 
     def _welford_residual_corr(self) -> tuple[np.ndarray, np.ndarray]:
         mean_cov, _ = self._welford_residual_cov()
-        mean_corr   = self.models[0].cov_to_corr(mean_cov)
-        _, std_corr = self._welford_matrix(res.residual_correlation for res in self.models)
+        mean_corr = self.models[0].cov_to_corr(mean_cov)
+        _, std_corr = self._welford_matrix(
+            res.residual_correlation for res in self.models
+        )
         return mean_corr, std_corr
 
     def _welford_re_covs(self) -> tuple[list[np.ndarray], list[np.ndarray]]:
         """Welford mean and std of RE covariance matrices across ensemble members."""
-        shapes = [self.models[0].random_effects_covariances[k].shape
-                  for k in range(self.k)]
+        shapes = [
+            self.models[0].random_effects_covariances[k].shape for k in range(self.k)
+        ]
         means = [np.zeros(s, dtype=np.float64) for s in shapes]
-        M2s   = [np.zeros(s, dtype=np.float64) for s in shapes]
+        M2s = [np.zeros(s, dtype=np.float64) for s in shapes]
 
         for i, res in enumerate(self.models):
             covs = res.random_effects_covariances
             for k in range(self.k):
-                delta     = covs[k] - means[k]
+                delta = covs[k] - means[k]
                 means[k] += delta / (i + 1)
-                M2s[k]   += delta * (covs[k] - means[k])
+                M2s[k] += delta * (covs[k] - means[k])
 
         return means, [np.sqrt(M2 / self.n_models) for M2 in M2s]
 
     def _welford_re_corrs(self) -> tuple[list[np.ndarray], list[np.ndarray]]:
         mean_covs, _ = self._welford_re_covs()
-        mean_corrs   = [self.models[0].cov_to_corr(cov) for cov in mean_covs]
+        mean_corrs = [self.models[0].cov_to_corr(cov) for cov in mean_covs]
 
-        shapes   = [mean_covs[k].shape for k in range(self.k)]
+        shapes = [mean_covs[k].shape for k in range(self.k)]
         wf_means = [np.zeros(s, dtype=np.float64) for s in shapes]
-        M2s      = [np.zeros(s, dtype=np.float64) for s in shapes]
+        M2s = [np.zeros(s, dtype=np.float64) for s in shapes]
 
         for i, res in enumerate(self.models):
             corrs = res.random_effects_correlations
             for k in range(self.k):
-                delta        = corrs[k] - wf_means[k]
+                delta = corrs[k] - wf_means[k]
                 wf_means[k] += delta / (i + 1)
-                M2s[k]      += delta * (corrs[k] - wf_means[k])
+                M2s[k] += delta * (corrs[k] - wf_means[k])
 
         return mean_corrs, [np.sqrt(M2 / self.n_models) for M2 in M2s]
 
@@ -224,7 +227,7 @@ class EnsembleMixedEffectResults:
         self, slope_covariates: tuple[np.ndarray | None] | None = None
     ) -> tuple[np.ndarray, np.ndarray]:
         mean_cov, _ = self._welford_marginal_cov(slope_covariates)
-        mean_corr   = self.models[0].cov_to_corr(mean_cov)
+        mean_corr = self.models[0].cov_to_corr(mean_cov)
         _, std_corr = self._welford_matrix(
             res.get_marginal_correlation(slope_covariates) for res in self.models
         )
@@ -408,7 +411,7 @@ class EnsembleMixedEffectResults:
 
     def summary(self) -> str:
         """Generate a text summary of the ensemble mixed effects model."""
-        lines   = []
+        lines = []
         indent1 = "  "
         indent2 = "      "
 
@@ -423,26 +426,44 @@ class EnsembleMixedEffectResults:
         mean_res_cov, std_res_cov = self._welford_residual_cov()
         lines.append("-" * 60)
         lines.append(indent1 + "Expected Unexplained Residual Variances (Diagonal)")
-        lines.append(indent2 + "{:<10} {:>12} {:>12}".format("Response", "Mean Var", "Epistemic SD"))
+        lines.append(
+            indent2
+            + "{:<10} {:>12} {:>12}".format("Response", "Mean Var", "Epistemic SD")
+        )
         for m in range(self.m):
-            lines.append(indent2 + "{:<10} {:>12.4f} {:>12.4f}".format(
-                m + 1, mean_res_cov[m, m], std_res_cov[m, m]))
+            lines.append(
+                indent2
+                + "{:<10} {:>12.4f} {:>12.4f}".format(
+                    m + 1, mean_res_cov[m, m], std_res_cov[m, m]
+                )
+            )
 
         mean_re_covs, std_re_covs = self._welford_re_covs()
         lines.append("-" * 60)
         lines.append(indent1 + "Expected Random Effects Variances (Diagonal)")
-        lines.append(indent2 + "{:<8} {:<10} {:<15} {:>12} {:>12}".format(
-            "Group", "Response", "Random Effect", "Mean Var", "Epistemic SD"))
+        lines.append(
+            indent2
+            + "{:<8} {:<10} {:<15} {:>12} {:>12}".format(
+                "Group", "Response", "Random Effect", "Mean Var", "Epistemic SD"
+            )
+        )
 
         for k in range(self.k):
             q = self.models[0].random_effect_terms[k].q
             for i in range(self.m):
                 for j in range(q):
-                    idx         = i * q + j
+                    idx = i * q + j
                     effect_name = "Intercept" if j == 0 else f"Slope {j}"
-                    lines.append(indent2 + "{:<8} {:<10} {:<15} {:>12.4f} {:>12.4f}".format(
-                        k + 1, i + 1, effect_name,
-                        mean_re_covs[k][idx, idx], std_re_covs[k][idx, idx]))
+                    lines.append(
+                        indent2
+                        + "{:<8} {:<10} {:<15} {:>12.4f} {:>12.4f}".format(
+                            k + 1,
+                            i + 1,
+                            effect_name,
+                            mean_re_covs[k][idx, idx],
+                            std_re_covs[k][idx, idx],
+                        )
+                    )
 
         lines.append("=" * 60)
         summary_str = "\n".join(lines)

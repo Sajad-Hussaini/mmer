@@ -18,21 +18,22 @@ def _copy_model(model):
     except Exception:
         return pickle.loads(pickle.dumps(model))
 
+
 class ConvergenceMonitor:
     """
     Tracks convergence state during EM iterations.
-    
+
     Manages log-likelihood history, patience counter, and best-state restoration.
     Supports both relative tolerance-based stopping and early stopping based on
     patience when no improvement is observed.
-    
+
     Parameters
     ----------
     tol : float, default=1e-6
         Convergence tolerance on log-likelihood relative change.
     patience : int, default=3
         Number of iterations to wait before early stopping if no improvement.
-    
+
     Attributes
     ----------
     tol : float
@@ -46,11 +47,12 @@ class ConvergenceMonitor:
     is_early_stopped : bool
         Whether the model training was stopped early due to patience threshold.
     """
+
     def __init__(self, tol: float = 1e-6, patience: int = 3):
         self.tol = tol
         self.patience = max(1, patience)
         self.reset()
-        
+
     def reset(self):
         """Reset the convergence state for a new fitting run."""
         self.log_likelihood = []
@@ -59,34 +61,34 @@ class ConvergenceMonitor:
         self._best_log_likelihood = -np.inf
         self._no_improvement_count = 0
         self._best_state = None
-    
+
     def update(self, current_log_likelihood: float, model) -> "ConvergenceMonitor":
         """
         Update convergence monitor with new log-likelihood value.
-        
+
         Checks both relative change tolerance and patience-based early stopping.
         Stores the best state encountered during optimization.
-        
+
         Parameters
         ----------
         current_log_likelihood : float
             Current iteration's log-likelihood value.
         model : MixedEffectRegressor
             The model instance being optimized to read and save the best state from.
-        
+
         Returns
         -------
         self : ConvergenceMonitor
             The monitor instance (for chaining or inspection).
         """
         self.log_likelihood.append(current_log_likelihood)
-        
+
         # Abort immediately if the model step failed (e.g. non-PD covariance)
         if np.isinf(current_log_likelihood) and current_log_likelihood < 0:
             self.is_converged = True
             self.is_early_stopped = True
             return self
-            
+
         # Check relative change convergence
         if len(self.log_likelihood) >= 2:
             prev = self.log_likelihood[-2]
@@ -94,24 +96,24 @@ class ConvergenceMonitor:
             change = np.abs((self.log_likelihood[-1] - prev) / denom)
             if change <= self.tol:
                 self.is_converged = True
-        
+
         # Track best state
         if current_log_likelihood > self._best_log_likelihood:
             self._best_log_likelihood = current_log_likelihood
             self._no_improvement_count = 0
             self._best_state = {
-                're_covs': [term.cov.copy() for term in model.random_effect_terms],
-                'resid_cov': model.residual_term.cov.copy(),
-                'fe_model': _copy_model(model.fe_model),
+                "re_covs": [term.cov.copy() for term in model.random_effect_terms],
+                "resid_cov": model.residual_term.cov.copy(),
+                "fe_model": _copy_model(model.fe_model),
             }
         else:
             self._no_improvement_count += 1
-        
+
         # Check patience stopping
         if self._no_improvement_count >= self.patience:
             self.is_converged = True
             self.is_early_stopped = True
-        
+
         return self
 
     def restore_best_state(self, model) -> bool:
@@ -136,8 +138,8 @@ class ConvergenceMonitor:
         """
         if self._best_state is None:
             return False
-        for k, cov in enumerate(self._best_state['re_covs']):
+        for k, cov in enumerate(self._best_state["re_covs"]):
             model.random_effect_terms[k].set_cov(cov)
-        model.residual_term.set_cov(self._best_state['resid_cov'])
-        model.fe_model = self._best_state['fe_model']
+        model.residual_term.set_cov(self._best_state["resid_cov"])
+        model.fe_model = self._best_state["fe_model"]
         return True

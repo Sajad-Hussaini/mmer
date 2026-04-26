@@ -4,19 +4,27 @@ from .solver import BaseSolver
 
 # ====================== Variance Correction ======================
 
+
 class VarianceCorrection:
     """
     Variance correction computations.
-    
+
     Provides unified interface for BSTE and DE correction methods,
     eliminating need for explicit method dispatch in M-step.
     """
-    _VALID_METHODS = {'bste', 'de'}
-    
-    def __init__(self, method: str, cg_maxiter: int = 1000, n_jobs: int = -1, backend: str = 'threading'):
+
+    _VALID_METHODS = {"bste", "de"}
+
+    def __init__(
+        self,
+        method: str,
+        cg_maxiter: int = 1000,
+        n_jobs: int = -1,
+        backend: str = "threading",
+    ):
         """
         Initialize orchestrator.
-        
+
         Parameters
         ----------
         method : str
@@ -29,13 +37,17 @@ class VarianceCorrection:
             Joblib backend. 'threading' avoids memory duplication for sparse matrices.
         """
         if method not in self._VALID_METHODS:
-            raise ValueError(f"Method must be one of {self._VALID_METHODS}, got {method}")
+            raise ValueError(
+                f"Method must be one of {self._VALID_METHODS}, got {method}"
+            )
         self.method = method
         self.cg_maxiter = cg_maxiter
         self.n_jobs = n_jobs
         self.backend = backend
-    
-    def compute_correction(self, k: int, solver: BaseSolver, n_probes: int = None, iteration: int = 0) -> tuple:
+
+    def compute_correction(
+        self, k: int, solver: BaseSolver, n_probes: int = None, iteration: int = 0
+    ) -> tuple:
         """
         Compute adaptive uncertainty correction terms (T, W).
 
@@ -72,15 +84,20 @@ class VarianceCorrection:
         # of stochastic probes, Deterministic Estimation (de) requires FEWER
         # linear solves (exactly `block_size` solves) and has ZERO variance!
         active_method = self.method
-        if active_method == 'bste' and block_size <= n_probes:
-            active_method = 'de'
+        if active_method == "bste" and block_size <= n_probes:
+            active_method = "de"
 
-        if active_method == 'de':
+        if active_method == "de":
             return compute_cov_correction_de(k, solver, self.n_jobs, self.backend)
-        elif active_method == 'bste':
-            return compute_cov_correction_bste(k, solver, n_probes, self.n_jobs, self.backend, iteration)
+        elif active_method == "bste":
+            return compute_cov_correction_bste(
+                k, solver, n_probes, self.n_jobs, self.backend, iteration
+            )
 
-def _generate_rademacher_probes(n_rows: int, n_probes: int, seed: int = 42) -> np.ndarray:
+
+def _generate_rademacher_probes(
+    n_rows: int, n_probes: int, seed: int = 42
+) -> np.ndarray:
     """
     Generate a Rademacher random matrix ({-1, +1}) as float64.
 
@@ -90,17 +107,36 @@ def _generate_rademacher_probes(n_rows: int, n_probes: int, seed: int = 42) -> n
     The *seed* should differ across EM iterations for independent draws.
     """
     rng = np.random.default_rng(seed)
-    out = rng.integers(0, 2, size=(n_rows, n_probes), dtype=np.intp).astype(np.float64, copy=False)
-    out *= 2.0   # {0,1} → {0,2}  in-place
-    out -= 1.0   # {0,2} → {-1,+1} in-place
+    out = rng.integers(0, 2, size=(n_rows, n_probes), dtype=np.intp).astype(
+        np.float64, copy=False
+    )
+    out *= 2.0  # {0,1} → {0,2}  in-place
+    out -= 1.0  # {0,2} → {-1,+1} in-place
     return out
+
 
 # ====================== Block Stochastic Trace Estimation ======================
 
-def compute_cov_correction_bste(k: int, solver: BaseSolver, n_probes: int, n_jobs: int, backend: str, iteration: int = 0):
+
+def compute_cov_correction_bste(
+    k: int,
+    solver: BaseSolver,
+    n_probes: int,
+    n_jobs: int,
+    backend: str,
+    iteration: int = 0,
+):
     """
     Compute adaptive uncertainty correction terms (T, W) using Block Stochastic
     Trace Estimation (BSTE).
+
+    .. note::
+       BSTE retains only the **block-diagonal** entries of W (one q×q block per
+       group level). Off-diagonal blocks of the full posterior covariance
+       correction ``Cov(u|y)`` across group levels are discarded.  This is a
+       standard and empirically validated approximation — the off-diagonal
+       contributions are typically negligible — but it means W is *approximate*,
+       unlike the deterministic estimation (DE) method which is exact.
 
     Parameters
     ----------
@@ -115,7 +151,9 @@ def compute_cov_correction_bste(k: int, solver: BaseSolver, n_probes: int, n_job
     W = np.zeros((m * q, m * q))
     with parallel_config(backend=backend, n_jobs=n_jobs):
         results = Parallel(return_as="generator")(
-            delayed(_cov_correction_per_response_bste)(solver, n_probes, k, col, iteration)
+            delayed(_cov_correction_per_response_bste)(
+                solver, n_probes, k, col, iteration
+            )
             for col in range(m)
         )
 
@@ -130,7 +168,10 @@ def compute_cov_correction_bste(k: int, solver: BaseSolver, n_probes: int, n_job
                     np.fill_diagonal(W[c_slice, r_slice], W_diag)
     return T, W
 
-def _cov_correction_per_response_bste(solver, n_probes: int, k: int, col: int, iteration: int = 0):
+
+def _cov_correction_per_response_bste(
+    solver, n_probes: int, k: int, col: int, iteration: int = 0
+):
     """
     Compute BSTE correction terms (T, W) for a single response column.
 
@@ -148,39 +189,46 @@ def _cov_correction_per_response_bste(solver, n_probes: int, k: int, col: int, i
     # Combine col and iteration into a single seed so probes are independent
     # both across columns and across EM iterations.
     seed = 42 + col + iteration * m
-    vec = np.zeros((m * block_size, n_probes))
     probe_vectors = _generate_rademacher_probes(block_size, n_probes, seed)
-    vec[col * block_size : (col + 1) * block_size, :] = probe_vectors
-    
-    vec_cg = re._kronZ_D_matvec(vec)
+
+    # Exploit block sparsity: vec is zero everywhere except block col.
+    # D @ vec can be computed by extracting the col-th block column of D.
+    probe_reshaped = probe_vectors.reshape(q, o * n_probes)
+    D_col_block = re.term.cov[:, col * q : (col + 1) * q]
+    Dx = D_col_block @ probe_reshaped
+    Dx = Dx.reshape(m * q, o, n_probes).reshape(m * q * o, n_probes)
+
+    vec_cg = re._kronZ_matvec(Dx)
     vec_cg = solver.solve(vec_cg)
-        
-    lower_c = re._kronZ_D_T_matvec(vec_cg)[col * block_size:, :]
+
+    lower_c = re._kronZ_D_T_matvec(vec_cg)[col * block_size :, :]
     # lower_c is (num_blocks * block_size, n_probes)
     # probe_vectors is (block_size, n_probes)
-    # diag_C computation: 
+    # diag_C computation:
     # For each block block_size, dot elementwise with probe_vectors, then sum over probes.
     # We want diag_C of length (num_blocks * block_size).
     # Reshape to (num_blocks, block_size, n_probes) and multiply by probe_vectors (1, block_size, n_probes)
     lower_c_reshaped = lower_c.reshape(num_blocks, block_size, n_probes)
     # einsum contracts (blocks, elements, probes) with (elements, probes) → (blocks, elements)
     # avoiding a (num_blocks, block_size, n_probes) broadcast intermediate
-    diag_C = np.einsum('kbp,bp->kb', lower_c_reshaped, probe_vectors).ravel()
+    diag_C = np.einsum("kbp,bp->kb", lower_c_reshaped, probe_vectors).ravel()
 
     diag_C /= n_probes
-    sub_cov = re.term.cov[col*q:, col*q:(col+1)*q] # Use term.cov
+    sub_cov = re.term.cov[col * q :, col * q : (col + 1) * q]  # Use term.cov
     diags = sub_cov.reshape(num_blocks, q, q).diagonal(axis1=1, axis2=2)
     diag_sigma = np.repeat(diags, o, axis=1).ravel()
     diag_sigma -= diag_C
 
-    ZTZ_diag = re.ZTZ.diagonal()
-    sigma_mat  = diag_sigma.reshape(num_blocks, q * o)
+    ZTZ_diag = re.ZTZ_diag
+    sigma_mat = diag_sigma.reshape(num_blocks, q * o)
     T_traces = sigma_mat.dot(ZTZ_diag)
     W_diag_blocks = diag_sigma.reshape(num_blocks, q, o).sum(axis=2)
 
     return col, T_traces, W_diag_blocks
 
+
 # ====================== Deterministic Correction ======================
+
 
 def compute_cov_correction_de(k: int, solver: BaseSolver, n_jobs: int, backend: str):
     """
@@ -192,7 +240,9 @@ def compute_cov_correction_de(k: int, solver: BaseSolver, n_jobs: int, backend: 
     T = np.zeros((m, m))
     W = np.zeros((m * q, m * q))
     with parallel_config(backend=backend, n_jobs=n_jobs):
-        results = Parallel(return_as="generator")(delayed(_cov_correction_per_response_de)(solver, k, col) for col in range(m))
+        results = Parallel(return_as="generator")(
+            delayed(_cov_correction_per_response_de)(solver, k, col) for col in range(m)
+        )
 
         for col, T_lower_traces, W_lower_blocks in results:
             for i, (trace, W_block) in enumerate(zip(T_lower_traces, W_lower_blocks)):
@@ -202,8 +252,9 @@ def compute_cov_correction_de(k: int, solver: BaseSolver, n_jobs: int, backend: 
                 c_slice = slice(col * q, (col + 1) * q)
                 W[r_slice, c_slice] = W_block
                 if row != col:
-                     W[c_slice, r_slice] = W_block.T
+                    W[c_slice, r_slice] = W_block.T
     return T, W
+
 
 def _cov_correction_per_response_de(solver, k: int, col: int):
     """
@@ -215,23 +266,25 @@ def _cov_correction_per_response_de(solver, k: int, col: int):
     block_size = q * o
     num_blocks = m - col
     base_idx = col * block_size
-    
-    vec = np.zeros((m * block_size, block_size))
-    # Identity matrix block
-    vec[base_idx : base_idx + block_size, :] = np.eye(block_size)
-    
-    vec_cg = re._kronZ_D_matvec(vec)
+
+    # Exploit block sparsity: vec is an identity matrix block at col.
+    probe_vectors = np.eye(block_size)
+    probe_reshaped = probe_vectors.reshape(q, o * block_size)
+    D_col_block = re.term.cov[:, col * q : (col + 1) * q]
+    Dx = D_col_block @ probe_reshaped
+    D_matvec_out = Dx.reshape(m * q, o, block_size).reshape(m * q * o, block_size)
+
+    vec_cg = re._kronZ_matvec(D_matvec_out)
     vec_cg = solver.solve(vec_cg)
 
-    D_matvec_out = re._D_matvec(vec)
     kron_D_T_out = re._kronZ_D_T_matvec(vec_cg)
-    lower_sigma = (D_matvec_out - kron_D_T_out)[col * block_size:]
+    lower_sigma = (D_matvec_out - kron_D_T_out)[col * block_size :]
 
     sigma_blocks = lower_sigma.reshape(num_blocks, block_size, block_size)
     # Cache ZTZ as dense once; einsum replaces the Python-level loop over
     # num_blocks individual .multiply().sum() calls.
-    ZTZ_dense = re.ZTZ.toarray()
-    T_traces = np.einsum('ij,kij->k', ZTZ_dense, sigma_blocks)
+    ZTZ_dense = re.ZTZ_dense
+    T_traces = np.einsum("ij,kij->k", ZTZ_dense, sigma_blocks)
     W_blocks = lower_sigma.reshape(num_blocks, q, o, q, o).sum(axis=(2, 4))
-    
+
     return col, T_traces, W_blocks

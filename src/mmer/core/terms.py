@@ -1,4 +1,5 @@
 import numpy as np
+from functools import cached_property
 from scipy import sparse
 from scipy.linalg import cholesky, LinAlgError
 from abc import ABC, abstractmethod
@@ -16,9 +17,9 @@ def _make_pd(mat: np.ndarray, min_eig: float = 1e-8) -> np.ndarray:
     """
     eigvals, eigvecs = np.linalg.eigh(mat)
     floor = max(min_eig, min_eig * float(eigvals[-1]))  # eigvals sorted ascending
-    np.maximum(eigvals, floor, out=eigvals)              # in-place clip
-    eigvecs *= eigvals                                   # in-place column-scale (sqrt-factor)
-    return eigvecs @ eigvecs.T                           # single matmul, no extra broadcast
+    np.maximum(eigvals, floor, out=eigvals)  # in-place clip
+    eigvecs *= eigvals  # in-place column-scale (sqrt-factor)
+    return eigvecs @ eigvecs.T  # single matmul, no extra broadcast
 
 
 def _ensure_pd(mat: np.ndarray) -> np.ndarray:
@@ -46,11 +47,10 @@ def _ensure_pd(mat: np.ndarray) -> np.ndarray:
         return _make_pd(mat)
 
 
-
 class RandomEffectTerm:
     """
     Learned state of a random effect component.
-    
+
     Stores the covariance matrix (D) and configuration for a specific grouping factor.
     This object is data-agnostic and persists across training/inference.
 
@@ -63,10 +63,11 @@ class RandomEffectTerm:
     m : int
         Number of output responses.
     """
+
     def __init__(self, group_id: int, covariates_id: list[int] | None, m: int):
         self.group_id = group_id
         self.covariates_id = covariates_id
-        self.m = m        
+        self.m = m
         self.q = 1 + (len(covariates_id) if covariates_id is not None else 0)
         self.cov = np.eye(self.m * self.q)
 
@@ -80,7 +81,9 @@ class RandomEffectTerm:
             New covariance matrix of shape (m*q, m*q).
         """
         if new_cov.shape != (self.m * self.q, self.m * self.q):
-            raise ValueError(f"Covariance shape mismatch. Expected {(self.m * self.q, self.m * self.q)}, got {new_cov.shape}")
+            raise ValueError(
+                f"Covariance shape mismatch. Expected {(self.m * self.q, self.m * self.q)}, got {new_cov.shape}"
+            )
         self.cov = new_cov
 
     def marginal_cov(self, z: np.ndarray) -> np.ndarray:
@@ -92,8 +95,8 @@ class RandomEffectTerm:
         ----------
         z : np.ndarray
             Row of the random effects design matrix for a single observation
-            (1D array, shape: (q,)). Since it applies to a single observation 
-            (and thus a single group level), it reduces to a covariate vector 
+            (1D array, shape: (q,)). Since it applies to a single observation
+            (and thus a single group level), it reduces to a covariate vector
             containing the intercept (1.0) and any random slopes.
             For example, for random intercept + one slope, z = [1.0, x_slope].
 
@@ -104,12 +107,14 @@ class RandomEffectTerm:
         """
         z = np.asarray(z)
         if z.ndim != 1:
-            raise ValueError(f"Covariate vector z must be 1D for a single observation, got shape {z.shape}")
+            raise ValueError(
+                f"Covariate vector z must be 1D for a single observation, got shape {z.shape}"
+            )
         # Math: (I_m ⊗ z) D (I_m ⊗ z)^T  where D is (m*q, m*q) block matrix.
         # Reshape D to (m, q, m, q) then contract with z on both q-axes:
         # result[i,j] = z^T D[i,j] z  for all (i,j) pairs — no Kronecker product needed.
         D_blocks = self.cov.reshape(self.m, self.q, self.m, self.q)
-        return np.einsum('p,iqjr,r->ij', z, D_blocks, z)
+        return np.einsum("p,iqjr,r->ij", z, D_blocks, z)
 
 
 class ResidualTerm:
@@ -123,6 +128,7 @@ class ResidualTerm:
     m : int
         Number of output responses.
     """
+
     def __init__(self, m: int):
         self.m = m
         self.cov = np.eye(m)
@@ -137,21 +143,24 @@ class ResidualTerm:
             New covariance matrix of shape (m, m).
         """
         if new_cov.shape != (self.m, self.m):
-            raise ValueError(f"Residual covariance shape mismatch. Expected {(self.m, self.m)}, got {new_cov.shape}")
+            raise ValueError(
+                f"Residual covariance shape mismatch. Expected {(self.m, self.m)}, got {new_cov.shape}"
+            )
         self.cov = new_cov
+
 
 class RealizedTermBase(ABC):
     """
     Abstract base class for realized terms (random effects and residuals).
-    
+
     Provides common interface for posterior computation and matrix-vector operations
     on data-specific realizations of learned terms.
     """
-    
+
     def __init__(self, term, n: int):
         """
         Initialize realized term.
-        
+
         Parameters
         ----------
         term : RandomEffectTerm or ResidualTerm
@@ -162,19 +171,18 @@ class RealizedTermBase(ABC):
         self.term = term
         self.n = n
         self.m = term.m
-    
+
     @abstractmethod
     def _full_cov_matvec(self, x_vec: np.ndarray) -> np.ndarray:
         """Compute full covariance matrix-vector product."""
         pass
-    
 
 
 class RealizedRandomEffect(RealizedTermBase):
     """
     Transient realization of a random effect for a specific dataset Z.
-    
-    Binds a learned `RandomEffectTerm` (state) to a specific design matrix Z constructed 
+
+    Binds a learned `RandomEffectTerm` (state) to a specific design matrix Z constructed
     from data X. Used for efficient matrix-vector products in the solver.
 
     Parameters
@@ -186,23 +194,30 @@ class RealizedRandomEffect(RealizedTermBase):
     groups : np.ndarray
         Grouping factors of shape (n, k).
     """
+
     def __init__(self, term: RandomEffectTerm, X: np.ndarray, groups: np.ndarray):
         n = X.shape[0]
         super().__init__(term, n)
-        
+
         if term.covariates_id is not None:
-             covariates = X[:, term.covariates_id]
+            covariates = X[:, term.covariates_id]
         else:
-             covariates = None
-             
+            covariates = None
+
         group_data = groups[:, term.group_id]
 
         self.Z, self.q, self.o = self.design_Z(group_data, covariates)
-        
+
         if self.q != term.q:
             raise ValueError(f"Term q={term.q} does not match realized q={self.q}")
 
         self.ZTZ = self.Z.T @ self.Z
+        self.ZTZ_diag = self.ZTZ.diagonal().copy()
+
+    @cached_property
+    def ZTZ_dense(self) -> np.ndarray:
+        """Dense version of Z^T Z, computed lazily and cached for DE correction."""
+        return self.ZTZ.toarray()
 
     @staticmethod
     def design_Z(group: np.ndarray, covariates: np.ndarray | None):
@@ -269,8 +284,8 @@ class RealizedRandomEffect(RealizedTermBase):
         avoiding accumulated-jitter drift over many iterations.
         """
         mur = mu.reshape((self.m * self.q, self.o))
-        tau = mur @ mur.T   # symmetric by construction in exact arithmetic
-        tau += W            # W is symmetric
+        tau = mur @ mur.T  # symmetric by construction in exact arithmetic
+        tau += W  # W is symmetric
         tau /= self.o
         # In-place symmetrisation: copy upper triangle → lower triangle.
         # Uses index arrays of size n*(n-1)/2, avoids a full (n,n) temp matrix.
@@ -278,8 +293,8 @@ class RealizedRandomEffect(RealizedTermBase):
         tau[_i, _j] = tau[_j, _i]
         return _ensure_pd(tau)
 
-# ====================== Matrix-Vector Operations ======================
-    
+    # ====================== Matrix-Vector Operations ======================
+
     def _kronZ_D_matvec(self, x_vec: np.ndarray):
         """(I_m ⊗ Z) D @ x"""
         A_k = self._D_matvec(x_vec)
@@ -291,7 +306,7 @@ class RealizedRandomEffect(RealizedTermBase):
         A_k = self._kronZ_T_matvec(x_vec)
         B_k = self._D_matvec(A_k)
         return B_k
-    
+
     def _kronZ_T_matvec(self, x_vec: np.ndarray):
         """(I_m ⊗ Z^T) @ x"""
         is_2d = x_vec.ndim == 2
@@ -299,16 +314,14 @@ class RealizedRandomEffect(RealizedTermBase):
 
         if is_2d:
             xr = x_vec.reshape((self.m, self.n, K))
-            # np.transpose returns a *view*; the subsequent reshape may copy if
-            # the array is not C-contiguous. Ensure contiguity to avoid the
-            # hidden allocation and the potential performance cliff.
-            xr_t = np.ascontiguousarray(xr.transpose(1, 0, 2)).reshape(self.n, self.m * K)
-            A_k = self.Z.T @ xr_t
-            A_k = np.ascontiguousarray(A_k.reshape(self.q * self.o, self.m, K).transpose(1, 0, 2)).reshape(self.m * self.q * self.o, K)
+            out = np.empty((self.m, self.q * self.o, K))
+            for i in range(self.m):
+                out[i] = self.Z.T @ xr[i]
+            return out.reshape(self.m * self.q * self.o, K)
         else:
             A_k = (x_vec.reshape((self.m, self.n)) @ self.Z).ravel()
         return A_k
-    
+
     def _kronZ_matvec(self, x_vec: np.ndarray):
         """(I_m ⊗ Z) @ x"""
         is_2d = x_vec.ndim == 2
@@ -316,39 +329,45 @@ class RealizedRandomEffect(RealizedTermBase):
 
         if is_2d:
             xr = x_vec.reshape((self.m, self.q * self.o, K))
-            # ascontiguousarray ensures the reshape after transpose is a view,
-            # not a hidden copy triggered by non-C-contiguous strides.
-            xr_t = np.ascontiguousarray(xr.transpose(1, 0, 2)).reshape(self.q * self.o, self.m * K)
-            A_k = self.Z @ xr_t
-            A_k = np.ascontiguousarray(A_k.reshape(self.n, self.m, K).transpose(1, 0, 2)).reshape(self.m * self.n, K)
+            out = np.empty((self.m, self.n, K))
+            for i in range(self.m):
+                out[i] = self.Z @ xr[i]
+            return out.reshape(self.m * self.n, K)
         else:
             A_k = (self.Z @ x_vec.reshape((self.m, self.q * self.o)).T).T.ravel()
         return A_k
-    
+
     def _D_matvec(self, x_vec: np.ndarray):
         """D @ x"""
         is_2d = x_vec.ndim == 2
         K = x_vec.shape[1] if is_2d else 1
-        
+
         if is_2d:
             xr = x_vec.reshape((self.m * self.q, self.o, K))
             xr_flat = xr.reshape((self.m * self.q, self.o * K))
-            Dx = (self.term.cov @ xr_flat).reshape((self.m * self.q, self.o, K)).reshape(self.m * self.q * self.o, K)
+            Dx = (
+                (self.term.cov @ xr_flat)
+                .reshape((self.m * self.q, self.o, K))
+                .reshape(self.m * self.q * self.o, K)
+            )
         else:
             Dx = (self.term.cov @ x_vec.reshape((self.m * self.q, self.o))).ravel()
         return Dx
-    
-    def _full_cov_matvec(self, x_vec: np.ndarray):
+
+    def _full_cov_matvec(self, x_vec: np.ndarray, out: np.ndarray | None = None):
         """(I_m ⊗ Z) D (I_m ⊗ Z^T) @ x"""
         A_k = self._kronZ_D_T_matvec(x_vec)
         B_k = self._kronZ_matvec(A_k)
+        if out is not None:
+            out += B_k
+            return out
         return B_k
 
 
 class RealizedResidual(RealizedTermBase):
     """
     Transient realization of residuals for a specific dataset size n.
-    
+
     Parameters
     ----------
     term : ResidualTerm
@@ -356,6 +375,7 @@ class RealizedResidual(RealizedTermBase):
     n : int
         Dataset size.
     """
+
     def __init__(self, term: "ResidualTerm", n: int):
         super().__init__(term, n)
 
@@ -375,17 +395,25 @@ class RealizedResidual(RealizedTermBase):
         _i, _j = np.tril_indices(phi.shape[0], -1)
         phi[_i, _j] = phi[_j, _i]
         return _ensure_pd(phi)
-    
-    def _full_cov_matvec(self, x_vec: np.ndarray):
+
+    def _full_cov_matvec(self, x_vec: np.ndarray, out: np.ndarray | None = None):
         """
         Compute (R ⊗ I_n) @ x.
         """
         is_2d = x_vec.ndim == 2
         K = x_vec.shape[1] if is_2d else 1
-        
+
         if is_2d:
             xr = x_vec.reshape((self.m, self.n * K))
-            ans = (self.term.cov @ xr).reshape((self.m, self.n, K)).reshape(self.m * self.n, K)
+            ans = (
+                (self.term.cov @ xr)
+                .reshape((self.m, self.n, K))
+                .reshape(self.m * self.n, K)
+            )
         else:
             ans = (self.term.cov @ x_vec.reshape((self.m, self.n))).ravel()
+
+        if out is not None:
+            out += ans
+            return out
         return ans
