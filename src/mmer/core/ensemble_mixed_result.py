@@ -171,6 +171,7 @@ class EnsembleMixedEffectResults:
         return mean, np.sqrt(M2 / n)
 
     def _welford_residual_cov(self) -> tuple[np.ndarray, np.ndarray]:
+        """Welford mean and std of residual covariance across ensemble members."""
         return self._welford_matrix(res.residual_covariance for res in self.models)
 
     def _welford_residual_corr(self) -> tuple[np.ndarray, np.ndarray]:
@@ -180,6 +181,7 @@ class EnsembleMixedEffectResults:
         return mean_corr, std_corr
 
     def _welford_re_covs(self) -> tuple[list[np.ndarray], list[np.ndarray]]:
+        """Welford mean and std of RE covariance matrices across ensemble members."""
         shapes = [self.models[0].random_effects_covariances[k].shape
                   for k in range(self.k)]
         means = [np.zeros(s, dtype=np.float64) for s in shapes]
@@ -188,9 +190,9 @@ class EnsembleMixedEffectResults:
         for i, res in enumerate(self.models):
             covs = res.random_effects_covariances
             for k in range(self.k):
-                delta    = covs[k] - means[k]
+                delta     = covs[k] - means[k]
                 means[k] += delta / (i + 1)
-                M2s[k]  += delta * (covs[k] - means[k])
+                M2s[k]   += delta * (covs[k] - means[k])
 
         return means, [np.sqrt(M2 / self.n_models) for M2 in M2s]
 
@@ -205,9 +207,9 @@ class EnsembleMixedEffectResults:
         for i, res in enumerate(self.models):
             corrs = res.random_effects_correlations
             for k in range(self.k):
-                delta       = corrs[k] - wf_means[k]
+                delta        = corrs[k] - wf_means[k]
                 wf_means[k] += delta / (i + 1)
-                M2s[k]     += delta * (corrs[k] - wf_means[k])
+                M2s[k]      += delta * (corrs[k] - wf_means[k])
 
         return mean_corrs, [np.sqrt(M2 / self.n_models) for M2 in M2s]
 

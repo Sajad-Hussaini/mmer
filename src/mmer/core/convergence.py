@@ -7,15 +7,16 @@ def _copy_model(model):
     """
     Create a safe snapshot of a fitted model.
 
-    Tries pickle round-trip first (the standard serialization path used by
-    PyTorch, sklearn, and most custom parametric classes), then falls back to
-    copy.deepcopy for objects that are copyable but not picklable (e.g. objects
-    containing lambda functions or open file handles).
+    Tries ``copy.deepcopy`` first — this is faster for most in-memory objects
+    (NumPy arrays, sklearn estimators, PyTorch models) because it avoids
+    serialising to bytes.  Falls back to a pickle round-trip for objects that
+    override ``__deepcopy__`` in a broken way or that rely on pickle-specific
+    protocol (rare, but possible for some custom classes).
     """
     try:
-        return pickle.loads(pickle.dumps(model))
-    except Exception:
         return copy.deepcopy(model)
+    except Exception:
+        return pickle.loads(pickle.dumps(model))
 
 class ConvergenceMonitor:
     """

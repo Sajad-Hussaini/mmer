@@ -1,3 +1,4 @@
+import warnings
 import numpy as np
 from sklearn.base import RegressorMixin
 from sklearn.model_selection import GroupShuffleSplit
@@ -184,7 +185,7 @@ class MixedEffectRegressor:
             self.train_idx, self.val_idx = next(gss.split(X, y, groups=main_group))
             self.has_validation = True
         else:
-            self.train_idx = np.arange(self.n)
+            self.train_idx = None
             self.val_idx = None
             self.has_validation = False
             
@@ -249,9 +250,9 @@ class MixedEffectRegressor:
         marginal_residual, realized_effects, realized_residual = self.prepare_data(X, y, groups, validation_split, validation_group)
         
         pbar = tqdm(range(1, self.max_iter + 1), desc="Running MMER Framework | Fitting Model ...", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}")
-        
-        for _ in pbar:
-            marginal_residual = self._run_em_iteration(X, y, marginal_residual, realized_effects, realized_residual)
+
+        for iteration in pbar:
+            marginal_residual = self._run_em_iteration(X, y, marginal_residual, realized_effects, realized_residual, iteration)
             if self.convergence_monitor.is_converged:
                 if self.convergence_monitor.is_early_stopped:
                     if np.isinf(self.convergence_monitor.log_likelihood[-1]):
@@ -266,22 +267,25 @@ class MixedEffectRegressor:
         self.convergence_monitor.restore_best_state(self)
         return MixedEffectResults(self)
 
-    def _run_em_iteration(self, X, y, marginal_residual, realized_effects, realized_residual):
+    def _run_em_iteration(self, X, y, marginal_residual, realized_effects, realized_residual, iteration: int = 0):
         """
         Run one EM iteration.
         """
         total_random_effect, mu, solver = self._e_step(marginal_residual, realized_effects, realized_residual)
-        
+
         if self.convergence_monitor.is_converged:
             return marginal_residual
-            
+
         try:
             marginal_residual = self._compute_marginal_residual(X, y, total_random_effect.reshape((self.m, self.n)).T)
-            self._m_step(marginal_residual, total_random_effect, mu, realized_effects, realized_residual, solver)
+            self._m_step(marginal_residual, total_random_effect, mu, realized_effects, realized_residual, solver, iteration)
         except (np.linalg.LinAlgError, RuntimeError, ValueError) as e:
-            print("\n Numerical instability encountered during M-step. Reverting to the best valid state. \n")
+            warnings.warn(
+                "Numerical instability encountered during M-step. Reverting to the best valid state.",
+                RuntimeWarning, stacklevel=2,
+            )
             self.convergence_monitor.update(-np.inf, self)
-        
+
         return marginal_residual
 
     def _e_step(self, marginal_residual, realized_effects, realized_residual):
@@ -291,10 +295,13 @@ class MixedEffectRegressor:
         try:
             solver = build_solver(realized_effects, realized_residual, self.preconditioner, self.cg_maxiter)
             prec_resid = solver.solve(marginal_residual)
-            
+
             current_log_lh = self._compute_log_likelihood(marginal_residual, prec_resid, solver)
         except (np.linalg.LinAlgError, RuntimeError, ValueError) as e:
-            print("\n Numerical instability encountered during E-step. Reverting to the best valid state. \n")
+            warnings.warn(
+                "Numerical instability encountered during E-step. Reverting to the best valid state.",
+                RuntimeWarning, stacklevel=2,
+            )
             current_log_lh = -np.inf
             solver = None
         
@@ -308,16 +315,17 @@ class MixedEffectRegressor:
         return total_random_effect, mu, solver
 
     def _m_step(self, marginal_residual: np.ndarray, total_random_effect: np.ndarray, mu: tuple[np.ndarray, ...],
-                realized_effects: tuple[RealizedRandomEffect, ...], realized_residual: RealizedResidual, solver):
+                realized_effects: tuple[RealizedRandomEffect, ...], realized_residual: RealizedResidual, solver,
+                iteration: int = 0):
         """
         Run M-step.
         """
         eps = marginal_residual - total_random_effect
         T_sum = np.zeros((self.m, self.m))
         new_covs = []
-        
+
         for k, re in enumerate(realized_effects):
-            T_k, W_k = self.variance_corrector.compute_correction(k, solver, n_probes=self.n_probes)
+            T_k, W_k = self.variance_corrector.compute_correction(k, solver, n_probes=self.n_probes, iteration=iteration)
             T_sum += T_k
             new_covs.append(re._compute_next_cov(mu[k], W_k))
 

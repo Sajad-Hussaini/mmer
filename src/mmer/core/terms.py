@@ -1,6 +1,50 @@
 import numpy as np
 from scipy import sparse
+from scipy.linalg import cholesky, LinAlgError
 from abc import ABC, abstractmethod
+
+
+def _make_pd(mat: np.ndarray, min_eig: float = 1e-8) -> np.ndarray:
+    """
+    Project a symmetric matrix to the nearest positive-definite matrix.
+
+    Clips all eigenvalues to a scale-adaptive floor ``max(min_eig, min_eig * λ_max)``
+    and reconstructs via V diag(clipped_λ) V^T.
+
+    Callers are expected to have already symmetrised *mat* (e.g. via tril-copy);
+    the interior symmetrisation step is therefore omitted here.
+    """
+    eigvals, eigvecs = np.linalg.eigh(mat)
+    floor = max(min_eig, min_eig * float(eigvals[-1]))  # eigvals sorted ascending
+    np.maximum(eigvals, floor, out=eigvals)              # in-place clip
+    eigvecs *= eigvals                                   # in-place column-scale (sqrt-factor)
+    return eigvecs @ eigvecs.T                           # single matmul, no extra broadcast
+
+
+def _ensure_pd(mat: np.ndarray) -> np.ndarray:
+    """
+    Cheaply check positive-definiteness via Cholesky; project only on failure.
+
+    The happy path (already PD) costs one Cholesky factorisation and returns
+    the original matrix unchanged.  The fallback path (not PD) applies the
+    nearest-PD projection.
+
+    Parameters
+    ----------
+    mat : np.ndarray
+        Square symmetric matrix.
+
+    Returns
+    -------
+    mat : np.ndarray
+        The original matrix if PD, otherwise the nearest-PD projection.
+    """
+    try:
+        cholesky(mat, lower=True, check_finite=False)
+        return mat
+    except LinAlgError:
+        return _make_pd(mat)
+
 
 
 class RandomEffectTerm:
@@ -61,9 +105,11 @@ class RandomEffectTerm:
         z = np.asarray(z)
         if z.ndim != 1:
             raise ValueError(f"Covariate vector z must be 1D for a single observation, got shape {z.shape}")
-            
-        Im_Z = np.kron(np.eye(self.m), z)
-        return Im_Z @ self.cov @ Im_Z.T
+        # Math: (I_m ⊗ z) D (I_m ⊗ z)^T  where D is (m*q, m*q) block matrix.
+        # Reshape D to (m, q, m, q) then contract with z on both q-axes:
+        # result[i,j] = z^T D[i,j] z  for all (i,j) pairs — no Kronecker product needed.
+        D_blocks = self.cov.reshape(self.m, self.q, self.m, self.q)
+        return np.einsum('p,iqjr,r->ij', z, D_blocks, z)
 
 
 class ResidualTerm:
@@ -175,28 +221,29 @@ class RealizedRandomEffect(RealizedTermBase):
         n = group.shape[0]
         levels, level_indices = np.unique(group, return_inverse=True)
         o = len(levels)
-        base_rows = np.arange(n)
-        
-        # Components for the first block (intercept)
-        all_data = [np.ones(n)]
-        all_rows = [base_rows]
-        all_cols = [level_indices]
-        q = 1
-        
-        # Components for the other block (slope)
+        q = 1 if covariates is None else 1 + covariates.shape[1]
+
+        # Pre-allocate COO arrays for the full sparse matrix in one pass.
+        # This avoids building Python lists and calling np.concatenate.
+        total_nnz = n * q
+        coo_data = np.empty(total_nnz)
+        coo_rows = np.empty(total_nnz, dtype=np.intp)
+        coo_cols = np.empty(total_nnz, dtype=np.intp)
+
+        base_rows = np.arange(n, dtype=np.intp)
+        # Intercept block
+        coo_data[:n] = 1.0
+        coo_rows[:n] = base_rows
+        coo_cols[:n] = level_indices
+
         if covariates is not None:
-            q += covariates.shape[1]
             for col in range(covariates.shape[1]):
-                col_offset = (col + 1) * o
-                
-                all_data.append(covariates[:, col])
-                all_rows.append(base_rows)
-                all_cols.append(level_indices + col_offset)
-                
-        final_data = np.concatenate(all_data)
-        final_rows = np.concatenate(all_rows)
-        final_cols = np.concatenate(all_cols)
-        Z = sparse.csr_array((final_data, (final_rows, final_cols)), shape=(n, q * o))
+                sl = slice((col + 1) * n, (col + 2) * n)
+                coo_data[sl] = covariates[:, col]
+                coo_rows[sl] = base_rows
+                coo_cols[sl] = level_indices + (col + 1) * o
+
+        Z = sparse.csr_array((coo_data, (coo_rows, coo_cols)), shape=(n, q * o))
         return Z, q, o
 
     def _compute_mu(self, prec_resid: np.ndarray):
@@ -215,16 +262,21 @@ class RealizedRandomEffect(RealizedTermBase):
 
     def _compute_next_cov(self, mu: np.ndarray, W: np.ndarray):
         """
-        Estimate new covariance D (EM M-step).
-        D_new = (μ μ^T + W) / o
+        Estimate new covariance D (EM M-step): D_new = (μ μ^T + W) / o.
+
+        Positive-definiteness is enforced lazily: Cholesky is tried first
+        (free if already PD); nearest-PD projection is applied only on failure,
+        avoiding accumulated-jitter drift over many iterations.
         """
         mur = mu.reshape((self.m * self.q, self.o))
-        tau = mur @ mur.T
-        tau += W
+        tau = mur @ mur.T   # symmetric by construction in exact arithmetic
+        tau += W            # W is symmetric
         tau /= self.o
-        jitter = 1e-8 * np.trace(tau) / tau.shape[0]
-        tau[np.diag_indices_from(tau)] += jitter
-        return tau
+        # In-place symmetrisation: copy upper triangle → lower triangle.
+        # Uses index arrays of size n*(n-1)/2, avoids a full (n,n) temp matrix.
+        _i, _j = np.tril_indices(tau.shape[0], -1)
+        tau[_i, _j] = tau[_j, _i]
+        return _ensure_pd(tau)
 
 # ====================== Matrix-Vector Operations ======================
     
@@ -244,11 +296,15 @@ class RealizedRandomEffect(RealizedTermBase):
         """(I_m ⊗ Z^T) @ x"""
         is_2d = x_vec.ndim == 2
         K = x_vec.shape[1] if is_2d else 1
-        
+
         if is_2d:
             xr = x_vec.reshape((self.m, self.n, K))
-            A_k = (self.Z.T @ xr.transpose(1, 0, 2).reshape(self.n, self.m * K))
-            A_k = A_k.reshape(self.q * self.o, self.m, K).transpose(1, 0, 2).reshape(self.m * self.q * self.o, K)
+            # np.transpose returns a *view*; the subsequent reshape may copy if
+            # the array is not C-contiguous. Ensure contiguity to avoid the
+            # hidden allocation and the potential performance cliff.
+            xr_t = np.ascontiguousarray(xr.transpose(1, 0, 2)).reshape(self.n, self.m * K)
+            A_k = self.Z.T @ xr_t
+            A_k = np.ascontiguousarray(A_k.reshape(self.q * self.o, self.m, K).transpose(1, 0, 2)).reshape(self.m * self.q * self.o, K)
         else:
             A_k = (x_vec.reshape((self.m, self.n)) @ self.Z).ravel()
         return A_k
@@ -257,11 +313,14 @@ class RealizedRandomEffect(RealizedTermBase):
         """(I_m ⊗ Z) @ x"""
         is_2d = x_vec.ndim == 2
         K = x_vec.shape[1] if is_2d else 1
-        
+
         if is_2d:
             xr = x_vec.reshape((self.m, self.q * self.o, K))
-            A_k = (self.Z @ xr.transpose(1, 0, 2).reshape(self.q * self.o, self.m * K))
-            A_k = A_k.reshape(self.n, self.m, K).transpose(1, 0, 2).reshape(self.m * self.n, K)
+            # ascontiguousarray ensures the reshape after transpose is a view,
+            # not a hidden copy triggered by non-C-contiguous strides.
+            xr_t = np.ascontiguousarray(xr.transpose(1, 0, 2)).reshape(self.q * self.o, self.m * K)
+            A_k = self.Z @ xr_t
+            A_k = np.ascontiguousarray(A_k.reshape(self.n, self.m, K).transpose(1, 0, 2)).reshape(self.m * self.n, K)
         else:
             A_k = (self.Z @ x_vec.reshape((self.m, self.q * self.o)).T).T.ravel()
         return A_k
@@ -302,16 +361,20 @@ class RealizedResidual(RealizedTermBase):
 
     def _compute_next_cov(self, eps: np.ndarray, T_sum: np.ndarray):
         """
-        Estimate new residual covariance (EM M-step).
-        (ε ε^T + T) / n
+        Estimate new residual covariance (EM M-step): (ε ε^T + T) / n.
+
+        Positive-definiteness is enforced lazily: Cholesky is tried first
+        (free if already PD); nearest-PD projection is applied only on failure,
+        avoiding accumulated-jitter drift over many iterations.
         """
         epsr = eps.reshape((self.m, self.n))
         phi = epsr @ epsr.T
         phi += T_sum
         phi /= self.n
-        jitter = 1e-8 * np.trace(phi) / phi.shape[0]
-        phi[np.diag_indices_from(phi)] += jitter
-        return phi
+        # In-place symmetrisation: copy upper triangle → lower triangle.
+        _i, _j = np.tril_indices(phi.shape[0], -1)
+        phi[_i, _j] = phi[_j, _i]
+        return _ensure_pd(phi)
     
     def _full_cov_matvec(self, x_vec: np.ndarray):
         """

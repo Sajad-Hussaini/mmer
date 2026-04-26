@@ -1,17 +1,26 @@
+import warnings
 import numpy as np
 from scipy import sparse
 from scipy.sparse.linalg import cg, splu
-from scipy.linalg import solve, LinAlgError
+from scipy.linalg import cho_factor, cho_solve, LinAlgError, pinvh
 from ..lanczos_algorithm import slq
 from .operator import VLinearOperator, ResidualPreconditioner
 from .terms import RealizedRandomEffect, RealizedResidual
 
 def _invert_matrix(mat: np.ndarray) -> np.ndarray:
-    """Safely invert a symmetric matrix, falling back to standard inverse if Cholesky fails."""
+    """
+    Invert a symmetric positive-definite matrix.
+
+    Uses Cholesky factorisation (``cho_factor`` / ``cho_solve``) which avoids
+    allocating an explicit identity matrix and is faster than the generic
+    ``solve(b=np.eye(...))`` path.  Falls back to ``pinvh`` (eigenvalue-
+    thresholded pseudo-inverse) if the matrix is not positive-definite.
+    """
     try:
-        return solve(a=mat, b=np.eye(mat.shape[0]), assume_a='pos')
+        c, low = cho_factor(mat, lower=True, check_finite=False)
+        return cho_solve((c, low), np.eye(mat.shape[0]), check_finite=False)
     except LinAlgError:
-        return np.linalg.inv(mat)
+        return pinvh(mat)
 
 class BaseSolver:
     """Base class for solvers."""
@@ -124,7 +133,7 @@ class WoodburySolver(BaseSolver):
         
         if is_2d:  # multiple independent RHS columns not a 2D marginal residual vector
             x_mat = x.reshape((self.m, self.n * K))
-            return (self.R_inv @ x_mat).reshape((self.m, self.n, K)).reshape(self.m * self.n, K)
+            return (self.R_inv @ x_mat).reshape(self.m * self.n, K)  # one reshape, not two
         else:
             x_mat = x.reshape((self.m, self.n))
             return (self.R_inv @ x_mat).ravel()
@@ -177,7 +186,11 @@ class WoodburySolver(BaseSolver):
         R = self.realized_residual.term.cov
         sign_R, log_det_R = np.linalg.slogdet(R)
         if sign_R <= 0:
-            print("\n Non-positive definite covariance for residual term. Using best valid state. \n",)
+            warnings.warn(
+                "Residual covariance is non-positive-definite; "
+                "reverting to the best valid state.",
+                RuntimeWarning, stacklevel=2,
+            )
             return np.inf
         log_det_A = n * log_det_R
 
@@ -186,7 +199,11 @@ class WoodburySolver(BaseSolver):
         for re in self.realized_effects:
             sign_Dk, log_det_Dk = np.linalg.slogdet(re.term.cov)
             if sign_Dk <= 0:
-                print(f"\n Non-positive definite covariance for random effect term {re.term.group_id}. Using best valid state. \n",)
+                warnings.warn(
+                    f"Random effect covariance for group {re.term.group_id} is "
+                    "non-positive-definite; reverting to the best valid state.",
+                    RuntimeWarning, stacklevel=2,
+                )
                 return np.inf
             log_det_C += re.o * log_det_Dk
 
@@ -205,7 +222,7 @@ def build_solver(realized_effects: tuple[RealizedRandomEffect, ...], realized_re
     """Builds and returns the appropriate solver."""
     m = realized_residual.m
     n = realized_residual.n
-    inner_dim = sum([re.o * re.q * m for re in realized_effects])
+    inner_dim = sum(re.o * re.q * m for re in realized_effects)  # generator, no list
     if inner_dim < m * n:
         return WoodburySolver(realized_effects, realized_residual)
     else:
