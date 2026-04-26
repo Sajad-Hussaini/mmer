@@ -1,7 +1,7 @@
 import warnings
 import numpy as np
 from scipy import sparse
-from scipy.sparse.linalg import cg
+from scipy.sparse.linalg import cg, splu
 from scipy.linalg import cho_factor, cho_solve, LinAlgError, pinvh
 from ..lanczos_algorithm import slq
 from .operator import VLinearOperator, ResidualPreconditioner
@@ -153,41 +153,32 @@ class WoodburySolver(BaseSolver):
             self.S_factor = None
         else:
             self.S_batch = None
+            self.S_chol = None
+            self.S_dense_fallback = None
             # --- General Path for Multiple Grouping Factors (k>1) ---
-            # With k>1 grouping factors, the off-diagonal blocks R⁻¹ ⊗ Z_i^T Z_j
-            # couple different group levels across different grouping factors,
-            # preventing the block-diagonal decomposition used in the k=1 fast path.
-            # We build S as a dense matrix and use LAPACK Cholesky factorization,
-            # which is 6-20× faster than sparse LU (SuperLU) for typical S dimensions
-            # because it leverages optimized BLAS-3 routines.
+            # Construct S matrix once.
             S_blocks = []
             for i, re_i in enumerate(self.realized_effects):
                 row_blocks = []
                 for j, re_j in enumerate(self.realized_effects):
                     Z_i_T_Z_j = re_i.ZTZ if i == j else re_i.Z.T @ re_j.Z
-                    S_ij = np.kron(self.R_inv_dense, Z_i_T_Z_j.toarray())
+                    S_ij = sparse.kron(R_inv_sp, Z_i_T_Z_j)
 
                     if i == j:
                         D_inv = _invert_matrix(re_i.term.cov)
-                        S_ij += np.kron(D_inv, np.eye(re_i.o))
+                        I_oi = sparse.eye_array(re_i.o, format='csr')
+                        C_inv_ii = sparse.kron(sparse.csr_array(D_inv), I_oi)
+                        S_ij = S_ij + C_inv_ii
 
                     row_blocks.append(S_ij)
                 S_blocks.append(row_blocks)
 
             if S_blocks:
-                S_dense = np.block(S_blocks)
-                # S is SPD by construction: Cholesky is both faster and more
-                # numerically stable than LU for positive-definite systems.
-                try:
-                    self.S_chol = cho_factor(S_dense, lower=True, check_finite=False)
-                except LinAlgError:
-                    # Fallback: if Cholesky fails due to near-singularity,
-                    # store the dense matrix for pinvh-based solve.
-                    self.S_chol = None
-                    self.S_dense_fallback = S_dense
+                S_mat = sparse.block_array(S_blocks, format='csc')
+                # Factorize once and reuse solves across E/M-step calls.
+                self.S_factor = splu(S_mat)
             else:
-                self.S_chol = None
-                self.S_dense_fallback = None
+                self.S_factor = None
 
     def _build_v1(self, A_inv_x: np.ndarray, is_2d: bool) -> np.ndarray:
         """Compute v1 = (I_m ⊗ Z^T) A^{-1} x for all random-effect terms."""
@@ -267,17 +258,12 @@ class WoodburySolver(BaseSolver):
             v4 = self._apply_R_inv_kron(v3)
             prec_resid = A_inv_x - v4
 
-        elif self.S_chol is not None or (
-            hasattr(self, "S_dense_fallback") and self.S_dense_fallback is not None
-        ):
+        elif self.S_factor is not None:
             # 2. Construct v1 = Z^T A^{-1} x
             v1 = self._build_v1(A_inv_x, is_2d)
 
-            # 3. Solve S v2 = v1 via dense Cholesky (or pinvh fallback)
-            if self.S_chol is not None:
-                v2 = cho_solve(self.S_chol, v1, check_finite=False)
-            else:
-                v2 = pinvh(self.S_dense_fallback) @ v1
+            # 3. Solve S v2 = v1
+            v2 = self.S_factor.solve(v1)
             if not is_2d and v2.ndim == 2 and v2.shape[1] == 1:
                 v2 = v2.ravel()
 
@@ -347,27 +333,16 @@ class WoodburySolver(BaseSolver):
                     stacklevel=2,
                 )
             log_det_S = np.sum(logdets)
-        elif self.S_chol is not None:
-            # Dense Cholesky: logdet = 2 * sum(log(diag(L)))
-            L_diag = np.diag(self.S_chol[0])
-            if __debug__ and not np.all(L_diag > 0):
+        elif self.S_factor is not None:
+            U_diag = self.S_factor.U.diagonal()
+            if __debug__ and not np.all(U_diag > 0):
                 warnings.warn(
-                    "S matrix Cholesky diagonal has non-positive entries. "
+                    "S matrix LU diagonal has non-positive entries. "
                     "This indicates numerical instability or loss of positive-definiteness.",
                     RuntimeWarning,
                     stacklevel=2,
                 )
-            log_det_S = 2.0 * np.sum(np.log(np.abs(L_diag)))
-        elif hasattr(self, "S_dense_fallback") and self.S_dense_fallback is not None:
-            sign, logdet = np.linalg.slogdet(self.S_dense_fallback)
-            if __debug__ and sign <= 0:
-                warnings.warn(
-                    "S matrix has non-positive determinant via fallback. "
-                    "This indicates numerical instability or loss of positive-definiteness.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-            log_det_S = logdet
+            log_det_S = np.sum(np.log(np.abs(U_diag)))
         else:
             # No random effects: V = R ⊗ I_n, already fully captured by Term 1.
             log_det_S = 0.0
