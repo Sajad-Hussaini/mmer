@@ -335,13 +335,6 @@ class WoodburySolver(BaseSolver):
             log_det_S = np.sum(logdets)
         elif self.S_factor is not None:
             U_diag = self.S_factor.U.diagonal()
-            if __debug__ and not np.all(U_diag > 0):
-                warnings.warn(
-                    "S matrix LU diagonal has non-positive entries. "
-                    "This indicates numerical instability or loss of positive-definiteness.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
             log_det_S = np.sum(np.log(np.abs(U_diag)))
         else:
             # No random effects: V = R ⊗ I_n, already fully captured by Term 1.
