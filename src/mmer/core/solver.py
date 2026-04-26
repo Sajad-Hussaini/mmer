@@ -161,7 +161,7 @@ class WoodburySolver(BaseSolver):
             for i, re_i in enumerate(self.realized_effects):
                 row_blocks = []
                 for j, re_j in enumerate(self.realized_effects):
-                    Z_i_T_Z_j = re_i.ZTZ if i == j else re_i.Z.T @ re_j.Z
+                    Z_i_T_Z_j = re_i.get_Z_cross_product(re_j)
                     S_ij = sparse.kron(R_inv_sp, Z_i_T_Z_j)
 
                     if i == j:
@@ -244,8 +244,8 @@ class WoodburySolver(BaseSolver):
                 v2_b = np.linalg.solve(self.S_batch, v1_b)
             except np.linalg.LinAlgError:
                 v2_b = np.empty_like(v1_b)
-                for l in range(re.o):
-                    v2_b[l] = pinvh(self.S_batch[l]) @ v1_b[l]
+                for idx in range(re.o):
+                    v2_b[idx] = pinvh(self.S_batch[idx]) @ v1_b[idx]
 
             v2_reshaped = v2_b.reshape(re.o, self.m, re.q, K).transpose(1, 2, 0, 3)
             v2 = (

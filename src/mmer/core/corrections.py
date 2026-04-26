@@ -265,7 +265,6 @@ def _cov_correction_per_response_de(solver, k: int, col: int):
     q, o = re.q, re.o
     block_size = q * o
     num_blocks = m - col
-    base_idx = col * block_size
 
     # Exploit block sparsity: vec is an identity matrix block at col.
     probe_vectors = np.eye(block_size)

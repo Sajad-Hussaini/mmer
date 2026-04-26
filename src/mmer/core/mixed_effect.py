@@ -354,7 +354,7 @@ class MixedEffectRegressor:
                 solver,
                 iteration,
             )
-        except (np.linalg.LinAlgError, RuntimeError, ValueError) as e:
+        except (np.linalg.LinAlgError, RuntimeError, ValueError):
             warnings.warn(
                 "Numerical instability encountered during M-step. Reverting to the best valid state.",
                 RuntimeWarning,
@@ -380,7 +380,7 @@ class MixedEffectRegressor:
             current_log_lh = self._compute_log_likelihood(
                 marginal_residual, prec_resid, solver
             )
-        except (np.linalg.LinAlgError, RuntimeError, ValueError) as e:
+        except (np.linalg.LinAlgError, RuntimeError, ValueError):
             warnings.warn(
                 "Numerical instability encountered during E-step. Reverting to the best valid state.",
                 RuntimeWarning,

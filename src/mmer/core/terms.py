@@ -213,6 +213,31 @@ class RealizedRandomEffect(RealizedTermBase):
 
         self.ZTZ = self.Z.T @ self.Z
         self.ZTZ_diag = self.ZTZ.diagonal().copy()
+        # Cache for cross-products with other design matrices to avoid recomputing during EM
+        self._cross_products_cache: dict[int, "sparse.spmatrix"] = {}
+
+    def get_Z_cross_product(self, other: "RealizedRandomEffect"):
+        """
+        Lazily compute and cache the sparse cross-product Z_i^T @ Z_j.
+        
+        Parameters
+        ----------
+        other : RealizedRandomEffect
+            The other realized random effect to compute the cross product against.
+            
+        Returns
+        -------
+        sparse.spmatrix
+            The cross product matrix of shape (q_i * o_i, q_j * o_j).
+        """
+        if other is self:
+            return self.ZTZ
+            
+        other_id = other.term.group_id
+        if other_id not in self._cross_products_cache:
+            self._cross_products_cache[other_id] = self.Z.T @ other.Z
+            
+        return self._cross_products_cache[other_id]
 
     @cached_property
     def ZTZ_dense(self) -> np.ndarray:
