@@ -131,12 +131,10 @@ def compute_cov_correction_bste(
     Trace Estimation (BSTE).
 
     .. note::
-       BSTE retains only the **block-diagonal** entries of W (one q×q block per
-       group level). Off-diagonal blocks of the full posterior covariance
-       correction ``Cov(u|y)`` across group levels are discarded.  This is a
-       standard and empirically validated approximation — the off-diagonal
-       contributions are typically negligible — but it means W is *approximate*,
-       unlike the deterministic estimation (DE) method which is exact.
+       BSTE computes the full $q \times q$ posterior uncertainty block per
+       group level using outer products of the Hutchinson probes. This provides
+       full intercept-slope covariance identical in expectation to DE without
+       requiring block_size linear solves.
 
     Parameters
     ----------
@@ -157,15 +155,15 @@ def compute_cov_correction_bste(
             for col in range(m)
         )
 
-        for col, T_lower_traces, W_lower_diags in results:
-            for i, (trace, W_diag) in enumerate(zip(T_lower_traces, W_lower_diags)):
+        for col, T_lower_traces, W_lower_blocks in results:
+            for i, (trace, W_block) in enumerate(zip(T_lower_traces, W_lower_blocks)):
                 row = col + i
                 T[col, row] = T[row, col] = trace
                 r_slice = slice(row * q, (row + 1) * q)
                 c_slice = slice(col * q, (col + 1) * q)
-                np.fill_diagonal(W[r_slice, c_slice], W_diag)
+                W[r_slice, c_slice] = W_block
                 if row != col:
-                    np.fill_diagonal(W[c_slice, r_slice], W_diag)
+                    W[c_slice, r_slice] = W_block.T
     return T, W
 
 
@@ -202,29 +200,40 @@ def _cov_correction_per_response_bste(
     vec_cg = solver.solve(vec_cg)
 
     lower_c = re._kronZ_D_T_matvec(vec_cg)[col * block_size :, :]
-    # lower_c is (num_blocks * block_size, n_probes)
-    # probe_vectors is (block_size, n_probes)
-    # diag_C computation:
-    # For each block block_size, dot elementwise with probe_vectors, then sum over probes.
-    # We want diag_C of length (num_blocks * block_size).
-    # Reshape to (num_blocks, block_size, n_probes) and multiply by probe_vectors (1, block_size, n_probes)
-    lower_c_reshaped = lower_c.reshape(num_blocks, block_size, n_probes)
-    # einsum contracts (blocks, elements, probes) with (elements, probes) → (blocks, elements)
-    # avoiding a (num_blocks, block_size, n_probes) broadcast intermediate
-    diag_C = np.einsum("kbp,bp->kb", lower_c_reshaped, probe_vectors).ravel()
+    
+    # 1. Estimate full q x q block for W_C
+    lower_c_reshaped = lower_c.reshape(num_blocks, q, o, n_probes)
+    probe_vectors_reshaped = probe_vectors.reshape(q, o, n_probes)
+    W_C = np.einsum("kfip,gip->kfg", lower_c_reshaped, probe_vectors_reshaped) / n_probes
+    
+    # 2. Compute W_blocks
+    sub_cov = re.term.cov[col * q :, col * q : (col + 1) * q]
+    D_blocks = sub_cov.reshape(num_blocks, q, q)
+    W_blocks = D_blocks * o - W_C
+    
+    # 3. Exact T_traces
+    # 3a. Tr(D ZTZ)
+    ZTZ_blocks = np.zeros((q, q))
+    for f in range(q):
+        for g in range(q):
+            if g >= f:
+                diag = re.ZTZ.diagonal((g - f) * o)
+                val = diag[f * o : (f + 1) * o].sum()
+                ZTZ_blocks[f, g] = val
+                if f != g:
+                    ZTZ_blocks[g, f] = val
+                    
+    T_D = np.einsum('kfg,gf->k', D_blocks, ZTZ_blocks)
+    
+    # 3b. Tr(C ZTZ)
+    lower_c_flat = np.swapaxes(lower_c.reshape(num_blocks, block_size, n_probes), 0, 1).reshape(block_size, num_blocks * n_probes)
+    ZTZ_lower_c_flat = re.ZTZ @ lower_c_flat
+    ZTZ_lower_c = np.swapaxes(ZTZ_lower_c_flat.reshape(block_size, num_blocks, n_probes), 0, 1)
+    T_C = np.einsum('ip,kip->k', probe_vectors, ZTZ_lower_c) / n_probes
+    
+    T_traces = T_D - T_C
 
-    diag_C /= n_probes
-    sub_cov = re.term.cov[col * q :, col * q : (col + 1) * q]  # Use term.cov
-    diags = sub_cov.reshape(num_blocks, q, q).diagonal(axis1=1, axis2=2)
-    diag_sigma = np.repeat(diags, o, axis=1).ravel()
-    diag_sigma -= diag_C
-
-    ZTZ_diag = re.ZTZ_diag
-    sigma_mat = diag_sigma.reshape(num_blocks, q * o)
-    T_traces = sigma_mat.dot(ZTZ_diag)
-    W_diag_blocks = diag_sigma.reshape(num_blocks, q, o).sum(axis=2)
-
-    return col, T_traces, W_diag_blocks
+    return col, T_traces, W_blocks
 
 
 # ====================== Deterministic Correction ======================
@@ -284,6 +293,6 @@ def _cov_correction_per_response_de(solver, k: int, col: int):
     # num_blocks individual .multiply().sum() calls.
     ZTZ_dense = re.ZTZ_dense
     T_traces = np.einsum("ij,kij->k", ZTZ_dense, sigma_blocks)
-    W_blocks = lower_sigma.reshape(num_blocks, q, o, q, o).sum(axis=(2, 4))
+    W_blocks = lower_sigma.reshape(num_blocks, q, o, q, o).trace(axis1=2, axis2=4)
 
     return col, T_traces, W_blocks
