@@ -7,12 +7,7 @@ from .corrections import VarianceCorrection
 from .solver import build_solver
 from .convergence import ConvergenceMonitor
 from .inference import aggregate_random_effects
-from .terms import (
-    RandomEffectTerm,
-    ResidualTerm,
-    RealizedRandomEffect,
-    RealizedResidual,
-)
+from .terms import RandomEffectTerm, ResidualTerm, RealizedRandomEffect, RealizedResidual
 
 
 class MixedEffectRegressor:
@@ -34,6 +29,11 @@ class MixedEffectRegressor:
     patience : int, default=3
         Number of iterations to wait for likelihood improvement before early stopping.
         Setting to a high value effectively disables early stopping and relies solely on `tol`.
+    correction_method : str, default='bste'
+        Method for variance correction in M-step:
+
+        - 'bste': block stochastic trace estimation
+        - 'de': deterministic estimation
     slq_steps : int, default=30
         Number of Lanczos steps for Stochastic Lanczos Quadrature (log-det estimation).
         A range of 30-50 is typically sufficient. Higher values yield slightly more accurate estimates but increase computation time and risk numerical instability.
@@ -42,11 +42,6 @@ class MixedEffectRegressor:
         A fixed target around 50-60 is usually optimal independent of matrix dimension for O(1/sqrt(p)) error convergence.
     preconditioner : bool, default=True
         Whether to use residual-based preconditioner for CG solver.
-    correction_method : str, default='bste'
-        Method for variance correction in M-step:
-
-        - 'bste': block stochastic trace estimation
-        - 'de': deterministic estimation
     n_jobs : int, default=-1
         Number of parallel jobs for SLQ and trace estimation (-1 uses all cores).
         Setting to number of outputs (`m`) is recommended for optimal performance.
@@ -86,10 +81,10 @@ class MixedEffectRegressor:
         max_iter: int = 30,
         tol: float = 1e-6,
         patience: int = 3,
+        correction_method: str = "bste",
         slq_steps: int = 30,
         n_probes: int = 60,
         preconditioner: bool = True,
-        correction_method: str = "bste",
         cg_maxiter: int = 1000,
         n_jobs: int = -1,
         backend: str = "threading",
@@ -98,10 +93,10 @@ class MixedEffectRegressor:
         self.max_iter = max_iter
         self.tol = tol
         self.patience = max(1, patience)
+        self.correction_method = correction_method
         self.slq_steps = slq_steps
         self.n_probes = n_probes
         self.preconditioner = preconditioner
-        self.correction_method = correction_method
         self.cg_maxiter = cg_maxiter
         self.n_jobs = n_jobs
         self.backend = backend
@@ -120,6 +115,7 @@ class MixedEffectRegressor:
         self.has_validation = False
         self.train_idx: np.ndarray | None = None
         self.val_idx: np.ndarray | None = None
+        self.force_iterative = False
 
     def _prepare_terms(
         self,
@@ -201,7 +197,7 @@ class MixedEffectRegressor:
         groups : np.ndarray
             Grouping factors, shape (n, k).
         validation_split : float, default=0.0
-            Fraction of groups to use for validation (0.0 means no validation).
+            Fraction of groups to use for fixed-effects validation (0.0 means no validation).
             Setting to a non-zero value means fixed effects can accept validation data.
         validation_group : int, default=0
             Column index in `groups` to use for group-wise validation splitting.
@@ -264,7 +260,7 @@ class MixedEffectRegressor:
             to that group. None or empty list implies random intercept only for
             that group. If None, all groups get random intercepts only.
         validation_split : float, default=0.0
-            Fraction of groups to use for validation (early stopping). Must be
+            Fraction of groups to use for fixed-effects validation (early stopping). Must be
             between 0.0 and 1.0. Set to 0.0 to disable validation.
             Setting to a non-zero value means fixed effects can accept validation data.
         validation_group : int, default=0
@@ -310,11 +306,11 @@ class MixedEffectRegressor:
             if self.convergence_monitor.is_converged:
                 if self.convergence_monitor.is_early_stopped:
                     if np.isinf(self.convergence_monitor.log_likelihood[-1]):
-                        pbar.set_description("Finished: numerical limits reached")
+                        pbar.set_description("Finished: numerical limits reached!")
                     else:
-                        pbar.set_description("Finished: no further improvement")
+                        pbar.set_description("Finished: no further improvement!")
                 else:
-                    pbar.set_description("Converged: tolerance reached")
+                    pbar.set_description("Converged: tolerance reached!")
                 break
 
         from .mixed_result import MixedEffectResults
@@ -374,7 +370,13 @@ class MixedEffectRegressor:
                 realized_residual,
                 self.preconditioner,
                 self.cg_maxiter,
+                force_iterative=self.force_iterative,
             )
+
+            # If the solver fell back to IterativeSolver (due to OOM or math conditions),
+            # flag it to prevent wasting time on Woodbury attempts in future EM iterations.
+            self.force_iterative = solver.is_iterative
+
             prec_resid = solver.solve(marginal_residual)
 
             current_log_lh = self._compute_log_likelihood(

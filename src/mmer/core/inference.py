@@ -39,6 +39,7 @@ def compute_random_effects_posterior(
     fe_predictions: np.ndarray,
     preconditioner: bool = True,
     cg_maxiter: int = 1000,
+    force_iterative: bool = False,
 ) -> tuple:
     """
     Compute posterior mean random effects and residuals for a given dataset.
@@ -57,6 +58,8 @@ def compute_random_effects_posterior(
         Whether to use preconditioner in solver.
     cg_maxiter : int, default=1000
         Maximum number of conjugate gradient iterations.
+    force_iterative : bool, default=False
+        Force IterativeSolver regardless of dimensions.
 
     Returns
     -------
@@ -73,7 +76,7 @@ def compute_random_effects_posterior(
 
     # Solve for random effects
     solver = build_solver(
-        realized_effects, realized_residual, preconditioner, cg_maxiter
+        realized_effects, realized_residual, preconditioner, cg_maxiter, force_iterative
     )
     prec_resid = solver.solve(marginal_resid)
 

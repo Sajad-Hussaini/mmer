@@ -320,49 +320,61 @@ class RealizedRandomEffect(RealizedTermBase):
 
     # ====================== Matrix-Vector Operations ======================
 
-    def _kronZ_D_matvec(self, x_vec: np.ndarray):
+    def _kronZ_D_matvec(self, x_vec: np.ndarray, out: np.ndarray | None = None, buf_A: np.ndarray | None = None):
         """(I_m ⊗ Z) D @ x"""
-        A_k = self._D_matvec(x_vec)
-        B_k = self._kronZ_matvec(A_k)
+        A_k = self._D_matvec(x_vec, out=buf_A)
+        B_k = self._kronZ_matvec(A_k, out=out)
         return B_k
 
-    def _kronZ_D_T_matvec(self, x_vec: np.ndarray):
+    def _kronZ_D_T_matvec(self, x_vec: np.ndarray, out: np.ndarray | None = None, buf_A: np.ndarray | None = None):
         """D (I_m ⊗ Z^T) @ x"""
-        A_k = self._kronZ_T_matvec(x_vec)
-        B_k = self._D_matvec(A_k)
+        A_k = self._kronZ_T_matvec(x_vec, out=buf_A)
+        B_k = self._D_matvec(A_k, out=out)
         return B_k
 
-    def _kronZ_T_matvec(self, x_vec: np.ndarray):
+    def _kronZ_T_matvec(self, x_vec: np.ndarray, out: np.ndarray | None = None):
         """(I_m ⊗ Z^T) @ x"""
         is_2d = x_vec.ndim == 2
         K = x_vec.shape[1] if is_2d else 1
 
         if is_2d:
-            xr = x_vec.reshape((self.m, self.n, K))
-            out = np.empty((self.m, self.q * self.o, K))
-            for i in range(self.m):
-                out[i] = self.Z.T @ xr[i]
-            return out.reshape(self.m * self.q * self.o, K)
+            xr_swapped = x_vec.reshape((self.m, self.n, K)).swapaxes(0, 1).reshape((self.n, self.m * K))
+            Y = self.Z.T @ xr_swapped
+            out_opt = Y.reshape((self.q * self.o, self.m, K)).swapaxes(0, 1)
+            
+            if out is not None:
+                out.reshape((self.m, self.q * self.o, K))[:] = out_opt
+                return out
+            return out_opt.reshape(self.m * self.q * self.o, K)
         else:
-            A_k = (x_vec.reshape((self.m, self.n)) @ self.Z).ravel()
-        return A_k
+            ans = x_vec.reshape((self.m, self.n)) @ self.Z
+            if out is not None:
+                out.reshape((self.m, self.q * self.o))[:] = ans
+                return out
+            return ans.ravel()
 
-    def _kronZ_matvec(self, x_vec: np.ndarray):
+    def _kronZ_matvec(self, x_vec: np.ndarray, out: np.ndarray | None = None):
         """(I_m ⊗ Z) @ x"""
         is_2d = x_vec.ndim == 2
         K = x_vec.shape[1] if is_2d else 1
 
         if is_2d:
-            xr = x_vec.reshape((self.m, self.q * self.o, K))
-            out = np.empty((self.m, self.n, K))
-            for i in range(self.m):
-                out[i] = self.Z @ xr[i]
-            return out.reshape(self.m * self.n, K)
+            xr_swapped = x_vec.reshape((self.m, self.q * self.o, K)).swapaxes(0, 1).reshape((self.q * self.o, self.m * K))
+            Y = self.Z @ xr_swapped
+            out_opt = Y.reshape((self.n, self.m, K)).swapaxes(0, 1)
+            
+            if out is not None:
+                out.reshape((self.m, self.n, K))[:] = out_opt
+                return out
+            return out_opt.reshape(self.m * self.n, K)
         else:
-            A_k = (self.Z @ x_vec.reshape((self.m, self.q * self.o)).T).T.ravel()
-        return A_k
+            ans = (self.Z @ x_vec.reshape((self.m, self.q * self.o)).T).T
+            if out is not None:
+                out.reshape((self.m, self.n))[:] = ans
+                return out
+            return ans.ravel()
 
-    def _D_matvec(self, x_vec: np.ndarray):
+    def _D_matvec(self, x_vec: np.ndarray, out: np.ndarray | None = None):
         """D @ x"""
         is_2d = x_vec.ndim == 2
         K = x_vec.shape[1] if is_2d else 1
@@ -370,23 +382,41 @@ class RealizedRandomEffect(RealizedTermBase):
         if is_2d:
             xr = x_vec.reshape((self.m * self.q, self.o, K))
             xr_flat = xr.reshape((self.m * self.q, self.o * K))
-            Dx = (
-                (self.term.cov @ xr_flat)
-                .reshape((self.m * self.q, self.o, K))
-                .reshape(self.m * self.q * self.o, K)
-            )
+            
+            if out is None:
+                out = np.empty((self.m * self.q * self.o, K))
+            out_r = out.reshape((self.m * self.q, self.o * K))
+            
+            np.dot(self.term.cov, xr_flat, out=out_r)
+            return out.reshape(self.m * self.q * self.o, K)
         else:
-            Dx = (self.term.cov @ x_vec.reshape((self.m * self.q, self.o))).ravel()
-        return Dx
+            xr = x_vec.reshape((self.m * self.q, self.o))
+            if out is not None:
+                out_r = out.reshape((self.m * self.q, self.o))
+                np.dot(self.term.cov, xr, out=out_r)
+                return out
+            return np.dot(self.term.cov, xr).ravel()
 
-    def _full_cov_matvec(self, x_vec: np.ndarray, out: np.ndarray | None = None):
+    def _full_cov_matvec(
+        self,
+        x_vec: np.ndarray,
+        out: np.ndarray | None = None,
+        buf_A: np.ndarray | None = None,
+        buf_B: np.ndarray | None = None,
+        buf_C: np.ndarray | None = None,
+    ):
         """(I_m ⊗ Z) D (I_m ⊗ Z^T) @ x"""
-        A_k = self._kronZ_D_T_matvec(x_vec)
-        B_k = self._kronZ_matvec(A_k)
+        A_k = self._kronZ_D_T_matvec(x_vec, out=buf_A, buf_A=buf_B)
+        
         if out is not None:
-            out += B_k
+            if buf_C is not None:
+                self._kronZ_matvec(A_k, out=buf_C)
+                out += buf_C
+            else:
+                out += self._kronZ_matvec(A_k)
             return out
-        return B_k
+        else:
+            return self._kronZ_matvec(A_k, out=buf_C)
 
 
 class RealizedResidual(RealizedTermBase):
@@ -430,15 +460,17 @@ class RealizedResidual(RealizedTermBase):
 
         if is_2d:
             xr = x_vec.reshape((self.m, self.n * K))
-            ans = (
-                (self.term.cov @ xr)
-                .reshape((self.m, self.n, K))
-                .reshape(self.m * self.n, K)
-            )
+            if out is not None:
+                out_r = out.reshape((self.m, self.n * K))
+                np.dot(self.term.cov, xr, out=out_r)
+                return out.reshape((self.m * self.n, K))
+            ans = np.dot(self.term.cov, xr).reshape(self.m * self.n, K)
         else:
-            ans = (self.term.cov @ x_vec.reshape((self.m, self.n))).ravel()
+            xr = x_vec.reshape((self.m, self.n))
+            if out is not None:
+                out_r = out.reshape((self.m, self.n))
+                out_r[:] = np.dot(self.term.cov, xr)
+                return out
+            ans = np.dot(self.term.cov, xr).ravel()
 
-        if out is not None:
-            out += ans
-            return out
         return ans

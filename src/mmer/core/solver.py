@@ -35,6 +35,7 @@ def _invert_matrix(mat: np.ndarray) -> np.ndarray:
 
 class BaseSolver:
     """Base class for solvers."""
+    is_iterative: bool = False
 
     def __init__(
         self,
@@ -57,6 +58,7 @@ class BaseSolver:
 
 class IterativeSolver(BaseSolver):
     """Iterative Conjugate Gradient Solver."""
+    is_iterative: bool = True
 
     def __init__(
         self,
@@ -348,14 +350,30 @@ def build_solver(
     realized_residual: RealizedResidual,
     preconditioner: bool = True,
     cg_maxiter: int = 1000,
+    force_iterative: bool = False,
 ) -> BaseSolver:
     """Builds and returns the appropriate solver."""
-    m = realized_residual.m
-    n = realized_residual.n
-    inner_dim = sum(re.o * re.q * m for re in realized_effects)  # generator, no list
-    if inner_dim < m * n:
-        return WoodburySolver(realized_effects, realized_residual)
-    else:
+    if force_iterative:
         return IterativeSolver(
             realized_effects, realized_residual, preconditioner, cg_maxiter
         )
+
+    m = realized_residual.m
+    n = realized_residual.n
+    inner_dim = sum(re.o * re.q * m for re in realized_effects)
+
+    if inner_dim < m * n:
+        try:
+            return WoodburySolver(realized_effects, realized_residual)
+        except (MemoryError, RuntimeError) as e:
+            import warnings
+            warnings.warn(
+                f"WoodburySolver failed due to memory limits: {str(e)}. "
+                "Automatically falling back to IterativeSolver.",
+                RuntimeWarning,
+                stacklevel=2
+            )
+            
+    return IterativeSolver(
+        realized_effects, realized_residual, preconditioner, cg_maxiter
+    )

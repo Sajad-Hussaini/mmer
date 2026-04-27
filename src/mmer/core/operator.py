@@ -32,25 +32,51 @@ class VLinearOperator(LinearOperator):
         self.n = realized_residual.n
         self.m = realized_residual.m
         super().__init__(dtype=np.float64, shape=(self.m * self.n, self.m * self.n))
+        
+        # Pre-allocate workspaces to avoid allocating arrays at every CG iteration
+        self._buf_m_n = np.empty(self.m * self.n)
+        self._buf_A_mqo_list = [np.empty(re.m * re.q * re.o) for re in self.random_effects]
+        self._buf_B_mqo_list = [np.empty(re.m * re.q * re.o) for re in self.random_effects]
+        self._buf_mat_m_n = None
+        self._buf_mat_A_mqo_list = None
+        self._buf_mat_B_mqo_list = None
 
     def _matvec(self, x_vec: np.ndarray):
         """Compute V @ x_vec."""
-        # Residual part: (R \\otimes I_n) x
+        # Residual part: (R \otimes I_n) x
         Vx = self.realized_residual._full_cov_matvec(x_vec)
 
         # Random Effects parts
-        for re in self.random_effects:
-            re._full_cov_matvec(x_vec, out=Vx)
+        for i, re in enumerate(self.random_effects):
+            re._full_cov_matvec(
+                x_vec,
+                out=Vx,
+                buf_A=self._buf_A_mqo_list[i],
+                buf_B=self._buf_B_mqo_list[i],
+                buf_C=self._buf_m_n,
+            )
         return Vx
 
     def _matmat(self, x_mat: np.ndarray):
         """Compute V @ x_mat."""
+        K = x_mat.shape[1]
+        if self._buf_mat_m_n is None or self._buf_mat_m_n.shape[1] != K:
+            self._buf_mat_m_n = np.empty((self.m * self.n, K))
+            self._buf_mat_A_mqo_list = [np.empty((re.m * re.q * re.o, K)) for re in self.random_effects]
+            self._buf_mat_B_mqo_list = [np.empty((re.m * re.q * re.o, K)) for re in self.random_effects]
+
         # Residual part
         Vx = self.realized_residual._full_cov_matvec(x_mat)
 
         # Random Effects parts
-        for re in self.random_effects:
-            re._full_cov_matvec(x_mat, out=Vx)
+        for i, re in enumerate(self.random_effects):
+            re._full_cov_matvec(
+                x_mat,
+                out=Vx,
+                buf_A=self._buf_mat_A_mqo_list[i],
+                buf_B=self._buf_mat_B_mqo_list[i],
+                buf_C=self._buf_mat_m_n,
+            )
         return Vx
 
     def _adjoint(self):

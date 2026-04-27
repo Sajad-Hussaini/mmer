@@ -42,6 +42,7 @@ class MixedEffectResults:
         self.best_log_likelihood = model.convergence_monitor._best_log_likelihood
         self.preconditioner = model.preconditioner
         self.cg_maxiter = model.cg_maxiter
+        self.force_iterative = model.force_iterative
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         """
@@ -123,6 +124,7 @@ class MixedEffectResults:
             fx,
             self.preconditioner,
             self.cg_maxiter,
+            self.force_iterative,
         )
 
     @property
