@@ -338,14 +338,13 @@ class RealizedRandomEffect(RealizedTermBase):
         K = x_vec.shape[1] if is_2d else 1
 
         if is_2d:
-            xr_swapped = x_vec.reshape((self.m, self.n, K)).swapaxes(0, 1).reshape((self.n, self.m * K))
-            Y = self.Z.T @ xr_swapped
-            out_opt = Y.reshape((self.q * self.o, self.m, K)).swapaxes(0, 1)
-            
-            if out is not None:
-                out.reshape((self.m, self.q * self.o, K))[:] = out_opt
-                return out
-            return out_opt.reshape(self.m * self.q * self.o, K)
+            xr = x_vec.reshape((self.m, self.n, K))
+            if out is None:
+                out = np.empty((self.m, self.q * self.o, K))
+            out_r = out.reshape((self.m, self.q * self.o, K))
+            for i in range(self.m):
+                out_r[i] = self.Z.T @ xr[i]
+            return out_r.reshape(self.m * self.q * self.o, K)
         else:
             ans = x_vec.reshape((self.m, self.n)) @ self.Z
             if out is not None:
@@ -359,14 +358,13 @@ class RealizedRandomEffect(RealizedTermBase):
         K = x_vec.shape[1] if is_2d else 1
 
         if is_2d:
-            xr_swapped = x_vec.reshape((self.m, self.q * self.o, K)).swapaxes(0, 1).reshape((self.q * self.o, self.m * K))
-            Y = self.Z @ xr_swapped
-            out_opt = Y.reshape((self.n, self.m, K)).swapaxes(0, 1)
-            
-            if out is not None:
-                out.reshape((self.m, self.n, K))[:] = out_opt
-                return out
-            return out_opt.reshape(self.m * self.n, K)
+            xr = x_vec.reshape((self.m, self.q * self.o, K))
+            if out is None:
+                out = np.empty((self.m, self.n, K))
+            out_r = out.reshape((self.m, self.n, K))
+            for i in range(self.m):
+                out_r[i] = self.Z @ xr[i]
+            return out_r.reshape(self.m * self.n, K)
         else:
             ans = (self.Z @ x_vec.reshape((self.m, self.q * self.o)).T).T
             if out is not None:
@@ -469,7 +467,7 @@ class RealizedResidual(RealizedTermBase):
             xr = x_vec.reshape((self.m, self.n))
             if out is not None:
                 out_r = out.reshape((self.m, self.n))
-                out_r[:] = np.dot(self.term.cov, xr)
+                np.dot(self.term.cov, xr, out=out_r)
                 return out
             ans = np.dot(self.term.cov, xr).ravel()
 
