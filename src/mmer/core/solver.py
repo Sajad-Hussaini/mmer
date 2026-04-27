@@ -144,7 +144,7 @@ class WoodburySolver(BaseSolver):
 
             # Extract Z^T Z cross-products into A tensor of shape (o, q, q)
             A = np.zeros((re.o, re.q, re.q))
-            np.add.at(A, (l_idx, u_idx, v_idx), ZTZ_coo.data)
+            A[l_idx, u_idx, v_idx] = ZTZ_coo.data
 
             # Construct the S matrix blocks: S_l = R^{-1} ⊗ A_l + D^{-1}
             S_kron = np.einsum("ij,luv->liujv", self.R_inv_dense, A).reshape(
@@ -159,21 +159,23 @@ class WoodburySolver(BaseSolver):
             self.S_dense_fallback = None
             # --- General Path for Multiple Grouping Factors (k>1) ---
             # Construct S matrix once.
-            S_blocks = []
+            k_len = len(self.realized_effects)
+            S_blocks = [[None] * k_len for _ in range(k_len)]
             for i, re_i in enumerate(self.realized_effects):
-                row_blocks = []
                 for j, re_j in enumerate(self.realized_effects):
-                    Z_i_T_Z_j = re_i.get_Z_cross_product(re_j)
-                    S_ij = sparse.kron(R_inv_sp, Z_i_T_Z_j)
+                    if j < i:
+                        S_ij = S_blocks[j][i].T
+                    else:
+                        Z_i_T_Z_j = re_i.get_Z_cross_product(re_j)
+                        S_ij = sparse.kron(R_inv_sp, Z_i_T_Z_j)
 
-                    if i == j:
-                        D_inv = _invert_matrix(re_i.term.cov)
-                        I_oi = sparse.eye_array(re_i.o, format='csr')
-                        C_inv_ii = sparse.kron(sparse.csr_array(D_inv), I_oi)
-                        S_ij = S_ij + C_inv_ii
+                        if i == j:
+                            D_inv = _invert_matrix(re_i.term.cov)
+                            I_oi = sparse.eye_array(re_i.o, format='csr')
+                            C_inv_ii = sparse.kron(sparse.csr_array(D_inv), I_oi)
+                            S_ij = S_ij + C_inv_ii
 
-                    row_blocks.append(S_ij)
-                S_blocks.append(row_blocks)
+                    S_blocks[i][j] = S_ij
 
             if S_blocks:
                 S_mat = sparse.block_array(S_blocks, format='csc')
