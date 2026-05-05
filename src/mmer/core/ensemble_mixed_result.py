@@ -14,11 +14,10 @@ class EnsembleMixedEffectResults:
     **Epistemic uncertainty for matrix outputs**
 
     For covariance matrices, the mean and std are computed element-wise over
-    the ensemble.  For correlation matrices, the mean is derived from the
-    ensemble-mean covariance — ``cov_to_corr(mean_Σ)`` — because averaging
-    correlations directly is incorrect: ``E[corr(Σᵢ)] ≠ corr(E[Σᵢ])``.
-    The correlation std is the element-wise std of the per-model correlation
-    matrices, which is a separate and independent quantity from the covariance std.
+    the ensemble. For correlation matrices, the mean and std are also computed
+    element-wise over the per-model correlation matrices. This keeps the
+    aggregation aligned with the actual quantity being reported: compute the
+    model quantity first, then summarize its variability across seeds.
 
     Parameters
     ----------
@@ -175,12 +174,7 @@ class EnsembleMixedEffectResults:
         return self._welford_matrix(res.residual_covariance for res in self.models)
 
     def _welford_residual_corr(self) -> tuple[np.ndarray, np.ndarray]:
-        mean_cov, _ = self._welford_residual_cov()
-        mean_corr = self.models[0].cov_to_corr(mean_cov)
-        _, std_corr = self._welford_matrix(
-            res.residual_correlation for res in self.models
-        )
-        return mean_corr, std_corr
+        return self._welford_matrix(res.residual_correlation for res in self.models)
 
     def _welford_re_covs(self) -> tuple[list[np.ndarray], list[np.ndarray]]:
         """Welford mean and std of RE covariance matrices across ensemble members."""
@@ -200,10 +194,9 @@ class EnsembleMixedEffectResults:
         return means, [np.sqrt(M2 / self.n_models) for M2 in M2s]
 
     def _welford_re_corrs(self) -> tuple[list[np.ndarray], list[np.ndarray]]:
-        mean_covs, _ = self._welford_re_covs()
-        mean_corrs = [self.models[0].cov_to_corr(cov) for cov in mean_covs]
-
-        shapes = [mean_covs[k].shape for k in range(self.k)]
+        shapes = [
+            self.models[0].random_effects_correlations[k].shape for k in range(self.k)
+        ]
         wf_means = [np.zeros(s, dtype=np.float64) for s in shapes]
         M2s = [np.zeros(s, dtype=np.float64) for s in shapes]
 
@@ -214,7 +207,7 @@ class EnsembleMixedEffectResults:
                 wf_means[k] += delta / (i + 1)
                 M2s[k] += delta * (corrs[k] - wf_means[k])
 
-        return mean_corrs, [np.sqrt(M2 / self.n_models) for M2 in M2s]
+        return wf_means, [np.sqrt(M2 / self.n_models) for M2 in M2s]
 
     def _welford_marginal_cov(
         self, slope_covariates: tuple[np.ndarray | None] | None = None
@@ -226,12 +219,9 @@ class EnsembleMixedEffectResults:
     def _welford_marginal_corr(
         self, slope_covariates: tuple[np.ndarray | None] | None = None
     ) -> tuple[np.ndarray, np.ndarray]:
-        mean_cov, _ = self._welford_marginal_cov(slope_covariates)
-        mean_corr = self.models[0].cov_to_corr(mean_cov)
-        _, std_corr = self._welford_matrix(
+        return self._welford_matrix(
             res.get_marginal_correlation(slope_covariates) for res in self.models
         )
-        return mean_corr, std_corr
 
     # ------------------------------------------------------------------
     # Public properties — covariances
@@ -286,10 +276,8 @@ class EnsembleMixedEffectResults:
         """
         Ensemble mean residual correlation matrix, shape ``(m, m)``.
 
-        Derived from the ensemble-mean covariance as ``cov_to_corr(mean_Σ)``,
-        which is the correct estimator.  Averaging per-model correlations
-        directly is incorrect because the covariance-to-correlation transform
-        is nonlinear.
+        Computed element-wise from the residual correlation matrices of the
+        individual ensemble members.
         """
         return self._welford_residual_corr()[0]
 
@@ -309,8 +297,6 @@ class EnsembleMixedEffectResults:
     def random_effects_correlations(self) -> list[np.ndarray]:
         """
         Ensemble mean RE correlation matrix for each grouping factor.
-
-        Derived from the ensemble-mean covariance (see ``residual_correlation``).
 
         Returns
         -------
@@ -377,8 +363,8 @@ class EnsembleMixedEffectResults:
         """
         Ensemble mean of the total marginal correlation matrix, shape ``(m, m)``.
 
-        Derived from the ensemble-mean marginal covariance (see
-        ``residual_correlation`` for the mathematical rationale).
+        Computed element-wise from the marginal correlation matrix produced by
+        each ensemble member.
 
         Parameters
         ----------
