@@ -289,4 +289,3 @@ class MixedEffectResults:
 
         summary_str = "\n".join(lines)
         print(summary_str)
-        return summary_str
