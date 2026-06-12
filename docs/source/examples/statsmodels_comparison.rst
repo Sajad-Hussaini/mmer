@@ -14,7 +14,7 @@ Comparing Linear Mixed-Effects Models using MMER and Statsmodels For Numerical V
    import statsmodels.api as sm
    from statsmodels.regression.mixed_linear_model import MixedLM
    
-   from mmer import MixedEffectRegressor
+   from mmer import MixedEffectEstimator
    from sklearn.linear_model import LinearRegression
 
    # =========================================================
@@ -51,7 +51,7 @@ Comparing Linear Mixed-Effects Models using MMER and Statsmodels For Numerical V
    fe_model = LinearRegression()
    
    # Using kwargs for clean, readable instantiation
-   mmer_model = MixedEffectRegressor(
+   mmer_model = MixedEffectEstimator(
        fixed_effects_model=fe_model, 
        max_iter=100, 
        tol=1e-6
@@ -62,17 +62,17 @@ Comparing Linear Mixed-Effects Models using MMER and Statsmodels For Numerical V
    mmer_time = time.time() - start_t
    
    print(f"MMER Fit Time: {mmer_time:.2f} seconds")
-   # Optional: built-in summary (if implemented)
-   # result_mmer.summary()
+   # Optional: built-in summary
+   # print(result_mmer.summary())
    
    print("\nMMER Fixed Effects:")
-   print(f"  Intercept: {float(result_mmer.fe_model.intercept_):.4f}")
-   for i, coef in enumerate(np.ravel(result_mmer.fe_model.coef_)):
+   print(f"  Intercept: {float(result_mmer.fixed_effects_model.intercept_):.4f}")
+   for i, coef in enumerate(np.ravel(result_mmer.fixed_effects_model.coef_)):
        print(f"  x{i:d}:       {coef:.4f}")
    
    print("\nMMER Variance Components:")
-   print(f"  Residual:  {float(result_mmer.residual_covariance):.4f}")
-   print(f"  Random:    {float(result_mmer.random_effects_covariances[0]):.4f}")
+   print(f"  Residual:  {float(result_mmer.R[0, 0]):.4f}")
+   print(f"  Random:    {float(result_mmer.G[0][0, 0]):.4f}")
 
    # =========================================================
    # 3. Fit using Statsmodels MixedLM

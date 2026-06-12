@@ -8,5 +8,6 @@ Official API documentation for the ``mmer`` package. This lists only public clas
 .. toctree::
    :maxdepth: 1
 
-   mixedeffectregressor
-   mixedeffectresult
+   mixedeffectestimator
+   mixedmodel
+   ensemblemixedmodel

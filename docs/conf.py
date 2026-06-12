@@ -68,7 +68,11 @@ napoleon_use_ivar = True
 napoleon_include_init_with_doc = False  # Don't duplicate __init__ docs
 napoleon_include_private_with_doc = False
 napoleon_include_special_with_doc = False
-
+napoleon_custom_sections = [
+    ("Why use this?", "rubric"),
+    ("How it works:", "rubric"),
+    ("How it works", "rubric")
+]
 # Autosummary settings
 autosummary_generate = True
 autosummary_imported_members = False

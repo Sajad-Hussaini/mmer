@@ -1,6 +1,6 @@
-from .core.mixed_effect import MixedEffectRegressor
-from .core.mixed_result import MixedEffectResults
-from .core.ensemble_mixed_result import EnsembleMixedEffectResults
+from .api.estimator import MixedEffectEstimator
+from .api.result import MixedModel
+from .api.ensemble import EnsembleMixedModel
 
-__version__ = '1.3.10'
-__all__ = ['MixedEffectRegressor', 'MixedEffectResults', 'EnsembleMixedEffectResults']
+__version__ = "1.4.0"
+__all__ = ["MixedEffectEstimator", "MixedModel", "EnsembleMixedModel"]
