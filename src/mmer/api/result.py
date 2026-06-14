@@ -3,7 +3,7 @@ import pandas as pd
 from ..structures.inference import compute_random_effects_posterior
 from ..structures.covariance import RandomCovariance, ResidualCovariance
 from ..structures.design import RandomDesign
-from .posteriors import ObservationPosterior, GroupPosterior, InferenceResult
+from .posteriors import Estimate, ObservationPosterior, GroupPosterior, InferenceResult
 
 
 class MixedModel:
@@ -102,7 +102,7 @@ class MixedModel:
                 )
             # Reconstruct the random effects for the given data
             inference = self.infer(X, np.zeros_like(pred), groups)
-            pred += inference.observations.total_random_effects
+            pred += inference.observations.total_random_effects.value
 
         return pred
 
@@ -159,12 +159,12 @@ class MixedModel:
 
         group_posteriors = []
         for k in range(self.n_groups):
-            levels = np.unique(groups[:, k])
-            group_posteriors.append(GroupPosterior(levels=levels, effects=mu_list[k]))
+            levels, counts = np.unique(groups[:, k], return_counts=True)
+            group_posteriors.append(GroupPosterior(levels=levels, counts=counts, effects=Estimate(value=mu_list[k])))
 
         return InferenceResult(
             observations=ObservationPosterior(
-                residuals=resid, total_random_effects=total_re
+                residuals=Estimate(value=resid), total_random_effects=Estimate(value=total_re)
             ),
             groups=group_posteriors,
         )
@@ -200,7 +200,7 @@ class MixedModel:
             return y - self.predict(X)
         elif type == "conditional":
             inference = self.infer(X, y, groups)
-            return y - (self.predict(X) + inference.observations.total_random_effects)
+            return y - (self.predict(X) + inference.observations.total_random_effects.value)
         else:
             raise ValueError("type must be 'conditional' or 'marginal'")
 
@@ -297,7 +297,7 @@ class MixedModel:
         inference = self.infer(X, y, groups)
 
         fixed_effects_var = np.var(fixed_effects_predictions, axis=0)
-        re_var = np.var(inference.observations.total_random_effects, axis=0)
+        re_var = np.var(inference.observations.total_random_effects.value, axis=0)
         res_var = np.diag(self.R)
 
         total_var = fixed_effects_var + re_var + res_var
@@ -319,7 +319,7 @@ class MixedModel:
         res_var = np.diag(self.R)
         total_re_var = np.zeros(self.n_responses)
         for cov in self._G:
-            q = cov.q
+            q = cov.n_effects
             total_re_var += np.array(
                 [cov.matrix[i * q, i * q] for i in range(self.n_responses)]
             )
@@ -327,7 +327,7 @@ class MixedModel:
 
         icc_dict = {}
         for k, cov in enumerate(self._G):
-            q = cov.q
+            q = cov.n_effects
             intercept_vars = np.array(
                 [cov.matrix[i * q, i * q] for i in range(self.n_responses)]
             )
@@ -358,11 +358,11 @@ class MixedModel:
             level of the group.
         """
         inference = self.infer(X, y, groups)
-        blups_3d = inference.groups[group_idx].effects
+        blups_3d = inference.groups[group_idx].effects.value
         blups_val = blups_3d.reshape(blups_3d.shape[0], -1)
 
         cov = self._G[group_idx]
-        q = cov.q
+        q = cov.n_effects
         cols = []
         for i in range(self.n_responses):
             for j in range(q):
@@ -420,13 +420,13 @@ class MixedModel:
             else:
                 z = np.concatenate(([1.0], np.atleast_1d(slopes)))
 
-            if len(z) != cov_k.q:
+            if len(z) != cov_k.n_effects:
                 raise ValueError(
-                    f"Expected {cov_k.q - 1} slope covariates for group {k + 1}, got {len(z) - 1}."
+                    f"Expected {cov_k.n_effects - 1} slope covariates for group {k + 1}, got {len(z) - 1}."
                 )
 
             m = self.n_responses
-            q = cov_k.q
+            q = cov_k.n_effects
             G_reshaped = cov_k.matrix.reshape((m, q, m, q))
             cov_total += np.einsum("mqnr,q,r->mn", G_reshaped, z, z)
 
@@ -480,8 +480,8 @@ class MixedModel:
 
         for k, cov in enumerate(self._G):
             for i in range(self.n_responses):
-                for j in range(cov.q):
-                    idx = i * cov.q + j
+                for j in range(cov.n_effects):
+                    idx = i * cov.n_effects + j
                     effect_name = "Intercept" if j == 0 else f"Slope {j}"
                     lines.append(
                         indent2

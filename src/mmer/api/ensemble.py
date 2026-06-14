@@ -107,12 +107,18 @@ class EnsembleMixedModel:
         tot_re_list = []
         mu_lists = [[] for _ in range(self.n_groups)]
 
-        for m in self.models:
+        group_levels = {}
+        group_counts = {}
+
+        for i, m in enumerate(self.models):
             posterior = m.infer(X, y, groups)
-            resid_list.append(posterior.observations.residuals)
-            tot_re_list.append(posterior.observations.total_random_effects)
+            resid_list.append(posterior.observations.residuals.value)
+            tot_re_list.append(posterior.observations.total_random_effects.value)
             for k in range(self.n_groups):
-                mu_lists[k].append(posterior.groups[k].effects)
+                mu_lists[k].append(posterior.groups[k].effects.value)
+                if i == 0:
+                    group_levels[k] = posterior.groups[k].levels
+                    group_counts[k] = posterior.groups[k].counts
 
         resid_stack = np.stack(resid_list, axis=0)
         tot_re_stack = np.stack(tot_re_list, axis=0)
@@ -126,23 +132,23 @@ class EnsembleMixedModel:
         group_posteriors = []
         for k in range(self.n_groups):
             mu_stack = np.stack(mu_lists[k], axis=0)
-            levels = np.unique(groups[:, k])
             group_posteriors.append(
                 GroupPosterior(
-                    levels=levels,
-                    effects=np.mean(mu_stack, axis=0),
-                    effects_std=np.std(
-                        mu_stack, axis=0, ddof=1 if self.n_models > 1 else 0
+                    levels=group_levels[k],
+                    counts=group_counts[k],
+                    effects=Estimate(
+                        value=np.mean(mu_stack, axis=0),
+                        std=np.std(
+                            mu_stack, axis=0, ddof=1 if self.n_models > 1 else 0
+                        ),
                     ),
                 )
             )
 
         return InferenceResult(
             observations=ObservationPosterior(
-                residuals=resid_mean,
-                residuals_std=resid_std,
-                total_random_effects=tot_re_mean,
-                total_random_effects_std=tot_re_std,
+                residuals=Estimate(value=resid_mean, std=resid_std),
+                total_random_effects=Estimate(value=tot_re_mean, std=tot_re_std),
             ),
             groups=group_posteriors,
         )
@@ -245,7 +251,7 @@ class EnsembleMixedModel:
         for k, cov in enumerate(self.G):
             # To get q, we need to inspect the base model's G
             base_cov = self.models[0]._G[k]
-            q = base_cov.q
+            q = base_cov.n_effects
             for i in range(self.n_responses):
                 for j in range(q):
                     idx = i * q + j

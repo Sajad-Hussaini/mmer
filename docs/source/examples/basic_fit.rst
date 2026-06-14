@@ -55,12 +55,12 @@ The result object provides:
 - `result.summary()`: Returns a summary string of the fitted model
 - `result.R_corr`: Residual correlation matrix
 - `result.G_corr`: Correlation matrices of random effects
-- `result.R.matrix`: Residual covariance matrix
-- `result.G[k].matrix`: Random effects covariance matrix for group `k`
+- `result.R`: Residual covariance matrix
+- `result.G[k]`: Random effects covariance matrix for group `k`
 
 .. code-block:: python
 
    print(result.summary())
    print("Residual Correlation:", result.R_corr)
    print("Random Effects Correlation:", result.G_corr)
-   print("Residual Covariance:", result.R.matrix)
+   print("Residual Covariance:", result.R)

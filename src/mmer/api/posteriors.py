@@ -1,37 +1,69 @@
 import numpy as np
-from dataclasses import dataclass
+from typing import NamedTuple
 
 
-@dataclass
-class Estimate:
-    """A generic container for an estimated value and its epistemic uncertainty."""
+class Estimate(NamedTuple):
+    """
+    A generic container for an estimated value and its epistemic uncertainty.
+
+    Attributes
+    ----------
+    value : np.ndarray
+        The estimated point value.
+    std : np.ndarray, optional
+        The epistemic standard deviation. None for standard mixed models.
+    """
 
     value: np.ndarray
     std: np.ndarray | None = None
 
 
-@dataclass
-class ObservationPosterior:
-    """Observation-level inference outputs (shape: n_samples x n_responses)"""
+class ObservationPosterior(NamedTuple):
+    """
+    Observation-level inference outputs.
 
-    residuals: np.ndarray
-    total_random_effects: np.ndarray
-    residuals_std: np.ndarray | None = None
-    total_random_effects_std: np.ndarray | None = None
+    Attributes
+    ----------
+    residuals : Estimate
+        The estimated residuals (y - Xb - Zu).
+    total_random_effects : Estimate
+        The total random effects summed across all grouping factors (Zu).
+    """
 
-
-@dataclass
-class GroupPosterior:
-    """Group-level inference outputs (shape: n_levels x n_responses x q)"""
-
-    levels: np.ndarray  # The unique group identifiers
-    effects: np.ndarray  # The Best Linear Unbiased Predictors (BLUPs)
-    effects_std: np.ndarray | None = None
+    residuals: Estimate
+    total_random_effects: Estimate
 
 
-@dataclass
-class InferenceResult:
-    """The complete posterior state."""
+class GroupPosterior(NamedTuple):
+    """
+    Group-level inference outputs.
+
+    Attributes
+    ----------
+    levels : np.ndarray
+        The unique group identifiers.
+    counts : np.ndarray
+        The number of observations for each level.
+    effects : Estimate
+        The Best Linear Unbiased Predictors (BLUPs) for each level.
+    """
+
+    levels: np.ndarray
+    counts: np.ndarray
+    effects: Estimate
+
+
+class InferenceResult(NamedTuple):
+    """
+    The complete posterior state.
+
+    Attributes
+    ----------
+    observations : ObservationPosterior
+        The observation-level results (residuals and total random effects).
+    groups : list of GroupPosterior
+        A list containing the group-level results for each grouping factor.
+    """
 
     observations: ObservationPosterior
     groups: list[GroupPosterior]
