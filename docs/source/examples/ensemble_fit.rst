@@ -37,7 +37,7 @@ Train a list of models independently. In this example, we use random subsets (bo
        X_boot, y_boot, groups_boot = X[indices], y[indices], groups[indices]
 
        # Fit a Mixed-Effects Model
-       estimator = MixedEffectEstimator(fe_model=LinearRegression(), max_iter=15)
+       estimator = MixedEffectEstimator(fixed_effects_model=LinearRegression(), max_iter=15)
        print(f"Fitting model {i+1}/{n_models}...")
        result = estimator.fit(X_boot, y_boot, groups_boot)
        
@@ -59,10 +59,13 @@ The ensemble returns a tuple of ``(Mean, Epistemic Standard Deviation)`` for pre
 
 .. code-block:: python
 
-   mean_R, std_R = ensemble.R
+   # The ensemble returns `Estimate` dataclasses with `.value` and `.std`
+   mean_R = ensemble.R.value
+   std_R = ensemble.R.std
    print("Expected Residual Covariance:\n", mean_R)
    print("Uncertainty (Std) of Residual Covariance:\n", std_R)
 
-   mean_G, std_G = ensemble.G[0]
+   mean_G = ensemble.G[0].value
+   std_G = ensemble.G[0].std
    print("Expected Random Effects Covariance for Group 1:\n", mean_G)
    print("Uncertainty (Std) of Random Effects Covariance:\n", std_G)

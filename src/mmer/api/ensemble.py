@@ -38,20 +38,26 @@ class EnsembleMixedModel:
 
     def predict(self, X: np.ndarray, groups: np.ndarray = None) -> Estimate:
         """
-        Aggregate predictions across all ensemble models.
+        Aggregate predictions across all ensemble models, incorporating personalized random effects if known.
+
+        This method works identically to `MixedModel.predict`, but it evaluates the test data against every
+        individual model in the ensemble. It then aggregates the point predictions to form the expected value,
+        and computes the standard deviation across models to quantify epistemic uncertainty.
 
         Parameters
         ----------
-        X : np.ndarray
+        X : ndarray of shape (n_samples, n_features)
             The fixed-effects design matrix.
-        groups : np.ndarray, optional
-            The grouping factors.
+        groups : ndarray of shape (n_samples, n_groups), optional
+            The categorical grouping factors. If provided, models will attempt a dictionary lookup
+            to add their individually learned Best Linear Unbiased Predictors (BLUPs) to the prediction.
 
         Returns
         -------
         Estimate
-            An estimate object containing the expected prediction values and their
-            epistemic standard deviation.
+            An estimate object containing:
+            - `value`: The expected (mean) prediction across the ensemble.
+            - `std`: The epistemic standard deviation representing model disagreement.
         """
         preds = np.stack([m.predict(X, groups=groups) for m in self.models], axis=0)
         return Estimate(
@@ -86,22 +92,28 @@ class EnsembleMixedModel:
         self, X: np.ndarray, y: np.ndarray, groups: np.ndarray
     ) -> InferenceResult:
         """
-        Compute the posterior estimates of residuals and random effects across the ensemble.
+        Compute the posterior estimates of residuals and random effects across the entire ensemble.
+
+        Unlike `predict`, which uses historically learned BLUPs, this method assumes the true outcomes
+        ``y`` are known. It passes the dataset through each base model's `infer` engine to calculate
+        the exact structural residuals and optimal random effects. It then aggregates these properties
+        across the ensemble to quantify both the expected analytical posteriors and their epistemic uncertainties.
 
         Parameters
         ----------
-        X : np.ndarray
+        X : ndarray of shape (n_samples, n_features)
             The fixed-effects design matrix.
-        y : np.ndarray
-            The response matrix.
-        groups : np.ndarray
-            The grouping factors.
+        y : ndarray of shape (n_samples, n_responses)
+            The true continuous response matrix.
+        groups : ndarray of shape (n_samples, n_groups)
+            The categorical grouping factors.
 
         Returns
         -------
         InferenceResult
-            A container holding the aggregated residuals, total random effects,
-            and group effects with their respective standard deviations.
+            A unified container holding the aggregated residuals, total random effects,
+            and specific group BLUPs. Every numeric property inside this result is an `Estimate`
+            object containing both the expected `value` and the epistemic `std` deviation.
         """
         resid_list = []
         tot_re_list = []

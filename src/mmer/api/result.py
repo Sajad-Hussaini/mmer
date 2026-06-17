@@ -52,6 +52,7 @@ class MixedModel:
         cg_maxiter: int,
         force_iterative: bool,
         random_slopes: tuple,
+        training_group_posteriors: list[GroupPosterior] = None,
     ):
         self.fixed_effects_model = fixed_effects_model
         self.n_samples = n_samples
@@ -67,27 +68,42 @@ class MixedModel:
         self.cg_maxiter = cg_maxiter
         self.force_iterative = force_iterative
         self.random_slopes = random_slopes
+        self.training_group_posteriors = training_group_posteriors
 
     def predict(self, X: np.ndarray, groups: np.ndarray = None) -> np.ndarray:
         """
-        Predict responses using the fixed-effects model, and optionally include random effects.
+        Predict responses using the fixed-effects model, and optionally include personalized random effects.
 
-        By default, predictions are based on population-level trends. If group
-        identifiers are provided, group-specific random effects (BLUPs) are added
-        to personalize predictions.
+        By default, if `groups` is not provided, predictions strictly reflect population-level trends
+        learned by the base estimator. If `groups` are provided, the model performs a fast dictionary-style
+        lookup to match the input groups to the properties (BLUPs) it learned during training.
 
         Parameters
         ----------
-        X : np.ndarray of shape (n_samples, n_features)
+        X : ndarray of shape (n_samples, n_features)
             The fixed-effects design matrix (covariates).
-        groups : np.ndarray of shape (n_samples, k), optional
-            The grouping factors. If provided, the predictions will include the
-            learned random effects (BLUPs) for these groups.
+        groups : ndarray of shape (n_samples, n_groups), optional
+            The categorical grouping factors for each observation. If provided, the predictions
+            will be personalized by adding the learned random effect offsets.
 
         Returns
         -------
-        np.ndarray of shape (n_samples, n_responses)
+        ndarray of shape (n_samples, n_responses)
             The predicted response values.
+
+        Notes
+        -----
+            **Known vs. Unknown Groups:**
+            When `groups` are provided, the prediction logic matches each group identifier to the
+            effects learned during training.
+            - If a group was **known** (seen during training), its learned Best Linear Unbiased Predictor
+            (BLUP) offset is retrieved, scaled by any random slope covariates, and added to the prediction.
+            - If a group is **unknown** (not present in the training data), the lookup safely defaults
+            the random effect to 0. This mathematically grounds the prediction back to the population average.
+
+        Importantly, this method does *not* recalculate new random effects or residuals based on the
+        input `X`. It purely applies historically learned offsets. For evaluating exact posterior
+        properties on a validation dataset where true outcomes are known, use :meth:`infer` instead.
         """
         pred = self.fixed_effects_model.predict(X)
         if self.n_responses == 1 and pred.ndim == 1:
@@ -100,33 +116,78 @@ class MixedModel:
                 raise ValueError(
                     f"Expected {self.n_groups} columns in groups, but got {groups.shape[1]}"
                 )
-            # Reconstruct the random effects for the given data
-            inference = self.infer(X, np.zeros_like(pred), groups)
-            pred += inference.observations.total_random_effects.value
+            if getattr(self, "training_group_posteriors", None) is None:
+                raise ValueError(
+                    "Model was not fitted with training groups stored. Cannot predict with personalized random effects."
+                )
+
+            re_pred = np.zeros_like(pred)
+            for k in range(self.n_groups):
+                test_levels = groups[:, k]
+                train_levels = self.training_group_posteriors[k].levels
+                train_effects = self.training_group_posteriors[k].effects.value
+
+                slope_cols = self.random_slopes[k]
+                if slope_cols is None:
+                    z_i = np.ones((X.shape[0], 1), dtype=X.dtype)
+                else:
+                    z_i = np.concatenate(
+                        [np.ones((X.shape[0], 1), dtype=X.dtype), X[:, slope_cols]],
+                        axis=1,
+                    )
+
+                idx = np.searchsorted(train_levels, test_levels)
+                # Handle elements not found or out of bounds
+                idx[idx == len(train_levels)] = 0
+                found = train_levels[idx] == test_levels
+
+                sample_effects = np.zeros((
+                    X.shape[0],
+                    self.n_responses,
+                    train_effects.shape[2],
+                ))
+                sample_effects[found] = train_effects[idx[found]]
+
+                # Add to total prediction using Einstein summation
+                re_pred += np.einsum("nq,nmq->nm", z_i, sample_effects)
+
+            pred += re_pred
 
         return pred
 
     def infer(self, X: np.ndarray, y: np.ndarray, groups: np.ndarray):
         """
-        Infer random effects and residuals for the given data.
+        Perform exact posterior inference on a specific dataset where true outcomes are known.
 
-        Deconstructs predictions into fixed population effects, group-specific
-        random effects (BLUPs), and conditional residuals based on learned
-        covariance structures.
+        Unlike :meth:`predict`, which applies historically learned BLUPs to new data, `infer`
+        takes the true known responses (``y``) and mathematically deconstructs them. It solves
+        the generalized least squares equations strictly for the provided dataset using the population-level
+        predictions and the globally learned variance matrices (``G`` and ``R``).
 
         Parameters
         ----------
-        X : np.ndarray of shape (n_samples, n_features)
+        X : ndarray of shape (n_samples, n_features)
             The fixed-effects design matrix.
-        y : np.ndarray of shape (n_samples, n_responses)
-            The response matrix.
-        groups : np.ndarray of shape (n_samples, k)
-            The grouping factors.
+        y : ndarray of shape (n_samples, n_responses)
+            The true, known continuous response matrix.
+        groups : ndarray of shape (n_samples, n_groups)
+            The grouping factors linking observations to group structures.
 
         Returns
         -------
         InferenceResult
-            A container holding the residuals, total random effects, and group-specific BLUPs.
+            A unified structural container holding the exactly reconstructed observation-level
+            properties (conditional residuals and total random effects) and group-level
+            properties (the mathematically optimal BLUP offsets for these specific groups).
+
+        Notes
+        -----
+            **When to use `infer` vs `predict`:**
+            - Use **`predict(X, groups)`** in production when ``y`` is entirely unknown and you simply want to
+            guess the outcome using previously learned group profiles.
+            - Use **`infer(X, y, groups)`** during validation, testing, or model diagnostics. Because ``y``
+            is known, `infer` ignores the old training BLUPs and precisely calculates exactly
+            how much of the error was driven by group properties versus pure noise in this specific dataset.
         """
         if y.ndim == 1:
             y = y[:, None]
@@ -160,11 +221,16 @@ class MixedModel:
         group_posteriors = []
         for k in range(self.n_groups):
             levels, counts = np.unique(groups[:, k], return_counts=True)
-            group_posteriors.append(GroupPosterior(levels=levels, counts=counts, effects=Estimate(value=mu_list[k])))
+            group_posteriors.append(
+                GroupPosterior(
+                    levels=levels, counts=counts, effects=Estimate(value=mu_list[k])
+                )
+            )
 
         return InferenceResult(
             observations=ObservationPosterior(
-                residuals=Estimate(value=resid), total_random_effects=Estimate(value=total_re)
+                residuals=Estimate(value=resid),
+                total_random_effects=Estimate(value=total_re),
             ),
             groups=group_posteriors,
         )
@@ -200,7 +266,9 @@ class MixedModel:
             return y - self.predict(X)
         elif type == "conditional":
             inference = self.infer(X, y, groups)
-            return y - (self.predict(X) + inference.observations.total_random_effects.value)
+            return y - (
+                self.predict(X) + inference.observations.total_random_effects.value
+            )
         else:
             raise ValueError("type must be 'conditional' or 'marginal'")
 
@@ -320,17 +388,17 @@ class MixedModel:
         total_re_var = np.zeros(self.n_responses)
         for cov in self._G:
             q = cov.n_effects
-            total_re_var += np.array(
-                [cov.matrix[i * q, i * q] for i in range(self.n_responses)]
-            )
+            total_re_var += np.array([
+                cov.matrix[i * q, i * q] for i in range(self.n_responses)
+            ])
         total_var = total_re_var + res_var
 
         icc_dict = {}
         for k, cov in enumerate(self._G):
             q = cov.n_effects
-            intercept_vars = np.array(
-                [cov.matrix[i * q, i * q] for i in range(self.n_responses)]
-            )
+            intercept_vars = np.array([
+                cov.matrix[i * q, i * q] for i in range(self.n_responses)
+            ])
             icc_dict[f"Group_{k}"] = intercept_vars / total_var
         return icc_dict
 

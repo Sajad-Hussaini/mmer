@@ -12,49 +12,44 @@ class MixedEffectEstimator:
     """
     Multivariate Mixed-Effects Estimator.
 
-    This estimator wraps a base predictive model (e.g., a neural network,
-    random forest, or linear model) to capture fixed population-level signals
-    while formally accounting for random group-level variations and covariance.
-    It uses an Expectation-Maximization (EM) algorithm to iteratively refine
-    fixed-effect predictions and estimate random effect and residual covariance
-    matrices.
+    This estimator structurally wraps a base predictive model (e.g., a neural network,
+    random forest, or linear model) to seamlessly learn fixed population-level signals
+    while formally isolating random group-level variations and complex covariance matrices.
+    It utilizes an Expectation-Maximization (EM) algorithm to iteratively estimate
+    variance components.
 
     Parameters
     ----------
     fixed_effects_model : object
-        A predictive base model used to estimate the fixed effects. This model
+        A predictive base model used to estimate the fixed population effects. This model
         must implement standard `fit(X, y)` and `predict(X)` methods.
     max_iter : int, default=30
-        The maximum number of Expectation-Maximization (EM) iterations to perform.
+        The maximum number of Expectation-Maximization (EM) cycles to perform.
     tol : float, default=1e-6
-        The tolerance for declaring convergence. Convergence is reached when the
-        relative change in the log-likelihood is less than this value.
+        The numerical tolerance for declaring convergence. Convergence is reached when the
+        relative step change in the log-likelihood drops below this threshold.
     patience : int, default=3
-        The number of iterations to wait for a significant improvement in the
-        log-likelihood before halting early.
+        The number of consecutive iterations to tolerate without significant log-likelihood
+        improvement before invoking early stopping.
     correction_method : str, default="bste"
-        The trace estimation method for variance components. Options are "bste"
-        (Block-Stochastic Trace Estimator, recommended for large data) or "de"
-        (Deterministic).
+        The trace estimation method for variance components. Options are:
+        - `"bste"`: Block-Stochastic Trace Estimator (Highly recommended for large datasets).
+        - `"de"`: Deterministic Trace Evaluator (Recommended only for small matrix sizes).
     slq_steps : int, default=30
-        The number of Lanczos iterations used for stochastic log-determinant
-        approximation.
+        The number of Lanczos iterations used for stochastic log-determinant approximations
+        in the BSTE method.
     n_probes : int, default=60
-        The number of Rademacher random probes used in stochastic trace estimation.
+        The number of Rademacher random probe vectors used during stochastic trace estimation.
     preconditioner : bool, default=True
-        Whether to use a residual block preconditioner when solving the linear system.
+        Whether to apply a residual block preconditioner when resolving the linear system,
+        significantly reducing Conjugate Gradient (CG) iterations.
     cg_maxiter : int, default=1000
-        Maximum iterations for the Conjugate Gradient solver.
+        Maximum allowable Conjugate Gradient solver iterations per step.
     n_jobs : int, default=-1
-        Number of parallel jobs to run during trace estimation. -1 means use all
-        processors.
+        Number of parallel threading jobs to run during stochastic trace evaluation.
+        Defaults to -1 (use all available processors).
     backend : str, default="threading"
-        The parallelization backend to use (e.g., "threading" or "loky").
-
-    Notes
-    -----
-    The algorithm internally constructs dense or sparse matrices dynamically depending
-    on the data size, and applies optimal memory layouts for fast execution.
+        The parallel execution backend (e.g., `"threading"` or `"loky"`).
     """
 
     def __init__(
@@ -91,32 +86,31 @@ class MixedEffectEstimator:
         random_slopes: tuple = None,
     ) -> "MixedModel":
         """
-        Fit the mixed-effects model to the provided data.
+        Train the mixed-effects framework to separate fixed and random components.
 
-        This method decouples fixed population-level signals from random group-level
-        variations and noise using an EM algorithm to separate fixed effects (learned
-        by the base model) and random effects (estimated via generalized least squares
-        and trace corrections).
+        This function triggers the Expectation-Maximization (EM) engine. It alternates
+        between fitting the fixed-effects base model to the partial residuals and updating
+        the random covariance matrices using generalized least squares.
 
         Parameters
         ----------
-        X : np.ndarray of shape (n_samples, n_features)
-            The fixed-effects design matrix (covariates).
-        y : np.ndarray of shape (n_samples, n_outputs)
-            The multi-output response matrix.
-        groups : np.ndarray of shape (n_samples, n_groups)
-            The grouping factors (random intercepts).
-        random_slopes : tuple or dict, optional
-            Specifies which columns in `X` correspond to random slopes for each group.
-            If a tuple, it must have length `n_groups`. For example, `([0, 1], None)`
-            assigns the first two features as random slopes for the first group, and no
-            random slopes for the second group. If a dict, keys are group indices and
-            values are lists of feature indices, e.g., `{0: [0, 1]}`.
+        X : ndarray of shape (n_samples, n_features)
+            The fixed-effects design matrix (model covariates).
+        y : ndarray of shape (n_samples, n_responses)
+            The multi-output continuous response matrix.
+        groups : ndarray of shape (n_samples, n_groups)
+            Categorical arrays linking each observation to its respective group levels.
+        random_slopes : tuple of tuples, optional
+            A tuple of length `n_groups`. Each inner tuple specifies the column indices in `X`
+            that should act as random slope covariates for that specific grouping factor.
+            `None` denotes a random-intercepts-only model.
 
         Returns
         -------
         MixedModel
-            A fitted container holding the learned variance components and fixed effects.
+            A fitted structural container retaining the fully converged fixed-effects
+            estimator, globally learned variance matrices, and learned group-level 
+            effects.
         """
         if y.ndim == 1:
             y = y[:, None]
@@ -186,7 +180,7 @@ class MixedEffectEstimator:
 
         from .result import MixedModel
 
-        return MixedModel(
+        model = MixedModel(
             fixed_effects_model=solver.fixed_effects_model,
             n_samples=n_samples,
             n_responses=n_responses,
@@ -202,3 +196,8 @@ class MixedEffectEstimator:
             force_iterative=solver.force_iterative,
             random_slopes=random_slopes_tuple,
         )
+
+        train_inference = model.infer(X, y, groups)
+        model.training_group_posteriors = train_inference.groups
+
+        return model

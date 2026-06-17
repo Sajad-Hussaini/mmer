@@ -45,7 +45,7 @@ Pass your fixed-effects model and data to ``MixedEffectEstimator``. Default valu
 .. code-block:: python
 
    from mmer import MixedEffectEstimator
-   model = MixedEffectEstimator(fe_model)
+   model = MixedEffectEstimator(fixed_effects_model=fe_model)
    result = model.fit(X_train, y_train, group_train)
 
 4. Summarize and Interpret Results
@@ -63,4 +63,7 @@ The result object provides:
    print(result.summary())
    print("Residual Correlation:", result.R_corr)
    print("Random Effects Correlation:", result.G_corr)
+   
+   # True Variance Matrices (Optimal structure sizes)
    print("Residual Covariance:", result.R)
+   print("Random Effects Covariance:", result.G)
