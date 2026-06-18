@@ -3,7 +3,8 @@
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![PyPI](https://img.shields.io/pypi/v/mmer.svg)](https://pypi.org/project/mmer)
-[![Documentation Status](https://readthedocs.org/projects/mmer/badge/?version=latest)](https://mmer.readthedocs.io/en/latest/?badge=latest)  
+[![Documentation Status](https://readthedocs.org/projects/mmer/badge/?version=latest)](https://mmer.readthedocs.io/en/latest/?badge=latest)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18068839.svg)](https://doi.org/10.5281/zenodo.18068839)  
 
 **MMER** is a flexible Python framework for multivariate mixed-effects regression. Its defining feature is a plug-and-play architecture that allows you to seamlessly integrate any generic regressor to model the fixed effects, from standard parametric algorithms to advanced machine learning models like Neural Networks, Random Forests, and etc. It natively handles multiple correlated outcomes across various grouping structures, providing direct access to the full random effect and residual covariance matrices [[1]](#references).
 
