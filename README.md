@@ -1,10 +1,16 @@
-# MMER: Multivariate Mixed Effects Regression
+<div align="center">
+  <img src="https://raw.githubusercontent.com/Sajad-Hussaini/mmer/main/MMER_Icon.png" alt="MMER Logo" width="300"/>
+  <br>
+  <h1>MMER: Multivariate Mixed Effects Regression</h1>
 
-[![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![PyPI](https://img.shields.io/pypi/v/mmer.svg)](https://pypi.org/project/mmer)
-[![Documentation Status](https://readthedocs.org/projects/mmer/badge/?version=latest)](https://mmer.readthedocs.io/en/latest/?badge=latest)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18068839.svg)](https://doi.org/10.5281/zenodo.18068839)  
+  <p>
+    <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.12+-blue.svg" alt="Python"></a>
+    <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+    <a href="https://pypi.org/project/mmer"><img src="https://img.shields.io/pypi/v/mmer.svg" alt="PyPI"></a>
+    <a href="https://mmer.readthedocs.io/en/latest/?badge=latest"><img src="https://readthedocs.org/projects/mmer/badge/?version=latest" alt="Documentation Status"></a>
+    <a href="https://doi.org/10.5281/zenodo.18068839"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.18068839.svg" alt="DOI"></a>
+  </p>
+</div>  
 
 **MMER** is a flexible Python framework for multivariate mixed-effects regression. Its defining feature is a plug-and-play architecture that allows you to seamlessly integrate any generic regressor to model the fixed effects, from standard parametric algorithms to advanced machine learning models like Neural Networks, Random Forests, and etc. It natively handles multiple correlated outcomes across various grouping structures, providing direct access to the full random effect and residual covariance matrices [[1]](#references).
 
@@ -30,7 +36,7 @@ pip install git+https://github.com/Sajad-Hussaini/mmer.git
 
 ## Documentation & License
 
-The full documentation, including examples and the complete API reference, is available at [mmer.readthedocs.io](https://mmer.readthedocs.io/en/latest/?badge=latest).
+📖 **[Explore the Full Documentation, Tutorials, and API Reference](https://mmer.readthedocs.io/)** available at [mmer.readthedocs.io](https://mmer.readthedocs.io/en/latest/?badge=latest).
 
 
 MMER is released under the [MIT License](https://opensource.org/licenses/MIT). See the [LICENSE](LICENSE) file for the full text.
