@@ -1,5 +1,4 @@
 import numpy as np
-import pandas as pd
 from ..structures.inference import compute_random_effects_posterior
 from ..structures.covariance import RandomCovariance, ResidualCovariance
 from ..structures.design import RandomDesign
@@ -404,7 +403,7 @@ class MixedModel:
 
     def blups(
         self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, group_idx: int = 0
-    ) -> pd.DataFrame:
+    ) -> dict:
         """
         Extract the Best Linear Unbiased Predictors (BLUPs) for a specific grouping factor.
 
@@ -421,9 +420,23 @@ class MixedModel:
 
         Returns
         -------
-        pandas.DataFrame
-            A DataFrame containing the random intercepts and slopes for each unique
-            level of the group.
+        dict
+            A dictionary with three keys:
+
+            - ``"levels"`` : ndarray of shape ``(n_levels,)``
+                The unique group identifiers, one per row of ``"values"``.
+            - ``"columns"`` : list of str
+                Human-readable column labels (e.g. ``"R1_Intercept"``, ``"R2_Slope 1"``).
+            - ``"values"`` : ndarray of shape ``(n_levels, n_responses * n_effects)``
+                The BLUP matrix, ready for direct use in any plotting or analysis workflow.
+
+        Notes
+        -----
+        To obtain a labelled DataFrame, users can run::
+
+            import pandas as pd
+            result = model.blups(X, y, groups)
+            df = pd.DataFrame(result["values"], columns=result["columns"], index=result["levels"])
         """
         inference = self.infer(X, y, groups)
         blups_3d = inference.groups[group_idx].effects.value
@@ -438,9 +451,11 @@ class MixedModel:
                 cols.append(f"R{i + 1}_{effect_name}")
 
         unique_levels = inference.groups[group_idx].levels
-        df = pd.DataFrame(blups_val, columns=cols, index=unique_levels)
-        df.index.name = f"Group_{group_idx}"
-        return df
+        return {
+            "levels": unique_levels,
+            "columns": cols,
+            "values": blups_val,
+        }
 
     def marginal_corr(
         self, slope_covariates: list[np.ndarray | None] | None = None

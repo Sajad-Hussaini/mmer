@@ -1,7 +1,8 @@
+import sys
+import time
 import traceback
 import warnings
 import numpy as np
-from tqdm import tqdm
 from ..linalg.solver import build_solver
 from ..structures.inference import aggregate_random_effects
 from ..structures.covariance import RandomCovariance, ResidualCovariance
@@ -82,25 +83,36 @@ class EMSolver:
         self._fit_fixed_effects(X, y, np.zeros(self.n_samples * self.n_responses))
         marginal_residual = self._evaluate_residuals(X, y)
 
-        pbar = tqdm(
-            range(1, self.max_iter + 1),
-            desc="Running MMER Framework | Fitting Model ...",
-            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {elapsed}",
-        )
+        _t0 = time.monotonic()
+        _bar_width = 30
+        _status = "Fitting ..."
 
-        for iteration in pbar:
+        def _progress(iteration, status):
+            filled = int(_bar_width * iteration / self.max_iter)
+            bar = "█" * filled + "░" * (_bar_width - filled)
+            elapsed = time.monotonic() - _t0
+            line = f"\rMMER [{bar}] {iteration}/{self.max_iter}  {elapsed:.1f}s  {status}   "
+            sys.stderr.write(line)
+            sys.stderr.flush()
+
+        for iteration in range(1, self.max_iter + 1):
+            _progress(iteration, _status)
             marginal_residual = self._run_em_iter(X, y, marginal_residual, iteration)
 
             if self.convergence_monitor.is_converged:
                 if self.convergence_monitor.is_early_stopped:
                     self.convergence_monitor.restore_best_state(self)
                     if np.isinf(self.convergence_monitor.log_likelihood[-1]):
-                        pbar.set_description("Finished: numerical limits reached!")
+                        _status = "Finished: numerical limits reached!"
                     else:
-                        pbar.set_description("Finished: no further improvement!")
+                        _status = "Finished: no further improvement!"
                 else:
-                    pbar.set_description("Converged: tolerance reached!")
+                    _status = "Converged: tolerance reached!"
+                _progress(iteration, _status)
                 break
+
+        sys.stderr.write("\n")
+        sys.stderr.flush()
 
     def _run_em_iter(self, X, y, marginal_residual, iteration):
         total_random_effects, mu, solver = self._e_step(marginal_residual)

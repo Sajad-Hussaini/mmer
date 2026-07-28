@@ -16,13 +16,13 @@ You must have your data preprocessed as numpy arrays:
 .. code-block:: python
 
    import numpy as np
-   import pandas as pd
    from pathlib import Path
 
    base = Path(__file__).parent
    X_train = np.load(base / 'X_train.npy')
    y_train = np.load(base / 'y_train.npy')
-   group_train = pd.read_csv(base / 'group_train.csv').to_numpy()
+   # Load grouping factors — use any method that produces a numpy array - or using pandas and then call .to_numpy()
+   group_train = np.loadtxt(base / 'group_train.csv', delimiter=',', dtype=int)
 
 2. Choose a Fixed-Effects Model
 --------------------------------
@@ -40,6 +40,7 @@ You can use any multi-output regressor with ``fit`` and ``predict`` methods:
 
 3. Fit the Mixed-Effects Model
 -------------------------------
+The actual workflow required to fit a mixed-effects model is as simple as writing 3 lines of code.
 Pass your fixed-effects model and data to ``MixedEffectEstimator``. Default values are safe for most use cases.
 
 .. code-block:: python
