@@ -5,7 +5,7 @@
 
   <p>
     <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.12+-blue.svg" alt="Python"></a>
-    <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+    <a href="https://opensource.org/licenses/GPL-3.0"><img src="https://img.shields.io/badge/license-GPLv3-blue.svg" alt="License"></a>
     <a href="https://pypi.org/project/mmer"><img src="https://img.shields.io/pypi/v/mmer.svg" alt="PyPI"></a>
     <a href="https://mmer.readthedocs.io/en/latest/?badge=latest"><img src="https://readthedocs.org/projects/mmer/badge/?version=latest" alt="Documentation Status"></a>
     <a href="https://doi.org/10.5281/zenodo.18068839"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.18068839.svg" alt="DOI"></a>
@@ -39,7 +39,10 @@ pip install git+https://github.com/Sajad-Hussaini/mmer.git
 📖 **[Explore the Full Documentation, Tutorials, and API Reference](https://mmer.readthedocs.io/)** available at [mmer.readthedocs.io](https://mmer.readthedocs.io/en/latest/?badge=latest).
 
 
-MMER is released under the [MIT License](https://opensource.org/licenses/MIT). See the [LICENSE](LICENSE) file for the full text.
+**MMER** is distributed under the [**GNU General Public License v3 (GPLv3)**](https://opensource.org/licenses/GPL-3.0). See the [LICENSE](LICENSE) file for the full text.
+
+
+> You are free to use, modify, and distribute this software for academic and research purposes. Any commercial use or distribution of modified versions requires the entire project to be open-sourced under the same GPLv3 license. For proprietary commercial exemptions, please refer to the Contact section.
 
 ## Contact & Support
 
@@ -49,8 +52,6 @@ For any questions, assistance, suggestions, or requests to modify API, please fe
 📧 [hussaini.smsajad@gmail.com](mailto:hussaini.smsajad@gmail.com)
 
 > Please include "MMER" in the subject line for a quicker response.
-
-> If you find this package useful, contributions to help maintain and improve it, are always appreciated. [![PayPal](https://img.shields.io/badge/PayPal-Donate-blue.svg)](https://www.paypal.com/paypalme/sajadhussaini)
 
 ## References
 
