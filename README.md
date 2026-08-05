@@ -8,7 +8,7 @@
     <a href="https://opensource.org/licenses/GPL-3.0"><img src="https://img.shields.io/badge/license-GPLv3-blue.svg" alt="License"></a>
     <a href="https://pypi.org/project/mmer"><img src="https://img.shields.io/pypi/v/mmer.svg" alt="PyPI"></a>
     <a href="https://mmer.readthedocs.io/en/latest/?badge=latest"><img src="https://readthedocs.org/projects/mmer/badge/?version=latest" alt="Documentation Status"></a>
-    <a href="https://doi.org/10.5281/zenodo.18068839"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.18068839.svg" alt="DOI"></a>
+    <a href="https://doi.org/10.5281/zenodo.18068839"><img src="https://zenodo.org/badge/942170020.svg" alt="DOI"></a>
   </p>
 </div>  
 
