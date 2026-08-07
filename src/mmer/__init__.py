@@ -2,5 +2,5 @@ from .api.estimator import MixedEffectEstimator
 from .api.result import MixedModel
 from .api.ensemble import EnsembleMixedModel
 
-__version__ = "1.4.4"
+__version__ = "1.4.5"
 __all__ = ["MixedEffectEstimator", "MixedModel", "EnsembleMixedModel"]

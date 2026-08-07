@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="https://raw.githubusercontent.com/Sajad-Hussaini/mmer/main/MMER_Icon.png" alt="MMER Logo" width="300"/>
+  <img src="https://raw.githubusercontent.com/Sajad-Hussaini/mmer/main/logo.png" alt="MMER Logo" width="300"/>
   <br>
   <h1>MMER: Multivariate Mixed Effects Regression</h1>
 
